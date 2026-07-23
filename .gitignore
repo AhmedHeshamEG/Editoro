@@ -1,0 +1,21 @@
+# Local Python environment and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Runtime projects and generated media
+projects/*
+!projects/.gitkeep
+
+# Local diagnostics
+*.log
+.deps-installed
+.vc/*
+!.vc/work-*.md
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

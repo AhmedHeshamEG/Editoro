@@ -1,0 +1,8 @@
+{ "id":"ambient","display_name":"Ambient","category_color":"#4A5568",
+  "directive_verb":null,
+  "fields":[],
+  "zones":{"horizontal":{"x":0.5,"y":0.5,"scale":1.0},"vertical":{"x":0.5,"y":0.5,"scale":1.0}},
+  "animation":{"entrance":"fade","entrance_ms":800,"hold":"slow seeded drifting soft light, looping, non-distracting","exit":"fade","exit_ms":800,"easing":"linear"},
+  "sfx":[],
+  "assets":["ambient-paper.png"],
+  "default_duration":15.0 }

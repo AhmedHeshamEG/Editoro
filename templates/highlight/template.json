@@ -1,0 +1,8 @@
+{ "id":"highlight","display_name":"Highlight","category_color":"#F9F871",
+  "directive_verb":null,
+  "fields":[{"name":"asset","type":"asset:image","note":"image or PDF page (rasterized server-side)"},{"name":"strokes","type":"strokes","note":"ruler-straight, locked to 0°; one drag = one stroke"}],
+  "zones":{"horizontal":{"x":0.5,"y":0.45,"scale":1.0},"vertical":{"x":0.5,"y":0.4,"scale":0.9}},
+  "animation":{"entrance":"fade-in","entrance_ms":260,"hold":"staggered marker sweep L→R per stroke","exit":"fade","exit_ms":220,"easing":"outCubic"},
+  "sfx":[{"file":"marker-sweep.wav","offset":0.15,"gain":0.65}],
+  "assets":["stroke.png"],
+  "default_duration":5.0 }
