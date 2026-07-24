@@ -26,7 +26,11 @@ Both orientations use the full source frame at `0.50, 0.50`, scale `1.00`.
 ## SFX
 | file | fires at | volume |
 |---|---|---|
-| `whoosh.wav` | entrance start | `0.50` |
+| `whoosh.wav` | entrance start | `0.24` |
+
+## Assets
+- `render.js` — deterministic source-transform definition used by preview; export applies the same easing and target geometry through FFmpeg
+- `whoosh.wav` — CC0 bamboo-stick air swipe; see `../SFX_SOURCES.md`
 
 ## Rules
 - Rotation is never introduced.
@@ -35,4 +39,3 @@ Both orientations use the full source frame at `0.50, 0.50`, scale `1.00`.
 
 ## Out of scope
 - Keyframed pans, rotations, and face tracking.
-

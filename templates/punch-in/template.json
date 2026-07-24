@@ -1,8 +1,8 @@
-{ "id":"punch-in","display_name":"زوم · Punch-in","category_color":"#FF6B6B",
+{ "id":"punch-in","version":3,"display_name":"زوم · Punch-in","category_color":"#FF6B6B",
   "directive_verb":"زوم",
-  "fields":[{"name":"rect","type":"rect","note":"target rect drawn on preview; zooms track-0 footage itself"}],
+  "fields":[{"name":"rect","label":"Zoom target","type":"rect","default":{"x":0.22,"y":0.16,"w":0.56,"h":0.64},"note":"target rect drawn on preview; drag a new box directly on the preview"}],
   "zones":{"horizontal":{"x":0.5,"y":0.5,"scale":1.0},"vertical":{"x":0.5,"y":0.5,"scale":1.0}},
   "animation":{"entrance":"zoom-in","entrance_ms":450,"hold":"held zoom","exit":"zoom-out","exit_ms":400,"easing":"outCubic"},
-  "sfx":[{"file":"whoosh.wav","offset":0.0,"gain":0.5}],
+  "sfx":[{"file":"whoosh.wav","offset":0.0,"gain":0.24}],
   "assets":[],
   "default_duration":3.0 }

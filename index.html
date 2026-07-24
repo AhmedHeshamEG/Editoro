@@ -47,9 +47,9 @@ input,textarea{font:inherit;color:var(--tx);background:var(--bg2);
 select{font:inherit;color:var(--tx);background:var(--bg2);border:1px solid var(--line);
   border-radius:8px;padding:10px;width:100%;min-height:44px}
 #app{display:grid;height:100%;
-  grid-template:"preview panel" minmax(260px,1fr) "timeline timeline" 320px / minmax(0,1fr) 340px}
+  grid-template:"preview panel" minmax(240px,1fr) "timeline timeline" 360px / minmax(0,1fr) 340px}
 @media (max-width:820px){ /* phone: panel becomes bottom sheet */
-  #app{grid-template:"preview" 1fr "timeline" 240px / 1fr}
+  #app{grid-template:"preview" minmax(210px,1fr) "timeline" 300px / 1fr}
   #panel{position:fixed;left:0;right:0;bottom:0;top:auto;max-height:70%;
     transform:translateY(calc(100% - 52px));transition:transform .25s;z-index:30;
     border-radius:16px 16px 0 0;box-shadow:0 -8px 40px #000a}
@@ -58,7 +58,8 @@ select{font:inherit;color:var(--tx);background:var(--bg2);border:1px solid var(-
 /* preview */
 #preview{grid-area:preview;position:relative;background:#000;overflow:hidden}
 #stage{position:absolute;inset:0;display:grid;place-items:center}
-#stage video{max-width:100%;max-height:100%;transition:transform .12s linear}
+#stage video{width:auto;height:auto;max-width:none;max-height:none;object-fit:fill;
+  transition:transform .08s linear;will-change:transform}
 #projectBar{position:absolute;z-index:12;left:12px;right:12px;top:12px;display:flex;
   gap:8px;align-items:center;pointer-events:none}
 #projectBar>*{pointer-events:auto}
@@ -75,18 +76,43 @@ select{font:inherit;color:var(--tx);background:var(--bg2);border:1px solid var(-
 #emptyState p{color:var(--tx2);margin-bottom:18px}
 #emptyState .actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
 #overlay{position:absolute;pointer-events:none}
-#gestures{position:absolute;inset:0}
+#gestures{position:absolute;inset:0;z-index:3;touch-action:none}
 .handle{position:absolute;width:22px;height:22px;border-radius:50%;
-  background:var(--tx);border:3px solid var(--bg);transform:translate(-50%,-50%)}
-#selbox{position:absolute;border:2px solid var(--sel,#fff);border-radius:4px;display:none}
+  background:var(--tx);border:3px solid var(--bg);transform:translate(-50%,-50%);
+  pointer-events:auto;touch-action:none;cursor:nwse-resize}
+#selbox{position:absolute;z-index:4;border:2px solid var(--sel,#fff);border-radius:4px;
+  display:none;pointer-events:none}
 .zoneguide{position:absolute;border:1px dashed #ffffff55;color:#ffffff77;
   font-size:11px;padding:2px 6px;display:none;pointer-events:none}
 #transport{position:absolute;left:12px;bottom:12px;display:flex;gap:8px;align-items:center;
-  background:#000a;padding:6px 10px;border-radius:12px;backdrop-filter:blur(8px)}
+  z-index:10;background:#000a;padding:6px 10px;border-radius:12px;backdrop-filter:blur(8px)}
 #tc{font-variant-numeric:tabular-nums;color:var(--tx2)}
+#monitor{display:flex;align-items:center;gap:4px}
+#monitorVolume{width:88px;padding:0;accent-color:var(--c-keyword)}
+@media (max-width:480px){
+  #transport{left:8px;right:8px;gap:4px;padding:5px 6px}
+  #transport button{min-width:36px;padding:6px 8px}
+  #transport #frameBack,#transport #frameForward{min-width:32px;padding:6px}
+  #transport #undoBtn,#transport #redoBtn{display:none}
+  #tc{display:none}
+  #monitorVolume{width:52px}
+  #exportBtn{padding-inline:10px}
+}
 /* timeline */
 #timeline{grid-area:timeline;background:var(--bg2);border-top:1px solid var(--line);
-  position:relative;overflow:hidden}
+  position:relative;overflow:hidden;display:flex;flex-direction:column}
+#timelineToolbar{height:52px;flex:0 0 52px;display:flex;align-items:center;gap:8px;
+  padding:4px 10px;border-bottom:1px solid var(--line);background:#15161a;overflow-x:auto;
+  scrollbar-width:none}
+#timelineToolbar::-webkit-scrollbar{display:none}
+#timelineToolbar .group{display:flex;align-items:center;gap:4px;flex:0 0 auto}
+#timelineToolbar .separator{width:1px;height:28px;background:var(--line);flex:0 0 auto}
+#timelineToolbar button{min-height:42px;min-width:42px;padding:7px 10px}
+#timelineToolbar button.on{background:#34363d;border-color:#5a5d68;color:#fff}
+#timelineToolbar button[aria-pressed="true"]{box-shadow:inset 0 -2px var(--c-keyword)}
+#timelineZoom{width:150px;accent-color:var(--c-keyword)}
+#zoomReadout{min-width:104px;color:var(--tx2);font-variant-numeric:tabular-nums;font-size:12px}
+#timelineViewport{position:relative;flex:1;min-height:0;overflow:hidden;touch-action:none}
 #tl{width:100%;height:100%;display:block}
 /* panel */
 #panel{grid-area:panel;background:var(--bg2);border-left:1px solid var(--line);
@@ -113,11 +139,16 @@ select{font:inherit;color:var(--tx);background:var(--bg2);border:1px solid var(-
 dialog{background:var(--bg2);color:var(--tx);border:1px solid var(--line);
   border-radius:14px;padding:20px;max-width:420px;width:92%}
 dialog::backdrop{background:#000a}
+#transcriptDlg{max-width:520px}
+#transcriptDlg .dialogNote{color:var(--tx2);margin:0 0 14px}
+#transcriptDlg progress{width:100%;height:10px;margin:8px 0}
 #home{position:fixed;inset:0;background:var(--bg);z-index:50;display:grid;place-items:center}
 #home .card{width:min(440px,92%);}
 #home h1{font:800 34px Rubik;letter-spacing:-.02em;margin-bottom:4px}
 #home h1 span{color:var(--c-keyword)}
 #home p{color:var(--tx2);margin-bottom:20px}
+#homeDiag{margin-top:14px;color:var(--tx2);font-size:12px}
+#homeDiag.bad{color:#ff9b9b}
 #projList .projectRow{display:flex;gap:8px;margin-bottom:8px}
 #projList .projectOpen{flex:1;text-align:left}
 #projList small{display:block;color:var(--tx2);font-weight:400;margin-top:2px}
@@ -125,6 +156,9 @@ dialog::backdrop{background:#000a}
 .pill{display:inline-block;border:1px solid var(--line);color:var(--tx2);border-radius:999px;padding:3px 8px;font-size:11px}
 .buttonrow{display:flex;gap:8px}.buttonrow>*{flex:1}
 #exportDlg progress{width:100%;height:10px;margin:10px 0}
+#expHistory{max-height:120px;overflow:auto;margin-top:10px}
+#expHistory a{display:block;color:var(--c-keyword);padding:6px 0;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style></head>
 <body>
@@ -136,6 +170,7 @@ dialog::backdrop{background:#000a}
     <input id="newName" placeholder="project-01">
     <button class="primary" id="newBtn">Create</button>
   </div>
+  <div id="homeDiag">Checking local tools…</div>
 </div></div>
 
 <div id="app" hidden>
@@ -161,14 +196,46 @@ dialog::backdrop{background:#000a}
       </div></div>
     </div>
     <div id="transport">
-      <button id="play">▶</button><span id="tc">0:00.00</span>
+      <button id="frameBack" title="Previous frame" aria-label="Previous frame">‹</button>
+      <button id="play" aria-label="Play or pause">▶</button>
+      <button id="frameForward" title="Next frame" aria-label="Next frame">›</button>
+      <span id="tc">00:00:00:00</span>
+      <div id="monitor" title="Preview monitoring volume">
+        <button id="monitorMute" class="icon" aria-label="Mute preview">🔊</button>
+        <input id="monitorVolume" type="range" min="0" max="1" step=".01" value=".8"
+          aria-label="Preview volume">
+      </div>
       <button id="splitBtn" title="split at playhead">✂</button>
       <button id="undoBtn">↺</button><button id="redoBtn">↻</button>
       <button id="exportBtn" class="primary">Export</button>
     </div>
   </div>
 
-  <div id="timeline"><canvas id="tl"></canvas></div>
+  <div id="timeline">
+    <div id="timelineToolbar" role="toolbar" aria-label="Timeline controls">
+      <div class="group">
+        <button id="zoomOut" title="Zoom out" aria-label="Zoom out">−</button>
+        <button id="zoomIn" title="Zoom in" aria-label="Zoom in">+</button>
+        <button id="zoomFit" title="Fit full timeline" aria-label="Fit full timeline">Fit</button>
+      </div>
+      <input id="timelineZoom" type="range" min="0" max="1000" value="360"
+        aria-label="Timeline zoom">
+      <span id="zoomReadout">1.3 px/frame</span>
+      <div class="separator"></div>
+      <div class="group">
+        <button id="snapToggle" aria-pressed="true" title="Toggle magnetic frame snapping">Snap</button>
+        <button id="rippleToggle" aria-pressed="true" title="Ripple source deletions">Ripple</button>
+      </div>
+      <div class="separator"></div>
+      <div class="group">
+        <button id="timelineUndo" title="Undo" aria-label="Undo">↺</button>
+        <button id="timelineRedo" title="Redo" aria-label="Redo">↻</button>
+      </div>
+      <div class="separator"></div>
+      <span class="pill" id="timelineHint">Ctrl+wheel zoom · wheel scroll · S split</span>
+    </div>
+    <div id="timelineViewport"><canvas id="tl"></canvas></div>
+  </div>
 
   <div id="panel">
     <div id="panelGrip">⌃ &nbsp;Panel</div>
@@ -193,6 +260,13 @@ dialog::backdrop{background:#000a}
 <div id="toasts"></div>
 <dialog id="exportDlg">
   <h3 style="margin-bottom:12px">Export</h3>
+  <div class="fieldrow"><label for="expResolution">Resolution</label>
+    <select id="expResolution">
+      <option value="source">Match source</option>
+      <option value="1080">1080p</option>
+      <option value="720">720p</option>
+    </select>
+  </div>
   <div class="fieldrow"><label>Mode</label>
     <button data-m="lossless" class="primary" style="width:100%;margin-bottom:8px">LOSSLESS (smart) — default</button>
     <button data-m="hq" style="width:100%">High quality (full re-encode)</button>
@@ -201,16 +275,51 @@ dialog::backdrop{background:#000a}
   <progress id="expBar" value="0" max="1" hidden></progress>
   <button id="expCancel" class="danger" style="width:100%;margin-top:8px" hidden>Cancel export</button>
   <button id="expClose" style="width:100%;margin-top:8px">Close</button>
+  <div id="expHistory"></div>
+</dialog>
+
+<dialog id="transcriptDlg">
+  <h3 style="margin-bottom:6px">Captions</h3>
+  <p class="dialogNote">Generate word-timed captions on this laptop, or import an existing SRT/Whisper file. Existing captions are replaced only after a successful generation.</p>
+  <div class="fieldrow"><label for="whisperModel">Local Whisper quality</label>
+    <select id="whisperModel">
+      <option value="large-v3">Best accuracy · large-v3</option>
+      <option value="large-v3-turbo">Faster · large-v3-turbo</option>
+    </select>
+  </div>
+  <div class="fieldrow"><label for="whisperLanguage">Spoken language</label>
+    <select id="whisperLanguage">
+      <option value="auto">Detect automatically</option>
+      <option value="en">English</option>
+      <option value="ar">Arabic</option>
+    </select>
+  </div>
+  <div class="fieldrow"><label for="whisperTerms">Names and special terms (optional)</label>
+    <textarea id="whisperTerms" rows="3" placeholder="Editoro, names, technical terms…"></textarea>
+  </div>
+  <button id="transcribeStart" class="primary" style="width:100%">Generate captions locally</button>
+  <button id="transcriptImport" style="width:100%;margin-top:8px">Import SRT / Whisper JSON</button>
+  <div id="transcribeStatus" style="color:var(--tx2);min-height:22px;margin-top:12px"></div>
+  <progress id="transcribeBar" value="0" max="1" hidden></progress>
+  <button id="transcribeCancel" class="danger" style="width:100%;margin-top:8px" hidden>Cancel transcription</button>
+  <button id="transcriptClose" style="width:100%;margin-top:8px">Close</button>
 </dialog>
 
 <script>
 "use strict";
 /* ======================================================= [C] state store */
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const uid=prefix=>`${prefix}-${globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
 const EXPORT_MODE=new URLSearchParams(location.search).get("export")==="1";
+const MONITOR_KEY="editoro-monitor-volume";
+const storedMonitorRaw=localStorage.getItem(MONITOR_KEY);
+const storedMonitor=storedMonitorRaw === null ? .8 : Number(storedMonitorRaw);
 const S={ project:null, state:null, packs:{}, peaks:[], sel:null,
-  t:0, playing:false, fps:30, zoom:40 /*px per second*/, scroll:0, ws:null,
-  undo:[], redo:[], booted:false, resizeObserver:null };
+  t:0, playing:false, fps:30, zoom:80 /*px per second*/, scroll:0, trackScroll:0,
+  snapEnabled:true, ws:null, undo:[], redo:[], booted:false, resizeObserver:null,
+  monitorGain:Number.isFinite(storedMonitor)?Math.max(0,Math.min(1,storedMonitor)):.8,
+  monitorMuted:false,previewLayout:null,overlayQueued:false,lastPlaybackFrame:-1 };
+const MIN_ZOOM=4,MAX_ZOOM=6000;
 const CAT={keyword:"--c-keyword","image-pop":"--c-image","video-clip":"--c-video",
   highlight:"--c-highlight","punch-in":"--c-punch",screen:"--c-screen",
   ambient:"--c-ambient",captions:"--c-captions"};
@@ -237,14 +346,15 @@ function redo(){if(!S.redo.length)return;S.undo.push(JSON.stringify(S.state));
   S.state=JSON.parse(S.redo.pop());afterMutate(false)}
 
 let saveTimer=null;
-function afterMutate(pushUndo=true){
+function afterMutate(pushUndo=true,persist=true){
   if(pushUndo===true){} // snapshot() is called by mutators BEFORE the change
   drawTimeline(); drawOverlay(); renderInspector();
+  if(!persist)return;
   clearTimeout(saveTimer);
   $("#syncStatus").classList.remove("on");
   saveTimer=setTimeout(async()=>{ // debounced autosave over WS (falls back to POST)
     const msg={type:"state",state:S.state};
-    if(S.ws&&S.ws.readyState===1){S.ws.send(JSON.stringify(msg));$("#syncStatus").classList.add("on")}
+    if(S.ws&&S.ws.readyState===1)S.ws.send(JSON.stringify(msg));
     else try{await api(`/api/projects/${S.project}/state`,{method:"POST",body:JSON.stringify(S.state)});
       $("#syncStatus").classList.add("on")}catch(e){toast("Save failed: "+e.message)}
   },400);
@@ -264,9 +374,8 @@ const A={img:{},vid:{},load(url){if(!url)return null;if(this.img[url])return thi
     v.playsInline=true;v.crossOrigin="anonymous";this.vid[url]=v;return v;}};
 function fitContain(iw,ih,maxW,maxH){const k=Math.min(maxW/iw,maxH/ih);
   return{w:iw*k,h:ih*k}}
-function renderUnit(ctx){
-  return Math.max(0.18,Math.min(ctx.canvas.width/1920,ctx.canvas.height/1080));
-}
+function viewportUnit(viewport){return Math.max(.18,Math.min(viewport.width,viewport.height)/1080)}
+function renderUnit(ctx){return viewportUnit(ctx.canvas)}
 function srand(seed){let h=2166136261;for(const c of seed)h=Math.imul(h^c.charCodeAt(0),16777619);
   return()=>{h=Math.imul(h^h>>>15,2246822507);h=Math.imul(h^h>>>13,3266489909);
   return ((h^=h>>>16)>>>0)/4294967296}}
@@ -279,6 +388,18 @@ function env(inst,t){ // entrance/hold/exit envelope from pack animation spec
   if(t>1-eout)return{phase:"out",k:(1-t)/eout};
   return{phase:"hold",k:1};
 }
+Object.assign(A,{
+  projectAsset:file=>file?`/media/${S.project}/assets/${encodeURIComponent(file)}`:"",
+  templateAsset:(pack,file)=>`/tpl/${encodeURIComponent(pack)}/${encodeURIComponent(file)}`,
+  instanceAssetUrl:instance=>{
+    const file=instance?.fields?.asset;if(!file)return "";
+    if(["highlight","image-pop"].includes(instance.template)&&file.toLowerCase().endsWith(".pdf"))
+      return `/api/projects/${encodeURIComponent(S.project)}/pdf-page?asset=${encodeURIComponent(file)}&page=${instance.fields.page||0}`;
+    return `/media/${encodeURIComponent(S.project)}/assets/${encodeURIComponent(file)}`;
+  },
+  fitContain,unit:renderUnit,viewportUnit,envelope:env,easeOut,easeOutBack,seeded:srand,
+  categoryColor:cc,project:()=>S.project,pack:id=>S.packs[id]||{}
+});
 function paper(ctx,w,h,seed){ // procedural notebook-paper card (student desk)
   const u=renderUnit(ctx);
   const texture=A.load("/tpl/keyword/paper-texture.png");
@@ -392,6 +513,8 @@ function punchZoom(t){ // returns {x,y,scale} for the source video at time t
   const p=activeInstances(t).find(i=>i.template==="punch-in"&&i.fields.rect);
   if(!p)return null;
   const tt=(t-p.start)/p.duration, e=env(p,tt);
+  const custom=REG["punch-in"]?.sourceTransform?.(p,tt,A);
+  if(custom)return custom;
   const k=e.phase==="in"?easeOut(e.k):e.phase==="out"?easeOut(e.k):1;
   const r=p.fields.rect;                                    // normalized {x,y,w,h}
   const target=1/Math.max(r.w,r.h);
@@ -402,6 +525,8 @@ function syncOverlayVideos(t){
   for(const inst of activeInstances(t).filter(i=>i.template==="video-clip"&&i.fields.asset&&!i.missing)){
     const url=`/media/${S.project}/assets/${inst.fields.asset}`,clip=A.video(url);
     active.add(url);const local=Math.max(0,t-inst.start);
+    const monitor=(S.monitorMuted?0:S.monitorGain)*Math.max(0,Math.min(1,inst.fields.volume??.8));
+    clip.muted=EXPORT_MODE||monitor<=0;clip.volume=Math.max(0,Math.min(1,monitor));
     if(clip.readyState>=1&&Math.abs(clip.currentTime-local)>.12)clip.currentTime=Math.min(local,clip.duration||local);
     if(S.playing)clip.play().catch(()=>{});else clip.pause();
   }
@@ -436,62 +561,157 @@ function drawFrame(ctx,W,H,t){ // THE shared render — preview + export use thi
   // captions (style from captions pack spec)
   const cs=(S.packs.captions&&S.packs.captions.style)||{};
   const blk=(S.state?.captions||[]).find(b=>t>=b.start&&t<b.end);
-  if(blk){ctx.save();
-    ctx.font=`700 ${(cs.size||42)*(H/1080)}px Rubik`;ctx.textAlign="center";
-    const y=H*(cs.y??0.88), pad=14, w=ctx.measureText(blk.text).width;
-    ctx.fillStyle=cs.bg||"#000000aa";
-    ctx.beginPath();ctx.roundRect(W/2-w/2-pad,y-32*(H/1080)-pad/2,w+pad*2,52*(H/1080),9);ctx.fill();
-    ctx.fillStyle=cs.color||"#F2F2F2";ctx.fillText(blk.text,W/2,y);
-  ctx.restore();}
+  if(blk){const renderer=REG.captions;
+    if(renderer?.draw)renderer.draw(ctx,{id:blk.id,template:"captions",x:.5,y:cs.y??.88,scale:1,
+      fields:{text:blk.text,style:cs}},(t-blk.start)/(blk.end-blk.start),A);
+    else{ctx.save();ctx.font=`700 ${(cs.size||42)*(H/1080)}px Rubik`;ctx.textAlign="center";
+      const y=H*(cs.y??0.88),pad=14,w=ctx.measureText(blk.text).width;ctx.fillStyle=cs.bg||"#000000aa";
+      ctx.beginPath();ctx.roundRect(W/2-w/2-pad,y-32*(H/1080)-pad/2,w+pad*2,52*(H/1080),9);ctx.fill();
+      ctx.fillStyle=cs.color||"#F2F2F2";ctx.fillText(blk.text,W/2,y);ctx.restore();}}
 }
 
 /* =================================== [E] preview & transform controls */
 const vid=$("#vid"), ov=$("#overlay");
-function layoutOverlay(){const r=vid.getBoundingClientRect(),s=$("#stage").getBoundingClientRect();
-  ov.style.left=(r.left-s.left)+"px";ov.style.top=(r.top-s.top)+"px";
-  ov.style.width=r.width+"px";ov.style.height=r.height+"px";
-  ov.width=S.state?.source_info.width||r.width; ov.height=S.state?.source_info.height||r.height;}
-function drawOverlay(){if(!S.state)return;layoutOverlay();
+const PREVIEW_MAX_EDGE=1920;
+function layoutOverlay(force=false){
+  const stage=$("#stage"),s=stage.getBoundingClientRect();
+  if(s.width<2||s.height<2)return S.previewLayout;
+  const mediaW=vid.videoWidth||S.state?.source_info.width||16;
+  const mediaH=vid.videoHeight||S.state?.source_info.height||9;
+  const ratio=Math.min(s.width/mediaW,s.height/mediaH);
+  const displayW=Math.max(1,mediaW*ratio),displayH=Math.max(1,mediaH*ratio);
+  const backingScale=Math.min(1,PREVIEW_MAX_EDGE/Math.max(mediaW,mediaH));
+  const backingW=Math.max(2,Math.round(mediaW*backingScale));
+  const backingH=Math.max(2,Math.round(mediaH*backingScale));
+  const left=(s.width-displayW)/2,top=(s.height-displayH)/2;
+  const key=[s.left,s.top,s.width,s.height,mediaW,mediaH,backingW,backingH].map(v=>Math.round(v*100)/100).join(":");
+  if(!force&&S.previewLayout?.key===key)return S.previewLayout;
+  S.previewLayout={key,stageLeft:s.left,stageTop:s.top,left,top,displayW,displayH,
+    mediaW,mediaH,backingW,backingH};
+  vid.style.width=displayW+"px";vid.style.height=displayH+"px";
+  ov.style.left=left+"px";ov.style.top=top+"px";
+  ov.style.width=displayW+"px";ov.style.height=displayH+"px";
+  if(ov.width!==backingW)ov.width=backingW;
+  if(ov.height!==backingH)ov.height=backingH;
+  return S.previewLayout;
+}
+function paintOverlay(){S.overlayQueued=false;if(!S.state)return;layoutOverlay();
   syncOverlayVideos(S.t);
   const z=punchZoom(S.t);
   vid.style.transformOrigin=z?`${z.cx*100}% ${z.cy*100}%`:"";
   vid.style.transform=z?`scale(${z.scale})`:"";
-  drawFrame(ov.getContext("2d"),ov.width,ov.height,S.t);
-  drawSelection();}
+  const context=ov.getContext("2d");drawFrame(context,ov.width,ov.height,S.t);
+  drawPreviewToolOverlay(context);
+  drawSelection();
+}
+function drawOverlay(){
+  if(S.overlayQueued)return;
+  S.overlayQueued=true;
+  requestAnimationFrame(paintOverlay);
+}
+function instanceNormBounds(item){
+  if(item.template==="punch-in"&&item.fields.rect)return item.fields.rect;
+  if(item.template==="ambient")return{x:0,y:0,w:1,h:1};
+  const measured=REG[item.template]?.measure?.(item,A,{width:ov.width,height:ov.height});
+  if(measured?.width&&measured?.height){
+    const width=measured.width/Math.max(1,ov.width),height=measured.height/Math.max(1,ov.height);
+    return{x:item.x-width/2,y:item.y-height/2,w:width,h:height};
+  }
+  const width=Math.min(.8,.32*item.scale),height=Math.min(.8,.22*item.scale);
+  return{x:item.x-width/2,y:item.y-height/2,w:width,h:height};
+}
 function drawSelection(){const b=$("#selbox");const i=S.sel&&S.state.instances.find(x=>x.id===S.sel);
   if(!i){b.style.display="none";return}
-  const r=vid.getBoundingClientRect(),s=$("#stage").getBoundingClientRect();
-  const w=180*i.scale,h=120*i.scale;                        // generic hit box
+  const layout=layoutOverlay();if(!layout){b.style.display="none";return}
+  const box=instanceNormBounds(i),w=box.w*layout.displayW,h=box.h*layout.displayH;
   b.style.display="block";b.style.setProperty("--sel",cc(i.template));
-  b.style.left=(r.left-s.left+i.x*r.width-w/2)+"px";
-  b.style.top=(r.top-s.top+i.y*r.height-h/2)+"px";
+  b.style.left=(layout.left+box.x*layout.displayW)+"px";
+  b.style.top=(layout.top+box.y*layout.displayH)+"px";
   b.style.width=w+"px";b.style.height=h+"px";
   if(!b.firstChild){const hd=document.createElement("div");hd.className="handle";
     hd.style.right="-11px";hd.style.bottom="-11px";hd.style.left="auto";hd.style.top="auto";
     hd.style.transform="none";b.append(hd);}
 }
 /* touch/mouse: drag to move, corner handle or pinch to scale */
-let drag=null,pinch=null;
+let drag=null,pinch=null,previewTool=null;
 const G=$("#gestures");
-function pt(e){const t=e.touches?e.touches[0]:e;const r=vid.getBoundingClientRect();
-  return{x:(t.clientX-r.left)/r.width,y:(t.clientY-r.top)/r.height}}
+function pt(e){const t=e.touches?e.touches[0]:e,layout=layoutOverlay();
+  if(!layout)return{x:0,y:0};
+  return{x:(t.clientX-layout.stageLeft-layout.left)/layout.displayW,
+    y:(t.clientY-layout.stageTop-layout.top)/layout.displayH}}
+function highlightContentBounds(item){
+  const measured=REG.highlight?.contentMeasure?.(item,A,{width:ov.width,height:ov.height})||
+    REG.highlight?.measure?.(item,A,{width:ov.width,height:ov.height});
+  const width=(measured?.width||ov.width*.35)/Math.max(1,ov.width);
+  const height=(measured?.height||ov.height*.55)/Math.max(1,ov.height);
+  return{x:item.x-width/2,y:item.y-height/2,w:width,h:height};
+}
+function drawPreviewToolOverlay(ctx){
+  if(!previewTool?.active)return;
+  const a=previewTool.start,b=previewTool.current||a;
+  ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.strokeStyle="#fff";ctx.lineWidth=Math.max(2,ov.width/700);
+  ctx.setLineDash([Math.max(6,ov.width/150),Math.max(4,ov.width/220)]);
+  if(previewTool.type==="rect"){
+    const x=Math.min(a.x,b.x)*ov.width,y=Math.min(a.y,b.y)*ov.height;
+    ctx.strokeRect(x,y,Math.abs(b.x-a.x)*ov.width,Math.abs(b.y-a.y)*ov.height);
+  }else{
+    ctx.strokeStyle=cc("highlight");ctx.lineWidth=Math.max(5,ov.height*.018);ctx.setLineDash([]);
+    ctx.beginPath();ctx.moveTo(a.x*ov.width,a.y*ov.height);ctx.lineTo(b.x*ov.width,a.y*ov.height);ctx.stroke();
+  }
+  ctx.restore();
+}
+function finishPreviewTool(){
+  if(!previewTool?.active)return;
+  const tool=previewTool,a=tool.start,b=tool.current||a,item=tool.item;
+  if(tool.type==="rect"){
+    const x=Math.max(0,Math.min(a.x,b.x)),y=Math.max(0,Math.min(a.y,b.y));
+    item.fields.rect={x,y,w:Math.max(.05,Math.min(1-x,Math.abs(b.x-a.x))),
+      h:Math.max(.05,Math.min(1-y,Math.abs(b.y-a.y)))};
+    previewTool=null;
+  }else{
+    const box=highlightContentBounds(item),left=Math.max(0,Math.min(1,(Math.min(a.x,b.x)-box.x)/box.w));
+    const right=Math.max(0,Math.min(1,(Math.max(a.x,b.x)-box.x)/box.w));
+    const y=Math.max(0,Math.min(1,(a.y-box.y)/box.h));
+    if(right-left<.01)S.undo.pop();
+    else(item.fields.strokes??=[]).push({x1:left,x2:right,y});
+    previewTool.active=false;
+  }
+  afterMutate();
+}
 G.addEventListener("pointerdown",e=>{
   if(!S.state)return;
+  if(previewTool){
+    const point=pt(e);
+    if(previewTool.type==="stroke"){
+      const box=highlightContentBounds(previewTool.item);
+      if(point.x<box.x||point.x>box.x+box.w||point.y<box.y||point.y>box.y+box.h){
+        toast("Start the marker stroke on the visible page");return;
+      }
+    }
+    snapshot();previewTool.active=true;previewTool.start=previewTool.current=point;
+    G.setPointerCapture(e.pointerId);drawOverlay();return}
   const p=pt(e);
-  const hit=[...activeInstances(S.t)].reverse().find(i=>i.template!=="ambient"&&
-    Math.abs(p.x-i.x)<0.12*i.scale+0.05&&Math.abs(p.y-i.y)<0.1*i.scale+0.05);
-  if(hit){S.sel=hit.id;snapshot();drag={id:hit.id,dx:p.x-hit.x,dy:p.y-hit.y};
+  const hit=[...activeInstances(S.t)].reverse().find(i=>i.template!=="ambient"&&(()=>{
+    const box=instanceNormBounds(i);return p.x>=box.x&&p.x<=box.x+box.w&&p.y>=box.y&&p.y<=box.y+box.h})());
+  if(hit){S.sel=hit.id;snapshot();const box=instanceNormBounds(hit);
+    drag={id:hit.id,dx:p.x-box.x,dy:p.y-box.y,box,
+      rect:hit.template==="punch-in"&&hit.fields.rect?structuredClone(hit.fields.rect):null};
     $$(".zoneguide").forEach(z=>z.style.display="block");positionGuides();}
   else S.sel=null;
   renderInspector();drawOverlay();
 });
 G.addEventListener("pointermove",e=>{
+  if(previewTool?.active){previewTool.current=pt(e);drawOverlay();return}
   if(!drag)return;const p=pt(e);const i=S.state.instances.find(x=>x.id===drag.id);
-  i.x=Math.min(1,Math.max(0,p.x-drag.dx));i.y=Math.min(1,Math.max(0,p.y-drag.dy));
+  const left=Math.max(0,Math.min(1-drag.box.w,p.x-drag.dx));
+  const top=Math.max(0,Math.min(1-drag.box.h,p.y-drag.dy));
+  if(drag.rect){i.fields.rect={...drag.rect,x:left,y:top}}
+  else{i.x=left+drag.box.w/2;i.y=top+drag.box.h/2}
   drawOverlay();
 });
-G.addEventListener("pointerup",()=>{if(drag){drag=null;
+G.addEventListener("pointerup",()=>{if(previewTool?.active){finishPreviewTool();return}if(drag){drag=null;
   $$(".zoneguide").forEach(z=>z.style.display="none");afterMutate();}});
+G.addEventListener("pointercancel",()=>{if(previewTool?.active){previewTool.active=false;S.undo.pop();drawOverlay()}});
 G.addEventListener("touchmove",e=>{ // pinch to scale selected
   if(e.touches.length===2&&S.sel){e.preventDefault();
     const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
@@ -504,17 +724,26 @@ G.addEventListener("touchend",()=>{if(pinch){pinch=null;afterMutate()}});
 $("#selbox").addEventListener("pointerdown",e=>{ // corner handle uniform scale
   if(!e.target.classList.contains("handle"))return;e.stopPropagation();
   const i=S.state.instances.find(x=>x.id===S.sel);snapshot();
-  const start={x:e.clientX,base:i.scale};
-  const mv=ev=>{i.scale=Math.min(3,Math.max(0.2,start.base+(ev.clientX-start.x)/150));drawOverlay()};
+  const layout=layoutOverlay(),box=instanceNormBounds(i);
+  const centerX=layout.stageLeft+layout.left+(box.x+box.w/2)*layout.displayW;
+  const centerY=layout.stageTop+layout.top+(box.y+box.h/2)*layout.displayH;
+  const start={distance:Math.max(8,Math.hypot(e.clientX-centerX,e.clientY-centerY)),base:i.scale};
+  const rect=i.template==="punch-in"&&i.fields.rect?structuredClone(i.fields.rect):null;
+  e.target.setPointerCapture?.(e.pointerId);
+  const mv=ev=>{const factor=Math.max(.1,Math.hypot(ev.clientX-centerX,ev.clientY-centerY)/start.distance);
+    if(rect){const cx=rect.x+rect.w/2,cy=rect.y+rect.h/2;
+      const w=Math.max(.05,Math.min(1,rect.w*factor)),h=Math.max(.05,Math.min(1,rect.h*factor));
+      i.fields.rect={x:Math.max(0,Math.min(1-w,cx-w/2)),y:Math.max(0,Math.min(1-h,cy-h/2)),w,h};
+    }else i.scale=Math.min(10,Math.max(0.05,start.base*factor));drawOverlay()};
   const up=()=>{removeEventListener("pointermove",mv);removeEventListener("pointerup",up);afterMutate()};
   addEventListener("pointermove",mv);addEventListener("pointerup",up);
 });
-function positionGuides(){const r=vid.getBoundingClientRect(),s=$("#stage").getBoundingClientRect();
+function positionGuides(){const r=layoutOverlay();if(!r)return;
   const g1=$('[data-z="فوق_الراس"]'),g2=$('[data-z="lower_third"]');
-  g1.style.left=(r.left-s.left+r.width*0.25)+"px";g1.style.top=(r.top-s.top+r.height*0.06)+"px";
-  g1.style.width=r.width*0.5+"px";g1.style.height=r.height*0.22+"px";
-  g2.style.left=(r.left-s.left+r.width*0.1)+"px";g2.style.top=(r.top-s.top+r.height*0.72)+"px";
-  g2.style.width=r.width*0.8+"px";g2.style.height=r.height*0.2+"px";}
+  g1.style.left=(r.left+r.displayW*0.25)+"px";g1.style.top=(r.top+r.displayH*0.06)+"px";
+  g1.style.width=r.displayW*0.5+"px";g1.style.height=r.displayH*0.22+"px";
+  g2.style.left=(r.left+r.displayW*0.1)+"px";g2.style.top=(r.top+r.displayH*0.72)+"px";
+  g2.style.width=r.displayW*0.8+"px";g2.style.height=r.displayH*0.2+"px";}
 
 /* playback: timeline time ↔ source time through cuts */
 function tl2src(t){let acc=0;for(const c of S.state.cuts){const L=c.src_out-c.src_in;
@@ -523,176 +752,435 @@ function src2tl(s){let acc=0;for(const c of S.state.cuts){
   if(s<c.src_in)return acc; if(s<c.src_out)return acc+(s-c.src_in);
   acc+=c.src_out-c.src_in}return acc}
 function tlDuration(){return S.state.cuts.reduce((a,c)=>a+c.src_out-c.src_in,0)||S.state.source_info.duration||0}
-function seek(t){S.t=Math.max(0,Math.min(tlDuration(),t));
-  const f=1/S.fps;S.t=Math.round(S.t/f)*f;                  // frame-snap
+function frameDuration(){return 1/Math.max(1,S.fps||30)}
+function frameSnap(t){const f=frameDuration();return Math.round(Math.max(0,t)/f)*f}
+function frameFloor(t){const f=frameDuration();return Math.floor(Math.max(0,t)/f+1e-7)*f}
+function seek(t){const next=Math.min(tlDuration(),frameSnap(t));
+  if(next<S.t-.2)SFX_AUDIO.fired.clear();
+  S.t=next;SFX_AUDIO.lastTime=next;S.lastPlaybackFrame=-1;
   if(S.state.source&&vid.readyState)vid.currentTime=tl2src(S.t);
   $("#tc").textContent=fmt(S.t);drawOverlay();drawTimeline();}
-function fmt(t){return `${(t/60)|0}:${String((t%60)|0).padStart(2,"0")}.${String(((t%1)*100)|0).padStart(2,"0")}`}
+function fmt(t){
+  const fps=Math.max(1,Math.round(S.fps||30));
+  const frames=Math.max(0,Math.round(t*(S.fps||30)));
+  const ff=frames%fps,totalSeconds=Math.floor(frames/fps);
+  const ss=totalSeconds%60,mm=Math.floor(totalSeconds/60)%60,hh=Math.floor(totalSeconds/3600);
+  return `${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")}:${String(ss).padStart(2,"0")}:${String(ff).padStart(2,"0")}`;
+}
+function fmtCompact(t){
+  const minutes=Math.floor(t/60),seconds=Math.floor(t%60);
+  return `${minutes}:${String(seconds).padStart(2,"0")}`;
+}
 function tick(){if(S.playing){
   S.t=src2tl(vid.currentTime);
   // jump over deleted regions
   const s=vid.currentTime;let inside=S.state.cuts.some(c=>s>=c.src_in-0.02&&s<=c.src_out+0.02);
   if(!inside){const nxt=S.state.cuts.find(c=>c.src_in>s);
     if(nxt)vid.currentTime=nxt.src_in;else{vid.pause();S.playing=false;$("#play").textContent="▶"}}
-  $("#tc").textContent=fmt(S.t);drawOverlay();drawTimeline();
+  const frame=Math.round(S.t*Math.max(1,S.fps||30));
+  if(frame!==S.lastPlaybackFrame){
+    S.lastPlaybackFrame=frame;$("#tc").textContent=fmt(S.t);drawOverlay();drawTimeline();
+  }
   playSFX();}
   requestAnimationFrame(tick)}
 $("#play").onclick=()=>{if(!S.state?.source){toast("Import source footage first");return}
   S.playing=!S.playing;$("#play").textContent=S.playing?"⏸":"▶";
-  if(S.playing)vid.play().catch(e=>{S.playing=false;$("#play").textContent="▶";toast(e.message)});
+  if(S.playing){ensureSfxAudio();preloadSfx();
+    vid.play().catch(e=>{S.playing=false;$("#play").textContent="▶";toast(e.message)})}
   else vid.pause()};
-/* SFX in preview: fire pack sounds at their trigger offsets */
-const sfxFired=new Set();
-function playSFX(){for(const i of activeInstances(S.t)){
-  const sp=S.packs[i.template];if(!sp)continue;
-  for(const s of sp.sfx||[]){const at=i.start+(s.offset||0), key=i.id+s.file;
-    if(S.t>=at&&S.t<at+0.1&&!sfxFired.has(key)){sfxFired.add(key);
-      const a=new Audio(`/tpl/${sp._dir}/${s.file}`);a.volume=s.gain??0.8;a.play().catch(()=>{});
-      setTimeout(()=>sfxFired.delete(key),1500);}}}}
+$("#frameBack").onclick=()=>{vid.pause();S.playing=false;$("#play").textContent="▶";seek(S.t-frameDuration())};
+$("#frameForward").onclick=()=>{vid.pause();S.playing=false;$("#play").textContent="▶";seek(S.t+frameDuration())};
+/* SFX in preview: one decoded Web Audio buffer per organic pack sound. */
+const SFX_AUDIO={context:null,master:null,buffers:new Map(),fired:new Set(),lastTime:0};
+function sfxEventsForInstance(item,spec){
+  const events=[];
+  for(const sound of spec?.sfx||[]){
+    const repeated=sound.repeat_field&&Array.isArray(item.fields?.[sound.repeat_field])
+      ?item.fields[sound.repeat_field].length:1;
+    const count=Math.max(1,repeated);
+    const base=sound.offset_ratio!=null?item.duration*sound.offset_ratio:(sound.offset||0);
+    const spread=sound.spread_ratio!=null?item.duration*sound.spread_ratio:0;
+    for(let index=0;index<count;index++){
+      const relative=base+(count>1
+        ?(spread?spread*index/Math.max(1,count-1):(sound.repeat_spacing||0)*index):0);
+      if(relative<=item.duration)events.push({time:item.start+relative,file:sound.file,
+        gain:sound.gain??.5,index,dir:spec._dir});
+    }
+  }
+  return events;
+}
+async function ensureSfxAudio(){
+  if(!SFX_AUDIO.context){
+    const AudioContextClass=window.AudioContext||window.webkitAudioContext;
+    if(!AudioContextClass)return null;
+    SFX_AUDIO.context=new AudioContextClass();
+    SFX_AUDIO.master=SFX_AUDIO.context.createGain();
+    SFX_AUDIO.master.connect(SFX_AUDIO.context.destination);
+  }
+  if(SFX_AUDIO.context.state==="suspended")await SFX_AUDIO.context.resume().catch(()=>{});
+  applyMonitorGain();
+  return SFX_AUDIO.context;
+}
+function sfxBuffer(url){
+  if(SFX_AUDIO.buffers.has(url))return SFX_AUDIO.buffers.get(url);
+  const pending=(async()=>{
+    const context=await ensureSfxAudio();if(!context)return null;
+    const response=await fetch(url);if(!response.ok)throw new Error(`Could not load ${url}`);
+    return context.decodeAudioData(await response.arrayBuffer());
+  })().catch(error=>{console.warn(error);return null});
+  SFX_AUDIO.buffers.set(url,pending);return pending;
+}
+function preloadSfx(){
+  for(const spec of Object.values(S.packs))for(const sound of spec.sfx||[])
+    sfxBuffer(`/tpl/${encodeURIComponent(spec._dir)}/${encodeURIComponent(sound.file)}`);
+}
+async function fireSfx(event){
+  const context=await ensureSfxAudio();if(!context||!SFX_AUDIO.master)return;
+  const url=`/tpl/${encodeURIComponent(event.dir)}/${encodeURIComponent(event.file)}`;
+  const buffer=await sfxBuffer(url);if(!buffer||!S.playing)return;
+  const source=context.createBufferSource(),gain=context.createGain();
+  source.buffer=buffer;gain.gain.value=Math.max(0,Math.min(1.5,event.gain));
+  source.connect(gain);gain.connect(SFX_AUDIO.master);source.start();
+}
+function playSFX(){
+  const previous=SFX_AUDIO.lastTime;
+  if(S.t<previous-.2)SFX_AUDIO.fired.clear();
+  SFX_AUDIO.lastTime=S.t;
+  const tolerance=Math.max(.12,frameDuration()*3);
+  for(const item of activeInstances(S.t)){
+    const spec=S.packs[item.template];if(!spec)continue;
+    for(const event of sfxEventsForInstance(item,spec)){
+      const key=`${item.id}:${event.file}:${event.index}`;
+      const crossed=S.t>=previous&&event.time>previous-.001&&event.time<=S.t+tolerance;
+      const justStarted=S.t>=event.time&&S.t<event.time+tolerance;
+      if((crossed||justStarted)&&!SFX_AUDIO.fired.has(key)){
+        SFX_AUDIO.fired.add(key);fireSfx(event);
+      }
+    }
+  }
+}
+function applyMonitorGain(){
+  const gain=S.monitorMuted?0:S.monitorGain;
+  vid.volume=Math.max(0,Math.min(1,gain));
+  if(SFX_AUDIO.master)SFX_AUDIO.master.gain.value=gain;
+  $("#monitorVolume").value=String(S.monitorGain);
+  $("#monitorMute").textContent=S.monitorMuted||S.monitorGain===0?"🔇":"🔊";
+  $("#monitorMute").setAttribute("aria-pressed",String(S.monitorMuted));
+  syncOverlayVideos(S.t);
+}
+$("#monitorVolume").oninput=event=>{
+  S.monitorGain=Math.max(0,Math.min(1,+event.target.value));S.monitorMuted=false;
+  localStorage.setItem(MONITOR_KEY,String(S.monitorGain));applyMonitorGain();
+};
+$("#monitorMute").onclick=()=>{S.monitorMuted=!S.monitorMuted;applyMonitorGain()};
+applyMonitorGain();
 
 /* ============================================= [F] timeline (canvas) */
 const tl=$("#tl"),tctx=tl.getContext("2d");
-const TRACK_H=34, RULER=22, LABEL=64;
-function trackY(n){return RULER+ n*TRACK_H}                 // 0=video,1..N overlays, then captions, sfx
-function overlayTrackCount(){return Math.max(2,...(S.state?.instances||[]).map(i=>i.track+1))}
-function drawTimeline(){if(!S.state)return;
-  const dpr=devicePixelRatio||1,r=$("#timeline").getBoundingClientRect();
-  tl.width=r.width*dpr;tl.height=r.height*dpr;tctx.setTransform(dpr,0,0,dpr,0,0);
-  tctx.clearRect(0,0,r.width,r.height);
-  const px=t=>LABEL+(t-S.scroll)*S.zoom;
-  // ruler
-  tctx.fillStyle="#9a988f";tctx.font="10px Inter";
-  const step=S.zoom>80?1:S.zoom>25?5:15;
-  for(let t=Math.ceil(S.scroll/step)*step;px(t)<r.width;t+=step){
-    tctx.fillText(fmt(t).slice(0,-3),px(t)+3,14);
-    tctx.fillStyle="#2c2d33";tctx.fillRect(px(t),RULER,1,r.height);tctx.fillStyle="#9a988f";}
-  const rows=[["video",0],["overlays",null],["captions",overlayTrackCount()+1],["sfx",overlayTrackCount()+2]];
-  // track 0: source with waveform
-  const dur=tlDuration();
-  tctx.fillStyle="#1d2b33";tctx.fillRect(px(0),trackY(0)+2,dur*S.zoom,TRACK_H-4);
-  {let at=0;S.state.cuts.forEach((cut,index)=>{const length=cut.src_out-cut.src_in,x=px(at),w=length*S.zoom;
-    tctx.fillStyle=index%2?"#20313a":"#1d2b33";tctx.fillRect(x,trackY(0)+2,w,TRACK_H-4);
-    if(S.sel===`cut:${index}`){tctx.strokeStyle="#fff";tctx.lineWidth=2;tctx.strokeRect(x+1,trackY(0)+3,Math.max(1,w-2),TRACK_H-6)}
-    at+=length})}
-  if(S.peaks.length){tctx.fillStyle="#4ECDC466";
-    const totalSrc=S.state.source_info.duration;
-    for(let x=Math.max(LABEL,px(0));x<Math.min(r.width,px(dur));x++){
-      const t=S.scroll+(x-LABEL)/S.zoom;const srcT=tl2src(t);
-      const p=S.peaks[Math.min(S.peaks.length-1,(srcT/totalSrc*S.peaks.length)|0)]||0;
-      tctx.fillRect(x,trackY(0)+TRACK_H/2-p*14,1,p*28||1);}}
-  // cut boundaries
-  {let acc=0;tctx.fillStyle="#ffffff44";
-   S.state.cuts.forEach(c=>{acc+=c.src_out-c.src_in;tctx.fillRect(px(acc),trackY(0),2,TRACK_H)})}
-  // overlay instance blocks
-  for(const i of S.state.instances){
-    const y=trackY(i.track)+2,x=px(i.start),w=i.duration*S.zoom;
-    tctx.globalAlpha=i.missing?0.45:1;
-    tctx.fillStyle=cc(i.template);tctx.beginPath();tctx.roundRect(x,y,w,TRACK_H-4,5);tctx.fill();
-    tctx.globalAlpha=1;
-    if(i.id===S.sel){tctx.strokeStyle="#fff";tctx.lineWidth=2;tctx.stroke();}
-    tctx.fillStyle="#111";tctx.font="600 11px Inter";
-    const lbl=(i.review?"⚠️ ":"")+(i.missing?"◌ ":"")+(i.fields.text||i.template);
-    tctx.fillText(lbl.slice(0,Math.max(1,w/7)),x+6,y+19);}
-  // captions track
-  const cy=trackY(overlayTrackCount()+1)+2;
-  for(const b of S.state.captions){const x=px(b.start),w=(b.end-b.start)*S.zoom;
-    tctx.fillStyle=b.id===S.sel?"#fff":"#F2F2F2cc";
-    tctx.beginPath();tctx.roundRect(x,cy,Math.max(2,w),TRACK_H-4,4);tctx.fill();
-    tctx.fillStyle="#111";tctx.font="10px Inter";tctx.fillText(b.text.slice(0,w/6),x+4,cy+18);}
-  // sfx track (auto, read-mostly)
-  const sy=trackY(overlayTrackCount()+2)+2;
-  for(const i of S.state.instances){const sp=S.packs[i.template];
-    for(const s of (sp?.sfx||[])){const x=px(i.start+(s.offset||0));
-      tctx.fillStyle=cc("sfx");tctx.beginPath();tctx.roundRect(x,sy,14,TRACK_H-8,4);tctx.fill();}}
-  // labels + playhead
-  tctx.fillStyle="#111214";tctx.fillRect(0,RULER,LABEL,r.height);
-  tctx.fillStyle="#9a988f";tctx.font="10px Inter";
-  tctx.fillText("VIDEO",6,trackY(0)+20);
-  for(let k=1;k<=overlayTrackCount();k++)tctx.fillText("OV "+k,6,trackY(k)+20);
-  tctx.fillText("CAPT",6,cy+16);tctx.fillText("SFX",6,sy+16);
-  tctx.fillStyle="#fff";tctx.fillRect(px(S.t),0,2,r.height);
+const TRACK_H=42,RULER=30,LABEL=96;
+const timelineRect=()=>$("#timelineViewport").getBoundingClientRect();
+const px=t=>LABEL+(t-S.scroll)*S.zoom;
+function overlayTrackCount(){return Math.max(2,...(S.state?.instances||[]).map(i=>i.track))}
+function trackY(n){return RULER+n*TRACK_H-S.trackScroll}
+function lastTrackIndex(){return overlayTrackCount()+2}
+function maxTimelineScroll(){
+  const r=timelineRect(),visible=Math.max(0,(r.width-LABEL-18)/S.zoom);
+  return Math.max(0,tlDuration()-visible+Math.min(1,visible*.08));
 }
-/* timeline gestures: scrub ruler, drag/trim blocks, pinch/ctrl+wheel zoom */
+function clampTimelineView(){
+  S.scroll=Math.min(maxTimelineScroll(),Math.max(0,S.scroll));
+  const maxY=Math.max(0,RULER+(lastTrackIndex()+1)*TRACK_H-timelineRect().height);
+  S.trackScroll=Math.min(maxY,Math.max(0,S.trackScroll));
+}
+function zoomSliderValue(){
+  return Math.round(Math.log(S.zoom/MIN_ZOOM)/Math.log(MAX_ZOOM/MIN_ZOOM)*1000);
+}
+function zoomFromSlider(value){
+  return MIN_ZOOM*Math.pow(MAX_ZOOM/MIN_ZOOM,Math.max(0,Math.min(1000,value))/1000);
+}
+function updateTimelineControls(){
+  $("#timelineZoom").value=zoomSliderValue();
+  const framePx=S.zoom*frameDuration(),visible=(timelineRect().width-LABEL)/S.zoom;
+  $("#zoomReadout").textContent=framePx>=1
+    ?`${framePx.toFixed(framePx>=10?0:1)} px/frame`
+    :`${visible.toFixed(visible<10?1:0)}s visible`;
+  $("#snapToggle").setAttribute("aria-pressed",String(S.snapEnabled));
+  $("#rippleToggle").setAttribute("aria-pressed",String(S.state?.ripple!==false));
+}
+function setTimelineZoom(value,anchorX=LABEL+(timelineRect().width-LABEL)/2){
+  const old=S.zoom,anchorTime=S.scroll+Math.max(0,anchorX-LABEL)/old;
+  S.zoom=Math.min(MAX_ZOOM,Math.max(MIN_ZOOM,value));
+  S.scroll=anchorTime-Math.max(0,anchorX-LABEL)/S.zoom;
+  clampTimelineView();updateTimelineControls();drawTimeline();
+}
+function fitTimeline(){
+  const width=Math.max(100,timelineRect().width-LABEL-24),duration=Math.max(frameDuration(),tlDuration());
+  S.scroll=0;S.zoom=Math.min(MAX_ZOOM,Math.max(MIN_ZOOM,width/duration));
+  clampTimelineView();updateTimelineControls();drawTimeline();
+}
+function rulerSteps(){
+  const frame=frameDuration(),framePx=frame*S.zoom;
+  if(framePx>=5){
+    const majorFrames=framePx>=60?1:framePx>=14?5:Math.max(1,Math.round(S.fps||30));
+    return{minor:frame,major:majorFrames*frame,frames:true};
+  }
+  const steps=[frame,frame*2,frame*5,.1,.2,.5,1,2,5,10,15,30,60,120,300,600];
+  return{
+    minor:steps.find(step=>step*S.zoom>=8)||600,
+    major:steps.find(step=>step*S.zoom>=72)||600,
+    frames:false
+  };
+}
+function drawTimeline(){if(!S.state)return;
+  const dpr=devicePixelRatio||1,r=timelineRect();clampTimelineView();
+  const backingWidth=Math.max(1,Math.round(r.width*dpr));
+  const backingHeight=Math.max(1,Math.round(r.height*dpr));
+  if(tl.width!==backingWidth)tl.width=backingWidth;
+  if(tl.height!==backingHeight)tl.height=backingHeight;
+  tctx.setTransform(dpr,0,0,dpr,0,0);tctx.clearRect(0,0,r.width,r.height);
+  tctx.fillStyle="#17181c";tctx.fillRect(0,0,r.width,r.height);
+  const duration=tlDuration(),last=lastTrackIndex();
+  for(let row=0;row<=last;row++){
+    const y=trackY(row);if(y>r.height||y+TRACK_H<RULER)continue;
+    tctx.fillStyle=row%2?"#1a1b20":"#18191d";tctx.fillRect(LABEL,y,r.width-LABEL,TRACK_H);
+    tctx.fillStyle="#292a30";tctx.fillRect(LABEL,y+TRACK_H-1,r.width-LABEL,1);
+  }
+  const steps=rulerSteps(),first=Math.floor(S.scroll/steps.minor)*steps.minor;
+  tctx.textBaseline="top";tctx.font="10px Inter";
+  for(let time=Math.max(0,first);px(time)<r.width+1;time+=steps.minor){
+    const x=px(time);if(x<LABEL-1)continue;
+    const major=Math.abs(time/steps.major-Math.round(time/steps.major))<1e-5;
+    tctx.fillStyle=major?"#4a4c55":"#303138";
+    tctx.fillRect(Math.round(x),major?0:RULER-8,1,r.height-(major?0:RULER-8));
+    if(major){
+      tctx.fillStyle="#aaa9a2";
+      tctx.fillText(steps.frames?fmt(time):fmtCompact(time),x+4,5);
+    }
+  }
+  // Source track and waveform.
+  const videoY=trackY(0),sourceStart=px(0);
+  tctx.fillStyle="#1d3038";tctx.fillRect(sourceStart,videoY+3,duration*S.zoom,TRACK_H-6);
+  let timelineAt=0;
+  S.state.cuts.forEach((cut,index)=>{
+    const length=cut.src_out-cut.src_in,x=px(timelineAt),w=Math.max(1,length*S.zoom);
+    tctx.fillStyle=index%2?"#24404a":"#203842";tctx.fillRect(x,videoY+3,w,TRACK_H-6);
+    if(S.sel===`cut:${index}`){tctx.strokeStyle="#fff";tctx.lineWidth=2;
+      tctx.strokeRect(x+1,videoY+4,Math.max(1,w-2),TRACK_H-8)}
+    tctx.fillStyle="#ffffff55";tctx.fillRect(x,videoY+3,1,TRACK_H-6);timelineAt+=length;
+  });
+  if(S.peaks.length&&videoY+TRACK_H>RULER&&videoY<r.height){
+    const totalSrc=Math.max(.001,S.state.source_info.duration),middle=videoY+TRACK_H/2;
+    tctx.fillStyle="#4ECDC488";
+    for(let x=Math.max(LABEL,Math.floor(px(0)));x<Math.min(r.width,Math.ceil(px(duration)));x++){
+      const time=S.scroll+(x-LABEL)/S.zoom,sourceTime=tl2src(time);
+      const peak=S.peaks[Math.min(S.peaks.length-1,Math.floor(sourceTime/totalSrc*S.peaks.length))]||0;
+      tctx.fillRect(x,middle-peak*(TRACK_H*.38),1,Math.max(1,peak*TRACK_H*.76));
+    }
+  }
+  // Overlay blocks with explicit trim handles and missing-asset treatment.
+  for(const item of S.state.instances){
+    const y=trackY(item.track)+4,x=px(item.start),w=Math.max(2,item.duration*S.zoom),h=TRACK_H-8;
+    if(x>r.width||x+w<LABEL||y>r.height||y+h<RULER)continue;
+    tctx.save();tctx.globalAlpha=item.missing ? .58 : 1;tctx.fillStyle=cc(item.template);
+    tctx.beginPath();tctx.roundRect(x,y,w,h,6);tctx.fill();tctx.restore();
+    if(item.missing){
+      tctx.save();tctx.beginPath();tctx.roundRect(x,y,w,h,6);tctx.clip();
+      tctx.strokeStyle="#1118";tctx.lineWidth=3;
+      for(let hatch=x-h;hatch<x+w+h;hatch+=11){tctx.beginPath();tctx.moveTo(hatch,y+h);tctx.lineTo(hatch+h,y);tctx.stroke()}
+      tctx.restore();
+    }
+    if(item.id===S.sel){tctx.strokeStyle="#fff";tctx.lineWidth=2;tctx.strokeRect(x+1,y+1,Math.max(1,w-2),h-2);
+      tctx.fillStyle="#fff";tctx.fillRect(x-2,y+7,4,h-14);tctx.fillRect(x+w-2,y+7,4,h-14)}
+    tctx.fillStyle="#101115";tctx.font="600 11px Inter";tctx.textBaseline="middle";
+    const label=(item.review?"⚠ ":"")+(item.missing?"MISSING · ":"")+(item.fields.text||S.packs[item.template]?.display_name||item.template);
+    tctx.save();tctx.beginPath();tctx.rect(x+5,y,Math.max(1,w-10),h);tctx.clip();tctx.fillText(label,x+7,y+h/2);tctx.restore();
+  }
+  // Captions and derived SFX rows.
+  const captionTrack=overlayTrackCount()+1,captionY=trackY(captionTrack)+4;
+  for(const block of S.state.captions){
+    const x=px(block.start),w=Math.max(2,(block.end-block.start)*S.zoom),h=TRACK_H-8;
+    if(x>r.width||x+w<LABEL)continue;
+    tctx.fillStyle=block.id===S.sel?"#fff":"#F2F2F2dd";tctx.beginPath();tctx.roundRect(x,captionY,w,h,5);tctx.fill();
+    tctx.fillStyle="#111";tctx.font="10px Inter";tctx.textBaseline="middle";
+    tctx.save();tctx.beginPath();tctx.rect(x+4,captionY,Math.max(1,w-8),h);tctx.clip();tctx.fillText(block.text,x+6,captionY+h/2);tctx.restore();
+  }
+  const sfxTrack=overlayTrackCount()+2,sfxY=trackY(sfxTrack)+7;
+  for(const item of S.state.instances){const spec=S.packs[item.template];
+    for(const sound of sfxEventsForInstance(item,spec)){const x=px(sound.time);
+      if(x<LABEL||x>r.width)continue;tctx.fillStyle=cc("sfx");
+      tctx.beginPath();tctx.roundRect(x-3,sfxY,8,TRACK_H-14,4);tctx.fill();}}
+  // Fixed track headers.
+  tctx.fillStyle="#111216ee";tctx.fillRect(0,0,LABEL,r.height);
+  tctx.fillStyle="#aaa9a2";tctx.font="600 10px Inter";tctx.textBaseline="middle";
+  const label=(text,row)=>{const y=trackY(row)+TRACK_H/2;if(y>=RULER&&y<r.height)tctx.fillText(text,10,y)};
+  label("SOURCE",0);for(let track=1;track<=overlayTrackCount();track++)label(`OVERLAY ${track}`,track);
+  label("CAPTIONS",captionTrack);label("SFX",sfxTrack);
+  tctx.fillStyle="#2c2d33";tctx.fillRect(LABEL-1,0,1,r.height);
+  // Playhead and frame-accurate time badge.
+  const playX=px(S.t);
+  if(playX>=LABEL&&playX<=r.width){
+    tctx.fillStyle="#fff";tctx.fillRect(playX-1,0,2,r.height);
+    tctx.beginPath();tctx.moveTo(playX-6,0);tctx.lineTo(playX+6,0);tctx.lineTo(playX,8);tctx.closePath();tctx.fill();
+  }
+  updateTimelineControls();
+}
+/* Timeline gestures: scrub, move across tracks, trim, magnetic/frame snap, and deep zoom. */
 let tlDrag=null,tlPinch=null;
-function tlHit(x,y){const t=S.scroll+(x-LABEL)/S.zoom;
+function tlHit(x,y){const time=S.scroll+(x-LABEL)/S.zoom;
   if(y>=trackY(0)&&y<trackY(0)+TRACK_H){
     let at=0;
     for(let index=0;index<S.state.cuts.length;index++){const cut=S.state.cuts[index],length=cut.src_out-cut.src_in;
-      if(t>=at&&t<=at+length)return{kind:"cut",cut,index,t};at+=length}
+      if(time>=at&&time<=at+length)return{kind:"cut",cut,index,t:time};at+=length}
   }
-  for(const i of S.state.instances){
-    if(y>=trackY(i.track)&&y<trackY(i.track)+TRACK_H){
-      const bx=LABEL+(i.start-S.scroll)*S.zoom,bw=i.duration*S.zoom;
-      if(x>=bx-8&&x<=bx+8)return{kind:"trimL",i};
-      if(x>=bx+bw-8&&x<=bx+bw+8)return{kind:"trimR",i};
-      if(x>=bx&&x<=bx+bw)return{kind:"move",i};}}
-  const cy=trackY(overlayTrackCount()+1);
-  if(y>=cy&&y<cy+TRACK_H)for(const b of S.state.captions){
-    const bx=LABEL+(b.start-S.scroll)*S.zoom,bw=(b.end-b.start)*S.zoom;
-    if(x>=bx-6&&x<=bx+6)return{kind:"capL",b};
-    if(x>=bx+bw-6&&x<=bx+bw+6)return{kind:"capR",b};
-    if(x>=bx&&x<=bx+bw)return{kind:"cap",b};}
-  return{kind:y<RULER?"scrub":"none",t};}
-function snap(t){let cutAt=0;const cutEdges=[0];for(const cut of S.state.cuts){cutAt+=cut.src_out-cut.src_in;cutEdges.push(cutAt)}
-  const cand=[S.t,...cutEdges,...S.state.instances.flatMap(i=>[i.start,i.start+i.duration]),
-    ...S.state.captions.flatMap(c=>[c.start,c.end])];
-  for(const c of cand)if(Math.abs(t-c)<6/S.zoom&&Math.abs(t-c)>1e-6)return c;return t}
-tl.addEventListener("pointerdown",e=>{const r=tl.getBoundingClientRect();
-  const x=e.clientX-r.left,y=e.clientY-r.top,h=tlHit(x,y);
-  if(h.kind==="scrub"){seek(S.scroll+(x-LABEL)/S.zoom);tlDrag={kind:"scrub"}}
-  else if(h.i){S.sel=h.i.id;snapshot();tlDrag={...h,ox:x,start:h.i.start,dur:h.i.duration};renderInspector()}
-  else if(h.b){S.sel=h.b.id;snapshot();tlDrag={...h,ox:x,s:h.b.start,e2:h.b.end};renderInspector();
-    if(h.kind==="cap")selectTab("inspector")}
-  else if(h.kind==="cut"){S.sel=`cut:${h.index}`;seek(h.t);renderInspector();selectTab("inspector")}
-  else S.sel=null;
-  drawTimeline();drawOverlay();tl.setPointerCapture(e.pointerId);});
-tl.addEventListener("pointermove",e=>{if(!tlDrag)return;
-  const r=tl.getBoundingClientRect();const x=e.clientX-r.left;const dt=(x-tlDrag.ox)/S.zoom;
+  for(const item of [...S.state.instances].reverse()){
+    if(y>=trackY(item.track)&&y<trackY(item.track)+TRACK_H){
+      const left=px(item.start),width=item.duration*S.zoom,edge=Math.min(10,Math.max(5,width*.22));
+      if(x>=left-edge&&x<=left+edge)return{kind:"trimL",i:item};
+      if(x>=left+width-edge&&x<=left+width+edge)return{kind:"trimR",i:item};
+      if(x>=left&&x<=left+width)return{kind:"move",i:item};}}
+  const captionTrack=overlayTrackCount()+1;
+  if(y>=trackY(captionTrack)&&y<trackY(captionTrack)+TRACK_H)for(const block of S.state.captions){
+    const left=px(block.start),width=(block.end-block.start)*S.zoom,edge=Math.min(9,Math.max(5,width*.22));
+    if(x>=left-edge&&x<=left+edge)return{kind:"capL",b:block};
+    if(x>=left+width-edge&&x<=left+width+edge)return{kind:"capR",b:block};
+    if(x>=left&&x<=left+width)return{kind:"cap",b:block};}
+  return{kind:y<RULER?"scrub":"none",t:time};
+}
+function magneticSnap(time,ignoreId=null){
+  let result=frameSnap(time);
+  if(!S.snapEnabled)return result;
+  let cutAt=0;const candidates=[0,S.t];
+  for(const cut of S.state.cuts){cutAt+=cut.src_out-cut.src_in;candidates.push(cutAt)}
+  for(const item of S.state.instances)if(item.id!==ignoreId)candidates.push(item.start,item.start+item.duration);
+  for(const block of S.state.captions)if(block.id!==ignoreId)candidates.push(block.start,block.end);
+  const threshold=9/S.zoom;let bestDistance=threshold;
+  for(const candidate of candidates){const distance=Math.abs(time-candidate);
+    if(distance<bestDistance){result=frameSnap(candidate);bestDistance=distance}}
+  return Math.max(0,result);
+}
+tl.addEventListener("pointerdown",event=>{
+  const r=tl.getBoundingClientRect(),x=event.clientX-r.left,y=event.clientY-r.top,hit=tlHit(x,y);
+  if(hit.kind==="scrub"){seek(hit.t);tlDrag={kind:"scrub"}}
+  else if(hit.i){S.sel=hit.i.id;snapshot();
+    if(S.t<hit.i.start||S.t>=hit.i.start+hit.i.duration)
+      seek(hit.i.start+Math.min(Math.max(frameDuration(),.25),Math.max(frameDuration(),hit.i.duration-frameDuration())));
+    tlDrag={...hit,ox:x,start:hit.i.start,dur:hit.i.duration,track:hit.i.track};renderInspector();selectTab("inspector")}
+  else if(hit.b){S.sel=hit.b.id;snapshot();
+    if(S.t<hit.b.start||S.t>=hit.b.end)seek(hit.b.start);
+    tlDrag={...hit,ox:x,s:hit.b.start,e2:hit.b.end};renderInspector();selectTab("inspector")}
+  else if(hit.kind==="cut"){S.sel=`cut:${hit.index}`;seek(hit.t);renderInspector();selectTab("inspector")}
+  else{S.sel=null;if(x>=LABEL)seek(hit.t);renderInspector()}
+  drawTimeline();drawOverlay();tl.setPointerCapture(event.pointerId);
+});
+tl.addEventListener("pointermove",event=>{if(!tlDrag)return;
+  const r=tl.getBoundingClientRect(),x=event.clientX-r.left,y=event.clientY-r.top;
+  if(x>r.width-24){S.scroll+=Math.max(frameDuration(),(x-r.width+24)/S.zoom)}
+  if(x<LABEL+24){S.scroll-=Math.max(frameDuration(),(LABEL+24-x)/S.zoom)}
+  clampTimelineView();
+  const dt=(x-tlDrag.ox)/S.zoom,minimum=frameDuration();
   if(tlDrag.kind==="scrub")seek(S.scroll+(x-LABEL)/S.zoom);
-  else if(tlDrag.kind==="move")tlDrag.i.start=Math.max(0,snap(tlDrag.start+dt));
-  else if(tlDrag.kind==="trimL"){const ns=Math.max(0,Math.min(tlDrag.start+tlDrag.dur-.2,snap(tlDrag.start+dt)));
-    tlDrag.i.duration=tlDrag.dur+(tlDrag.start-ns);tlDrag.i.start=ns;}
-  else if(tlDrag.kind==="trimR")tlDrag.i.duration=Math.max(0.2,snap(tlDrag.start+tlDrag.dur+dt)-tlDrag.i.start);
-  else if(tlDrag.kind==="capL")tlDrag.b.start=Math.min(tlDrag.b.end-0.1,tlDrag.s+dt);
-  else if(tlDrag.kind==="capR")tlDrag.b.end=Math.max(tlDrag.b.start+0.1,tlDrag.e2+dt);
-  drawTimeline();drawOverlay();});
-tl.addEventListener("pointerup",()=>{if(tlDrag&&tlDrag.kind!=="scrub")afterMutate();tlDrag=null});
-tl.addEventListener("wheel",e=>{e.preventDefault();
-  if(e.ctrlKey){S.zoom=Math.min(400,Math.max(6,S.zoom*(e.deltaY<0?1.15:0.87)))}
-  else S.scroll=Math.max(0,S.scroll+e.deltaY/S.zoom);drawTimeline()},{passive:false});
-tl.addEventListener("touchmove",e=>{if(e.touches.length===2){e.preventDefault();
-  const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
-  if(!tlPinch)tlPinch={d,z:S.zoom};S.zoom=Math.min(400,Math.max(6,tlPinch.z*d/tlPinch.d));
-  drawTimeline()}},{passive:false});
+  else if(tlDrag.kind==="move"){
+    tlDrag.i.start=Math.min(Math.max(0,tlDuration()-tlDrag.i.duration),magneticSnap(tlDrag.start+dt,tlDrag.i.id));
+    const target=Math.round((y+S.trackScroll-RULER-TRACK_H/2)/TRACK_H);
+    tlDrag.i.track=Math.max(1,Math.min(64,target));
+  }else if(tlDrag.kind==="trimL"){
+    const end=tlDrag.start+tlDrag.dur,changed=Math.min(end-minimum,magneticSnap(tlDrag.start+dt,tlDrag.i.id));
+    tlDrag.i.start=Math.max(0,changed);tlDrag.i.duration=end-tlDrag.i.start;
+  }else if(tlDrag.kind==="trimR"){
+    const end=Math.min(tlDuration(),magneticSnap(tlDrag.start+tlDrag.dur+dt,tlDrag.i.id));
+    tlDrag.i.duration=Math.max(minimum,end-tlDrag.i.start);
+  }else if(tlDrag.kind==="capL"){
+    tlDrag.b.start=Math.max(0,Math.min(tlDrag.b.end-minimum,magneticSnap(tlDrag.s+dt,tlDrag.b.id)));
+  }else if(tlDrag.kind==="capR"){
+    tlDrag.b.end=Math.max(tlDrag.b.start+minimum,magneticSnap(tlDrag.e2+dt,tlDrag.b.id));
+  }
+  drawTimeline();drawOverlay();
+});
+function finishTimelineDrag(){if(tlDrag&&tlDrag.kind!=="scrub")afterMutate();tlDrag=null}
+tl.addEventListener("pointerup",finishTimelineDrag);
+tl.addEventListener("pointercancel",finishTimelineDrag);
+tl.addEventListener("wheel",event=>{event.preventDefault();const r=tl.getBoundingClientRect(),x=event.clientX-r.left;
+  if(event.ctrlKey||event.metaKey)setTimelineZoom(S.zoom*(event.deltaY<0?1.22:1/1.22),x);
+  else if(event.altKey){S.trackScroll+=event.deltaY;clampTimelineView();drawTimeline()}
+  else{const delta=Math.abs(event.deltaX)>Math.abs(event.deltaY)?event.deltaX:event.deltaY;
+    S.scroll+=delta/Math.max(10,S.zoom);clampTimelineView();drawTimeline()}},{passive:false});
+tl.addEventListener("touchmove",event=>{if(event.touches.length===2){event.preventDefault();
+  const a=event.touches[0],b=event.touches[1],distance=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+  const r=tl.getBoundingClientRect(),anchor=(a.clientX+b.clientX)/2-r.left;
+  if(!tlPinch)tlPinch={distance,zoom:S.zoom};setTimelineZoom(tlPinch.zoom*distance/tlPinch.distance,anchor);
+}},{passive:false});
 tl.addEventListener("touchend",()=>tlPinch=null);
-/* split at playhead: selected overlay block → two; nothing selected → cut track 0 */
-$("#splitBtn").onclick=()=>{snapshot();
-  const i=S.sel&&S.state.instances.find(x=>x.id===S.sel);
-  if(i&&S.t>i.start&&S.t<i.start+i.duration){
-    const b={...structuredClone(i),id:"i"+Date.now(),start:S.t,duration:i.start+i.duration-S.t};
-    i.duration=S.t-i.start;S.state.instances.push(b);
-  }else{ // split source video at playhead (non-ripple; delete = select segment? v1: split only + delete via double-tap)
-    const srcT=tl2src(S.t);
-    const idx=S.state.cuts.findIndex(c=>srcT>c.src_in&&srcT<c.src_out);
-    if(idx>=0){const c=S.state.cuts[idx];
-      S.state.cuts.splice(idx,1,{src_in:c.src_in,src_out:srcT},{src_in:srcT,src_out:c.src_out});
-      toast("Video split. Double-tap a segment on the video track to delete it.")}}
-  afterMutate()};
-tl.addEventListener("dblclick",e=>{const r=tl.getBoundingClientRect();
-  const x=e.clientX-r.left,y=e.clientY-r.top;
-  if(y>=trackY(0)&&y<trackY(0)+TRACK_H&&S.state.cuts.length>1){
-    const t=S.scroll+(x-LABEL)/S.zoom,srcT=tl2src(t);
-    const idx=S.state.cuts.findIndex(c=>srcT>=c.src_in&&srcT<=c.src_out);
-    if(idx>=0){snapshot();S.state.cuts.splice(idx,1);afterMutate();toast("Segment deleted")}}});
-/* drag & drop a file onto a missing block */
-$("#timeline").addEventListener("dragover",e=>e.preventDefault());
-$("#timeline").addEventListener("drop",async e=>{e.preventDefault();
-  const r=tl.getBoundingClientRect();const h=tlHit(e.clientX-r.left,e.clientY-r.top);
-  if(!h.i||!e.dataTransfer.files[0])return;
-  const fd=new FormData();fd.append("file",e.dataTransfer.files[0]);
+$("#zoomOut").onclick=()=>setTimelineZoom(S.zoom/1.35);
+$("#zoomIn").onclick=()=>setTimelineZoom(S.zoom*1.35);
+$("#zoomFit").onclick=fitTimeline;
+$("#timelineZoom").oninput=event=>setTimelineZoom(zoomFromSlider(+event.target.value));
+$("#snapToggle").onclick=()=>{S.snapEnabled=!S.snapEnabled;updateTimelineControls();drawTimeline()};
+$("#rippleToggle").onclick=()=>{snapshot();S.state.ripple=S.state.ripple===false;afterMutate()};
+function splitSourceAt(time){
+  const sourceTime=frameSnap(tl2src(time));
+  const index=S.state.cuts.findIndex(c=>sourceTime>c.src_in+frameDuration()/2&&sourceTime<c.src_out-frameDuration()/2);
+  if(index<0)return false;
+  const cut=S.state.cuts[index];S.state.cuts.splice(index,1,
+    {src_in:cut.src_in,src_out:sourceTime},{src_in:sourceTime,src_out:cut.src_out});
+  S.sel=`cut:${index}`;return true;
+}
+$("#splitBtn").onclick=()=>{
+  const item=S.sel&&S.state.instances.find(entry=>entry.id===S.sel);
+  if(item){
+    if(!(S.t>item.start&&S.t<item.start+item.duration)){toast("Move the playhead inside the selected block to split it");return}
+    snapshot();const oldEnd=item.start+item.duration;
+    const next={...structuredClone(item),id:uid("i"),start:S.t,duration:oldEnd-S.t};
+    item.duration=S.t-item.start;S.state.instances.push(next);S.sel=next.id;afterMutate();return;
+  }
+  const caption=S.sel&&S.state.captions.find(entry=>entry.id===S.sel);
+  if(caption){renderInspector();const button=$("#inspPane [data-action='split']");if(button){button.click();return}}
+  snapshot();if(splitSourceAt(S.t)){afterMutate();toast("Source split at "+fmt(S.t))}
+  else{S.undo.pop();toast("Move the playhead away from an existing cut")};
+};
+function cutTimelineRange(index){
+  let start=0;for(let i=0;i<index;i++)start+=S.state.cuts[i].src_out-S.state.cuts[i].src_in;
+  return{start,duration:S.state.cuts[index].src_out-S.state.cuts[index].src_in};
+}
+function rippleDeleteRange(start,duration){
+  if(S.state.ripple===false)return;
+  const end=start+duration,frame=frameDuration();
+  S.state.instances=S.state.instances.filter(item=>{
+    let a=item.start,b=item.start+item.duration;
+    if(b<=start)return true;if(a>=end){item.start=frameSnap(a-duration);return true}
+    if(a<start&&b>end)b-=duration;
+    else if(a<start)b=start;
+    else if(b>end){a=start;b-=duration}
+    else return false;
+    item.start=frameSnap(a);item.duration=Math.max(frame,frameSnap(b-a));return item.duration>=frame;
+  });
+  S.state.captions=S.state.captions.filter(block=>{
+    let a=block.start,b=block.end;
+    if(b<=start)return true;if(a>=end){block.start=frameSnap(a-duration);block.end=frameSnap(b-duration);return true}
+    if(a<start&&b>end)b-=duration;
+    else if(a<start)b=start;
+    else if(b>end){a=start;b-=duration}
+    else return false;
+    block.start=frameSnap(a);block.end=Math.max(block.start+frame,frameSnap(b));return block.end-block.start>=frame;
+  });
+}
+function deleteCut(index){
+  if(index<0||index>=S.state.cuts.length)return;
+  if(S.state.cuts.length<=1){toast("Keep at least one source segment");return}
+  snapshot();const range=cutTimelineRange(index);S.state.cuts.splice(index,1);
+  rippleDeleteRange(range.start,range.duration);S.sel=null;seek(Math.min(S.t,tlDuration()));afterMutate();
+  toast(S.state.ripple===false?"Segment deleted":"Segment ripple-deleted");
+}
+tl.addEventListener("dblclick",event=>{const r=tl.getBoundingClientRect();
+  const hit=tlHit(event.clientX-r.left,event.clientY-r.top);if(hit.kind==="cut")deleteCut(hit.index)});
+/* Drag and drop a file directly onto a missing template block. */
+$("#timelineViewport").addEventListener("dragover",event=>event.preventDefault());
+$("#timelineViewport").addEventListener("drop",async event=>{event.preventDefault();
+  const r=tl.getBoundingClientRect(),hit=tlHit(event.clientX-r.left,event.clientY-r.top);
+  if(!hit.i||!event.dataTransfer.files[0])return;
+  const fd=new FormData();fd.append("file",event.dataTransfer.files[0]);
   const uploaded=await api(`/api/projects/${S.project}/asset`,{method:"POST",body:fd});
-  snapshot();h.i.fields.asset=uploaded.file;h.i.missing=false;
-  afterMutate();toast("Asset filled")});
+  snapshot();hit.i.fields.asset=uploaded.file;hit.i.missing=false;afterMutate();toast("Asset filled");
+});
 
 /* ===================================== [G] panel: categories & fields */
 function renderCats(){const p=$("#catsPane");p.innerHTML="";
@@ -704,11 +1192,17 @@ function renderCats(){const p=$("#catsPane");p.innerHTML="";
     b.onclick=()=>placeInstance(id);p.append(b);}}
 function placeInstance(tid){if(!S.state.source){toast("Import source footage before placing templates");return}snapshot();
   const sp=S.packs[tid],z=(sp.zones||{})[S.state.orientation]||{};
-  let tr=1;const dur=sp.default_duration||3;
-  while(S.state.instances.some(o=>o.track===tr&&o.start<S.t+dur&&S.t<o.start+o.duration))tr++;
+  const start=Math.min(S.t,Math.max(0,tlDuration()-frameDuration()));
+  let tr=1;const dur=Math.max(frameDuration(),Math.min(sp.default_duration||3,tlDuration()-start));
+  while(S.state.instances.some(o=>o.track===tr&&o.start<start+dur&&start<o.start+o.duration))tr++;
   const needs=(sp.fields||[]).some(f=>f.type.startsWith("asset"));
-  const fields={};for(const field of sp.fields||[])if(field.type==="number")fields[field.name]=0.8;
-  const inst={id:"i-"+Date.now(),template:tid,track:tr,start:S.t,duration:dur,
+  const fields={};for(const field of sp.fields||[]){
+    if(Object.prototype.hasOwnProperty.call(field,"default"))fields[field.name]=structuredClone(field.default);
+    else if(field.type==="number")fields[field.name]=.8;
+    else if(field.type==="strokes")fields[field.name]=[];
+    else if(field.type==="text")fields[field.name]="";
+  }
+  const inst={id:uid("i"),template:tid,track:tr,start,duration:dur,
     x:z.x??0.5,y:z.y??0.3,scale:z.scale??1,fields,missing:needs,review:false};
   S.state.instances.push(inst);S.sel=inst.id;
   selectTab("inspector");afterMutate();}
@@ -719,59 +1213,93 @@ function renderInspector(){const p=$("#inspPane");
   if(S.sel?.startsWith("cut:")){renderCutInspector(p,+S.sel.split(":")[1]);return}
   if(!i){p.innerHTML='<p style="color:var(--tx2)">Select a block, caption, or source segment to edit it.</p>';return}
   const sp=S.packs[i.template]||{fields:[]};
-  p.innerHTML=`<h3 style="color:${cc(i.template)};margin-bottom:12px">
-    ${sp.display_name||i.template}${i.review?" ⚠️ review":""}</h3>`;
+  p.innerHTML="";
+  const title=document.createElement("h3");title.style.cssText=`color:${cc(i.template)};margin-bottom:4px`;
+  title.textContent=(sp.display_name||i.template)+(i.review?" · ⚠ review":"");p.append(title);
+  const meta=document.createElement("p");meta.style.cssText="color:var(--tx2);margin-bottom:14px";
+  meta.textContent=`Track ${i.track} · ${fmt(i.start)} · ${i.duration.toFixed(3)}s`;p.append(meta);
+  const timing=document.createElement("div");timing.className="fieldrow";timing.innerHTML=
+    `<label>Frame-accurate timing</label><div class="buttonrow">
+      <input data-common="start" type="number" min="0" step="${frameDuration()}" value="${i.start.toFixed(6)}" aria-label="Start time">
+      <input data-common="duration" type="number" min="${frameDuration()}" step="${frameDuration()}" value="${i.duration.toFixed(6)}" aria-label="Duration">
+    </div>`;
+  timing.querySelectorAll("input").forEach(input=>input.onchange=()=>{snapshot();
+    if(input.dataset.common==="start")i.start=Math.max(0,Math.min(tlDuration()-frameDuration(),frameSnap(+input.value)));
+    else i.duration=Math.max(frameDuration(),frameSnap(+input.value));
+    if(i.start+i.duration>tlDuration())i.duration=Math.max(frameDuration(),frameSnap(tlDuration()-i.start));
+    afterMutate()});p.append(timing);
+  const placement=document.createElement("div");placement.className="fieldrow";placement.innerHTML=
+    `<label>Placement</label><div class="buttonrow">
+      <input data-place="x" type="number" min="0" max="1" step=".01" value="${i.x.toFixed(3)}" aria-label="Horizontal position">
+      <input data-place="y" type="number" min="0" max="1" step=".01" value="${i.y.toFixed(3)}" aria-label="Vertical position">
+      <input data-place="scale" type="number" min=".05" max="10" step=".05" value="${i.scale.toFixed(3)}" aria-label="Scale">
+    </div>`;
+  placement.querySelectorAll("input").forEach(input=>input.onchange=()=>{snapshot();
+    const key=input.dataset.place,value=+input.value;
+    i[key]=key==="scale"?Math.max(.05,Math.min(10,value)):Math.max(0,Math.min(1,value));afterMutate()});p.append(placement);
   for(const f of sp.fields||[]){
     const row=document.createElement("div");row.className="fieldrow";
-    const lab=document.createElement("label");lab.textContent=f.name;row.append(lab);
+    const lab=document.createElement("label");lab.textContent=f.label||f.name;row.append(lab);
     if(f.type==="text"){const inp=document.createElement("input");let captured=false;
-      inp.value=i.fields.text||"";inp.onfocus=()=>{if(!captured){snapshot();captured=true}};
-      inp.oninput=()=>{i.fields.text=inp.value;drawOverlay();drawTimeline()};
+      inp.value=i.fields[f.name]||"";if(f.max_length)inp.maxLength=f.max_length;
+      inp.onfocus=()=>{if(!captured){snapshot();captured=true}};
+      inp.oninput=()=>{i.fields[f.name]=inp.value;drawOverlay();drawTimeline()};
       inp.onchange=()=>afterMutate();row.append(inp);}
     else if(f.type.startsWith("asset")){
       const pick=document.createElement("select");
       pick.innerHTML=`<option value="">${i.fields.asset?i.fields.asset:"Choose from project assets…"}</option>`;
+      const imageTypes=new Set(["png","jpg","jpeg","webp","gif"]);
+      if(i.template==="highlight"||i.template==="image-pop")imageTypes.add("pdf");
+      const videoTypes=new Set(["mp4","mov","mkv","webm","m4v","avi"]);
       api(`/api/projects/${S.project}/assets`).then(({files})=>{for(const file of files){
+        if(f.type==="asset:image"&&!imageTypes.has(file.type))continue;
+        if(f.type==="asset:video"&&!videoTypes.has(file.type))continue;
         const option=document.createElement("option");option.value=file.name;option.textContent=file.name;
         if(file.name===i.fields.asset)option.selected=true;pick.append(option)}}).catch(e=>toast(e.message));
       pick.onchange=()=>{if(!pick.value)return;snapshot();i.fields.asset=pick.value;i.missing=false;afterMutate()};
       const up=document.createElement("input");up.type="file";up.style.marginTop="8px";
+      up.accept=f.type==="asset:video"?"video/*":
+        (i.template==="highlight"||i.template==="image-pop")?"image/*,.pdf":"image/*";
       up.onchange=async()=>{const fd=new FormData();fd.append("file",up.files[0]);
         const uploaded=await api(`/api/projects/${S.project}/asset`,{method:"POST",body:fd});
         snapshot();i.fields.asset=uploaded.file;i.missing=false;afterMutate()};
       row.append(pick,up);}
-    else if(f.type==="strokes"){const btn=document.createElement("button");
-      btn.textContent=`Strokes (${(i.fields.strokes||[]).length}) — draw on preview`;
-      btn.style.width="100%";btn.onclick=()=>strokeMode(i);row.append(btn);}
+    else if(f.type==="strokes"){
+      const buttons=document.createElement("div");buttons.className="buttonrow";
+      const draw=document.createElement("button"),undoStroke=document.createElement("button");
+      const active=previewTool?.type==="stroke"&&previewTool.item===i;
+      draw.textContent=active?"Finish drawing":`Draw strokes (${(i.fields.strokes||[]).length})`;
+      draw.onclick=()=>active?stopPreviewTool():strokeMode(i);
+      undoStroke.textContent="Undo stroke";undoStroke.disabled=!(i.fields.strokes||[]).length;
+      undoStroke.onclick=()=>{snapshot();i.fields.strokes.pop();afterMutate()};buttons.append(draw,undoStroke);
+      const clear=document.createElement("button");clear.textContent="Clear strokes";clear.style.width="100%";clear.style.marginTop="8px";
+      clear.disabled=!(i.fields.strokes||[]).length;clear.onclick=()=>{snapshot();i.fields.strokes=[];afterMutate()};
+      row.append(buttons,clear);}
     else if(f.type==="rect"){const btn=document.createElement("button");
       btn.style.width="100%";btn.textContent=i.fields.rect?"Re-set zoom rect":"Set zoom rect on preview";
       btn.onclick=()=>rectMode(i);row.append(btn);}
-    else if(f.type==="number"){const inp=document.createElement("input");inp.type="range";
-      inp.min=0;inp.max=1;inp.step=0.05;inp.value=i.fields[f.name]??0.8;
-      inp.oninput=()=>{i.fields[f.name]=+inp.value};inp.onchange=()=>{snapshot();afterMutate()};row.append(inp);}
+    else if(f.type==="number"){
+      const min=f.min??0,max=f.max??1,step=f.step??.05,initial=i.fields[f.name]??f.default??.8;
+      const inp=document.createElement("input"),value=document.createElement("span");let captured=false;
+      inp.type=f.control==="integer"?"number":"range";inp.min=min;inp.max=max;inp.step=step;inp.value=initial;
+      value.className="pill";value.textContent=String(initial);value.style.marginTop="6px";
+      const capture=()=>{if(!captured){snapshot();captured=true}};
+      inp.onpointerdown=capture;inp.onfocus=capture;inp.oninput=()=>{i.fields[f.name]=+inp.value;value.textContent=inp.value;drawOverlay()};
+      inp.onchange=()=>afterMutate();row.append(inp,value);}
+    if(f.note){const note=document.createElement("small");note.className="catmeta";note.textContent=f.note;row.append(note)}
     p.append(row);}
-  const del=document.createElement("button");del.textContent="Delete block";del.style.width="100%";
+  const reset=document.createElement("button");reset.textContent="Reset placement";reset.style.width="100%";
+  reset.onclick=()=>{snapshot();const zone=sp.zones?.[S.state.orientation]||{};
+    i.x=zone.x??.5;i.y=zone.y??.3;i.scale=zone.scale??1;afterMutate()};p.append(reset);
+  if(i.review){const approve=document.createElement("button");approve.textContent="Mark reviewed";approve.style.cssText="width:100%;margin-top:8px";
+    approve.onclick=()=>{snapshot();i.review=false;afterMutate()};p.append(approve)}
+  const del=document.createElement("button");del.className="danger";del.textContent="Delete block";del.style.cssText="width:100%;margin-top:8px";
   del.onclick=()=>{snapshot();S.state.instances=S.state.instances.filter(x=>x.id!==i.id);
     S.sel=null;afterMutate()};p.append(del);}
 /* stroke editor: one drag = one ruler-straight 0° stroke on the framed image */
-function strokeMode(i){toast("Draw horizontal strokes on the image. Tap ✓ in panel when done.");
-  const onDown=e=>{const p=pt(e);const startX=p.x,y=p.y;
-    const mv=ev=>{};
-    const up=ev=>{const q=pt(ev);
-      // convert stage coords → image-local normalized (approx: relative to instance box)
-      const w=0.4*i.scale,h=0.5*i.scale;                     // matches highlight draw proportions
-      const x1=Math.min(startX,q.x),x2=Math.max(startX,q.x);
-      (i.fields.strokes??=[]).push({x1:(x1-(i.x-w/2))/w,x2:(x2-(i.x-w/2))/w,y:(y-(i.y-h/2))/h});
-      snapshot();afterMutate();
-      G.removeEventListener("pointerup",up);};
-    G.addEventListener("pointerup",up,{once:true});};
-  G.addEventListener("pointerdown",onDown,{once:true});}
-function rectMode(i){toast("Drag a rectangle on the video for the punch-in target.");
-  G.addEventListener("pointerdown",e=>{const a=pt(e);
-    G.addEventListener("pointerup",ev=>{const b=pt(ev);snapshot();
-      i.fields.rect={x:Math.min(a.x,b.x),y:Math.min(a.y,b.y),
-        w:Math.max(0.05,Math.abs(b.x-a.x)),h:Math.max(0.05,Math.abs(b.y-a.y))};
-      afterMutate()},{once:true});},{once:true});}
+function strokeMode(i){previewTool={type:"stroke",item:i,active:false};toast("Draw straight horizontal strokes on the page. Use Finish drawing when done.");renderInspector()}
+function rectMode(i){previewTool={type:"rect",item:i,active:false};toast("Drag a target rectangle on the source preview.");renderInspector()}
+function stopPreviewTool(){previewTool=null;drawOverlay();renderInspector()}
 /* tabs + phone bottom-sheet */
 function selectTab(t){$$("#tabs button").forEach(b=>b.classList.toggle("on",b.dataset.t===t));
   $$(".tabpane").forEach(p=>p.classList.toggle("on",p.dataset.t===t));
@@ -779,16 +1307,20 @@ function selectTab(t){$$("#tabs button").forEach(b=>b.classList.toggle("on",b.da
 $$("#tabs button").forEach(b=>b.onclick=()=>selectTab(b.dataset.t));
 $("#panelGrip").onclick=()=>$("#panel").classList.toggle("open");
 /* directives */
+function renderDirectiveReview(){
+  const rv=$("#dirReview");rv.innerHTML="";
+  if(S.state?.directives_review?.length){
+    const title=document.createElement("b");title.textContent="Needs review (unparsed):";rv.append(title);
+    S.state.directives_review.forEach(line=>{const item=document.createElement("div");
+      item.style.color="var(--c-punch)";item.textContent=line;rv.append(item)});
+  }
+}
 $("#dirApply").onclick=async()=>{
-  const before=S.state.instances.length;
   S.state=await api(`/api/projects/${S.project}/directives`,
     {method:"POST",body:JSON.stringify({text:$("#dirText").value})});afterMutate(false);
-  const rv=$("#dirReview");rv.innerHTML="";
-  if(S.state.directives_review.length){
-    rv.innerHTML="<b>Needs review (unparsed):</b>";
-    S.state.directives_review.forEach(l=>{const d=document.createElement("div");
-      d.style.color="var(--c-punch)";d.textContent=l;rv.append(d)});}
-  toast(`Placed ${S.state.instances.length-before} new blocks`)};
+  renderDirectiveReview();
+  const count=S.state.instances.filter(item=>item.fields?._directive_line).length;
+  toast(`Applied ${count} directive block${count===1?"":"s"}`)};
 
 /* ============================================== [H] captions/source editing */
 function renderCaptionInspector(panel,block){
@@ -803,18 +1335,30 @@ function renderCaptionInspector(panel,block){
     <button class="danger" data-action="delete" style="width:100%;margin-top:8px">Delete caption</button>`;
   const text=panel.querySelector("textarea");text.value=block.text;let captured=false;
   text.onfocus=()=>{if(!captured){snapshot();captured=true}};
-  text.oninput=()=>{block.text=text.value;drawOverlay();drawTimeline()};text.onchange=()=>afterMutate();
+  text.oninput=()=>{block.text=text.value;block.words=[];drawOverlay();drawTimeline()};text.onchange=()=>afterMutate();
   panel.querySelectorAll("[data-time]").forEach(input=>input.onchange=()=>{snapshot();
-    block[input.dataset.time]=+input.value;if(block.end<=block.start)block.end=block.start+1/S.fps;afterMutate()});
+    block[input.dataset.time]=frameSnap(+input.value);
+    if(block.end<=block.start)block.end=block.start+frameDuration();afterMutate()});
   panel.querySelector('[data-action="split"]').onclick=()=>{
-    const words=block.text.trim().split(/\s+/).filter(Boolean);
-    if(words.length<2){toast("A caption needs at least two words to split");return}
-    snapshot();
-    const mid=S.t>block.start&&S.t<block.end?S.t:(block.start+block.end)/2;
-    const ratio=(mid-block.start)/(block.end-block.start);
-    const at=Math.max(1,Math.min(words.length-1,Math.round(words.length*ratio)));
-    const next={id:"c-"+Date.now(),start:mid,end:block.end,text:words.slice(at).join(" "),words:[]};
-    block.end=mid;block.text=words.slice(0,at).join(" ");S.state.captions.splice(index+1,0,next);
+    const textWords=block.text.trim().split(/\s+/).filter(Boolean);
+    if(textWords.length<2){toast("A caption needs at least two words to split");return}
+    const requested=S.t>block.start&&S.t<block.end?S.t:frameSnap((block.start+block.end)/2);
+    let at=Math.max(1,Math.min(textWords.length-1,
+      Math.round(textWords.length*(requested-block.start)/(block.end-block.start))));
+    let splitTime=frameSnap(requested),leftWords=[],rightWords=[];
+    if((block.words||[]).length===textWords.length){
+      let best=Infinity;
+      for(let candidate=1;candidate<block.words.length;candidate++){
+        const time=block.words[candidate].s,distance=Math.abs(time-requested);
+        if(time>block.start&&time<block.end&&distance<best){best=distance;at=candidate;splitTime=frameSnap(time)}
+      }
+      leftWords=block.words.slice(0,at);rightWords=block.words.slice(at);
+    }
+    splitTime=Math.max(block.start+frameDuration(),Math.min(block.end-frameDuration(),splitTime));
+    snapshot();const next={id:uid("c"),start:splitTime,end:block.end,
+      text:textWords.slice(at).join(" "),words:rightWords};
+    block.end=splitTime;block.text=textWords.slice(0,at).join(" ");block.words=leftWords;
+    S.state.captions.splice(index+1,0,next);
     S.sel=next.id;afterMutate()};
   panel.querySelector('[data-action="merge"]').onclick=()=>{if(index>=S.state.captions.length-1)return;
     snapshot();const next=S.state.captions[index+1];block.text=`${block.text} ${next.text}`.trim();
@@ -824,85 +1368,196 @@ function renderCaptionInspector(panel,block){
 }
 function renderCutInspector(panel,index){
   const cut=S.state.cuts[index];if(!cut){S.sel=null;renderInspector();return}
+  const timelineRange=cutTimelineRange(index);
   panel.innerHTML=`<h3 style="margin-bottom:12px">Source segment ${index+1}</h3>
     <p style="color:var(--tx2);margin-bottom:12px">Source ${fmt(cut.src_in)} → ${fmt(cut.src_out)}
-      <span class="pill">${(cut.src_out-cut.src_in).toFixed(2)}s</span></p>
+      <span class="pill">${(cut.src_out-cut.src_in).toFixed(3)}s</span></p>
+    <p style="color:var(--tx2);margin-bottom:12px">Timeline ${fmt(timelineRange.start)} ·
+      ${S.state.ripple===false?"non-ripple":"ripple"} delete</p>
     <div class="buttonrow"><button data-action="split">Split at playhead</button>
       <button class="danger" data-action="delete">Delete (ripple)</button></div>`;
   panel.querySelector('[data-action="split"]').onclick=()=>$("#splitBtn").click();
-  panel.querySelector('[data-action="delete"]').onclick=()=>{if(S.state.cuts.length<=1){toast("Keep at least one source segment");return}
-    snapshot();S.state.cuts.splice(index,1);S.sel=null;seek(Math.min(S.t,tlDuration()));afterMutate()};
+  const remove=panel.querySelector('[data-action="delete"]');
+  remove.textContent=S.state.ripple===false?"Delete segment":"Ripple-delete segment";
+  remove.onclick=()=>deleteCut(index);
 }
 
 /* ============================== [I] export dialog + progress over WS */
-$("#exportBtn").onclick=()=>$("#exportDlg").showModal();
+async function loadExportHistory(){
+  const history=$("#expHistory");history.innerHTML="";
+  try{const {files}=await api(`/api/projects/${S.project}/exports`);
+    if(files.length){const heading=document.createElement("small");heading.className="catmeta";heading.textContent="RECENT EXPORTS";history.append(heading)}
+    for(const file of files.slice(0,6)){const link=document.createElement("a");link.href=file.url;link.download=file.name;
+      link.textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB`;history.append(link)}
+  }catch(error){history.textContent=error.message}
+}
+$("#exportBtn").onclick=()=>{$("#exportDlg").showModal();loadExportHistory()};
 $("#expClose").onclick=()=>$("#exportDlg").close();
-$$("#exportDlg [data-m]").forEach(b=>b.onclick=()=>{
+$$("#exportDlg [data-m]").forEach(b=>b.onclick=async()=>{
   if(!S.state.source){toast("Import source footage first");return}
-  S.ws.send(JSON.stringify({type:"export",project:S.project,mode:b.dataset.m==="hq"?"hq":"lossless"}));
+  const mode=b.dataset.m==="hq"?"hq":"lossless";
+  const resolution=mode==="lossless"?"source":$("#expResolution").value;
   $("#expProg").textContent="Starting…";$("#expBar").hidden=false;$("#expBar").value=0;
-  $("#expCancel").hidden=false;$$("#exportDlg [data-m]").forEach(x=>x.disabled=true)});
-$("#expCancel").onclick=()=>{S.ws?.send(JSON.stringify({type:"cancel_export",project:S.project}));
-  $("#expProg").textContent="Canceling…"};
-function connectWS(){S.ws=new WebSocket(`${location.protocol==="https:"?"wss":"ws"}://${location.host}/ws`);
-  S.ws.onopen=()=>$("#syncStatus").classList.add("on");
-  S.ws.onmessage=e=>{const m=JSON.parse(e.data);
-    if(m.type==="state"&&m.state.name===S.project){S.state=m.state;afterMutate(false)}
+  $("#expCancel").hidden=false;$$("#exportDlg [data-m]").forEach(x=>x.disabled=true);
+  try{await api(`/api/projects/${S.project}/export`,{method:"POST",body:JSON.stringify({mode,resolution})})}
+  catch(error){$("#expProg").textContent="Failed: "+error.message;finishExportUI()}
+});
+$("#expCancel").onclick=async()=>{await api(`/api/projects/${S.project}/export/cancel`,{method:"POST",body:"{}"});
+  $("#expProg").textContent="Canceling safely…"};
+function renderTranscriptionStatus(job={}){
+  const status=$("#transcribeStatus"),bar=$("#transcribeBar"),cancel=$("#transcribeCancel");
+  const active=["queued","loading","transcribing","canceling"].includes(job.status);
+  $("#transcribeStart").disabled=active||!S.state?.source;
+  $("#transcriptImport").disabled=active;
+  cancel.hidden=!active;bar.hidden=!active&&job.status!=="complete";
+  bar.value=Math.max(0,Math.min(1,job.progress||0));
+  if(job.status==="idle")status.textContent=S.state?.source
+    ?"Ready to generate captions locally. The first run downloads the selected model once."
+    :"Import source footage before generating captions.";
+  else if(job.status==="complete")status.textContent=`Done · ${job.caption_count||0} editable caption blocks · ${job.device||"local"}`;
+  else if(job.status==="failed")status.textContent=`Failed: ${job.error||"transcription failed"}`;
+  else if(job.status==="canceled")status.textContent="Transcription canceled · existing captions kept";
+  else status.textContent=job.message||`${job.status||"Preparing"}…`;
+}
+async function refreshTranscriptionStatus(){
+  if(!S.project)return;
+  try{renderTranscriptionStatus(await api(`/api/projects/${S.project}/transcribe`))}
+  catch(error){renderTranscriptionStatus({status:"failed",error:error.message})}
+}
+$("#transcribeStart").onclick=async()=>{
+  const body={model:$("#whisperModel").value,language:$("#whisperLanguage").value,
+    terms:$("#whisperTerms").value.trim()};
+  localStorage.setItem("editoro-whisper-model",body.model);
+  localStorage.setItem("editoro-whisper-language",body.language);
+  localStorage.setItem("editoro-whisper-terms",body.terms);
+  renderTranscriptionStatus({status:"queued",progress:0,message:"Preparing the local model…"});
+  try{renderTranscriptionStatus(await api(`/api/projects/${S.project}/transcribe`,
+    {method:"POST",body:JSON.stringify(body)}))}
+  catch(error){renderTranscriptionStatus({status:"failed",error:error.message})}
+};
+$("#transcribeCancel").onclick=async()=>{
+  try{renderTranscriptionStatus(await api(`/api/projects/${S.project}/transcribe/cancel`,
+    {method:"POST",body:"{}"}))}
+  catch(error){toast(error.message)}
+};
+$("#transcriptImport").onclick=()=>$("#transcriptInput").click();
+$("#transcriptClose").onclick=()=>$("#transcriptDlg").close();
+function openTranscriptDialog(){
+  $("#whisperModel").value=localStorage.getItem("editoro-whisper-model")||"large-v3";
+  $("#whisperLanguage").value=localStorage.getItem("editoro-whisper-language")||"auto";
+  $("#whisperTerms").value=localStorage.getItem("editoro-whisper-terms")||"";
+  $("#transcriptDlg").showModal();refreshTranscriptionStatus();
+}
+function connectWS(){const socket=new WebSocket(`${location.protocol==="https:"?"wss":"ws"}://${location.host}/ws`);S.ws=socket;
+  socket.onopen=()=>$("#syncStatus").classList.add("on");
+  socket.onmessage=async e=>{const m=JSON.parse(e.data);
+    if(m.type==="state"&&m.state.name===S.project){
+      const previousState=S.state;S.state=m.state;await syncSourceMedia(previousState);afterMutate(false,false)}
+    if(m.type==="saved"&&m.project===S.project)$("#syncStatus").classList.add("on");
     if(m.type==="error")toast(m.message);
-    if(m.type==="export_progress"){
+    if(m.type==="export_progress"&&m.project===S.project){
       if(m.error){$("#expProg").textContent="Failed: "+m.error;toast("Export failed — see export.log");finishExportUI()}
       else if(m.canceled){$("#expProg").textContent="Export canceled";finishExportUI()}
       else if(m.done){$("#expProg").innerHTML=
         `Done → <a style="color:var(--c-keyword)" href="/media/${S.project}/${m.file}" download>${m.file}</a>`;
-        $("#expBar").value=1;finishExportUI();toast(`Export finished · ${m.codec}${m.nvenc?" · NVENC":""}`)}
+        $("#expBar").value=1;finishExportUI();loadExportHistory();toast(`Export finished · ${m.codec}${m.nvenc?" · NVENC":""}`)}
       else if(m.note)toast(m.note);
       else{$("#expProg").textContent=`Segment ${m.seg}/${m.total} — ${m.status}`;
-        $("#expBar").value=(m.seg-1)/Math.max(1,m.total)}}};
-  S.ws.onclose=()=>{$("#syncStatus").classList.remove("on");setTimeout(connectWS,1500)}}
+        $("#expBar").value=(m.seg-1)/Math.max(1,m.total)}}
+    if(m.type==="transcription_progress"&&m.project===S.project){
+      renderTranscriptionStatus(m);
+      if(m.done){const previousState=S.state;S.state=await api(`/api/projects/${S.project}/state`);
+        await syncSourceMedia(previousState);afterMutate(false,false);
+        toast(`${m.caption_count||S.state.captions.length} caption blocks generated locally`)}
+    }};
+  socket.onclose=()=>{if(S.ws!==socket)return;$("#syncStatus").classList.remove("on");setTimeout(()=>{
+    if(S.ws===socket||!S.ws||S.ws.readyState>1)connectWS()},1500)}}
 function finishExportUI(){$("#expCancel").hidden=true;$$("#exportDlg [data-m]").forEach(x=>x.disabled=false)}
 addEventListener("keydown",e=>{
-  if(e.key===" "&&e.target.tagName!=="INPUT"&&e.target.tagName!=="TEXTAREA"){e.preventDefault();$("#play").click()}
-  if((e.ctrlKey||e.metaKey)&&e.key==="z")e.shiftKey?redo():undo();
-  if((e.key==="Delete"||e.key==="Backspace")&&!["INPUT","TEXTAREA","SELECT"].includes(e.target.tagName)&&S.sel){
+  const editing=["INPUT","TEXTAREA","SELECT"].includes(e.target.tagName);
+  if(e.key===" "&&!editing){e.preventDefault();$("#play").click()}
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"){e.preventDefault();e.shiftKey?redo():undo()}
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="y"){e.preventDefault();redo()}
+  if(!editing&&["ArrowLeft","ArrowRight"].includes(e.key)){e.preventDefault();
+    seek(S.t+(e.key==="ArrowRight"?1:-1)*frameDuration()*(e.shiftKey?10:1))}
+  if(!editing&&e.key.toLowerCase()==="s"){e.preventDefault();$("#splitBtn").click()}
+  if(!editing&&(e.key==="+"||e.key==="=")){e.preventDefault();setTimelineZoom(S.zoom*1.35)}
+  if(!editing&&e.key==="-"){e.preventDefault();setTimelineZoom(S.zoom/1.35)}
+  if(!editing&&e.key==="0"){e.preventDefault();fitTimeline()}
+  if(!editing&&e.key==="Home"){e.preventDefault();seek(0)}
+  if(!editing&&e.key==="End"){e.preventDefault();seek(tlDuration())}
+  if(!editing&&e.key==="Escape"){previewTool=null;S.sel=null;renderInspector();drawOverlay();drawTimeline()}
+  if((e.key==="Delete"||e.key==="Backspace")&&!editing&&S.sel){
     const instance=S.state.instances.find(i=>i.id===S.sel),caption=S.state.captions.find(c=>c.id===S.sel);
     if(instance){snapshot();S.state.instances=S.state.instances.filter(i=>i!==instance);S.sel=null;afterMutate()}
     else if(caption){snapshot();S.state.captions=S.state.captions.filter(c=>c!==caption);S.sel=null;afterMutate()}
+    else if(S.sel.startsWith("cut:"))deleteCut(+S.sel.split(":")[1]);
   }});
-$("#undoBtn").onclick=undo;$("#redoBtn").onclick=redo;
+$("#undoBtn").onclick=$("#timelineUndo").onclick=undo;
+$("#redoBtn").onclick=$("#timelineRedo").onclick=redo;
 
 /* ------------------------------------------------ boot / home screen */
-async function loadPacks(){const {packs}=await api("/api/templates");S.packs={};
+async function loadPacks(){const {packs}=await api("/api/templates");S.packs={};const modules=[];
   for(const p of packs){S.packs[p.id]=p;
-    if(p._has_render)import(`/tpl/${p._dir}/render.js`).catch(e=>toast(`${p.display_name}: ${e.message}`));}}  // packs self-register
+    if(p._has_render)modules.push(import(`/tpl/${p._dir}/render.js?v=${encodeURIComponent(p.version||"1")}`)
+      .catch(error=>{throw new Error(`${p.display_name}: ${error.message}`)}));}
+  await Promise.all(modules);
+}  // packs self-register before preview/export is declared ready
+function sourceSignature(state){const info=state?.source_info||{};
+  return [state?.source||"",state?.source_revision||"",info.width||0,info.height||0,info.duration||0,info.fps||0].join(":")}
+function sourceUrl(){return `/media/${encodeURIComponent(S.project)}/${encodeURIComponent(S.state.source)}`+
+  `?v=${encodeURIComponent(sourceSignature(S.state))}`}
+async function syncSourceMedia(previousState){
+  S.fps=S.state.source_info.fps||30;
+  if(S.state.source){
+    if(sourceSignature(previousState)!==sourceSignature(S.state)||!vid.getAttribute("src")){
+      S.previewLayout=null;
+      vid.src=sourceUrl();
+      try{S.peaks=(await api(`/api/projects/${S.project}/waveform`)).peaks}
+      catch(error){S.peaks=[];toast("Waveform could not be refreshed: "+error.message)}
+    }
+    $("#emptyState").hidden=true;$("#play").disabled=false;$("#exportBtn").disabled=false;
+  }else{
+    vid.pause();vid.removeAttribute("src");vid.load();S.peaks=[];
+    $("#emptyState").hidden=false;$("#play").disabled=true;$("#exportBtn").disabled=true;
+  }
+}
 async function importSource(file){if(!file||!S.project)return;
   const fd=new FormData();fd.append("file",file);toast("Uploading and reading source footage…");
+  const previousState=S.state;
   S.state=await api(`/api/projects/${S.project}/source`,{method:"POST",body:fd});
-  S.fps=S.state.source_info.fps||30;vid.src=`/media/${S.project}/${S.state.source}`;
-  S.peaks=(await api(`/api/projects/${S.project}/waveform`)).peaks;$("#emptyState").hidden=true;
-  $("#play").disabled=false;$("#exportBtn").disabled=false;seek(0);afterMutate(false);
+  await syncSourceMedia(previousState);seek(0);fitTimeline();afterMutate(false);
   toast(`Source ready · ${S.state.source_info.width}×${S.state.source_info.height} · ${S.fps} fps`)}
 async function importTranscript(file){if(!file||!S.project)return;
   const fd=new FormData();fd.append("file",file);
   S.state=await api(`/api/projects/${S.project}/transcript`,{method:"POST",body:fd});
-  afterMutate(false);toast(`${S.state.captions.length} caption blocks imported`)}
+  afterMutate(false);renderTranscriptionStatus({status:"complete",progress:1,
+    caption_count:S.state.captions.length,device:"imported file"});
+  toast(`${S.state.captions.length} caption blocks imported`)}
 async function openProject(name){S.project=name;
   S.state=await api(`/api/projects/${name}/state`);
-  S.sel=null;S.t=0;S.scroll=0;S.undo=[];S.redo=[];S.peaks=[];A.img={};A.vid={};
+  for(const clip of Object.values(A.vid))clip.pause();
+  S.sel=null;S.t=0;S.scroll=0;S.trackScroll=0;S.undo=[];S.redo=[];S.peaks=[];
+  S.previewLayout=null;S.lastPlaybackFrame=-1;SFX_AUDIO.fired.clear();A.img={};A.vid={};
   $("#home").hidden=true;$("#app").hidden=false;
   $("#projectTitle").textContent=name;document.title=`${name} · Editoro`;
   S.fps=S.state.source_info.fps||30;
-  if(S.state.source){vid.src=`/media/${name}/${S.state.source}`;
+  if(S.state.source){vid.src=sourceUrl();
     S.peaks=(await api(`/api/projects/${name}/waveform`)).peaks;$("#emptyState").hidden=true;
     $("#play").disabled=false;$("#exportBtn").disabled=false}
   else{vid.removeAttribute("src");vid.load();$("#emptyState").hidden=false;
     $("#play").disabled=true;$("#exportBtn").disabled=true}
-  renderCats();renderInspector();if(!S.ws||S.ws.readyState>1)connectWS();drawTimeline();drawOverlay();
+  try{const directives=await api(`/api/projects/${name}/directives`);
+    $("#dirText").value=directives.text||"";S.state.directives_review=directives.review||[];renderDirectiveReview();
+  }catch(error){$("#dirText").value="";toast("Directives could not be loaded: "+error.message)}
+  renderCats();renderInspector();if(!S.ws||S.ws.readyState>1)connectWS();drawTimeline();drawOverlay();fitTimeline();
+  applyMonitorGain();
   if(!S.booted){S.booted=true;requestAnimationFrame(tick)}
-  if(!S.resizeObserver){S.resizeObserver=new ResizeObserver(()=>{drawOverlay();drawTimeline()});
+  if(!S.resizeObserver){S.resizeObserver=new ResizeObserver(()=>{S.previewLayout=null;drawOverlay();drawTimeline()});
     S.resizeObserver.observe($("#preview"));S.resizeObserver.observe($("#timeline"))}
-  vid.onloadedmetadata=drawOverlay;}
+  vid.onloadedmetadata=()=>{S.previewLayout=null;drawOverlay();drawTimeline()};}
 async function showHome(){vid.pause();S.playing=false;$("#play").textContent="▶";
-  $("#app").hidden=true;$("#home").hidden=false;document.title="Editoro";await refreshProjects()}
+  $("#app").hidden=true;$("#home").hidden=false;document.title="Editoro";await refreshProjects();loadDiagnostics()}
 async function refreshProjects(){const {projects}=await api("/api/projects");
   const l=$("#projList");l.innerHTML="";
   if(!projects.length)l.innerHTML='<p style="margin:0;color:var(--tx2)">No projects yet.</p>';
@@ -915,13 +1570,25 @@ async function refreshProjects(){const {projects}=await api("/api/projects");
       await api(`/api/projects/${project.name}`,{method:"DELETE"});await refreshProjects()};
     row.append(open,remove);l.append(row)});
   return projects}
-async function home(){await loadPacks();await refreshProjects();
+async function loadDiagnostics(){
+  const target=$("#homeDiag");
+  try{const data=await api("/api/diagnostics"),problems=[];
+    if(!data.ffmpeg||!data.ffprobe)problems.push("FFmpeg tools missing");
+    if(!data.renderer)problems.push("export renderer missing");
+    if(Object.keys(data.template_errors||{}).length)problems.push("template errors");
+    target.classList.toggle("bad",problems.length>0);
+    target.textContent=problems.length
+      ?`Needs attention: ${problems.join(" · ")}`
+      :`Ready · ${data.templates} templates · renderer ready · ${data.nvenc?"NVENC GPU":"CPU export fallback"}`;
+  }catch(error){target.classList.add("bad");target.textContent="Diagnostics unavailable: "+error.message}
+}
+async function home(){await loadPacks();await refreshProjects();loadDiagnostics();
   $("#newBtn").onclick=async()=>{const projects=(await api("/api/projects")).projects;
     const n=$("#newName").value.trim()||("project-"+String(projects.length+1).padStart(2,"0"));
     await api(`/api/projects/${n}`,{method:"POST"});await openProject(n)};}
 $("#homeBtn").onclick=showHome;
 $("#sourceBtn").onclick=$("#emptySource").onclick=()=>$("#sourceInput").click();
-$("#transcriptBtn").onclick=$("#emptyTranscript").onclick=()=>$("#transcriptInput").click();
+$("#transcriptBtn").onclick=$("#emptyTranscript").onclick=openTranscriptDialog;
 $("#sourceInput").onchange=async e=>{await importSource(e.target.files[0]);e.target.value=""};
 $("#transcriptInput").onchange=async e=>{await importTranscript(e.target.files[0]);e.target.value=""};
 document.body.addEventListener("dragover",e=>e.preventDefault());
@@ -933,16 +1600,21 @@ document.body.addEventListener("drop",async e=>{const file=e.dataTransfer?.files
 if(EXPORT_MODE){
   (async()=>{await loadPacks();
     S.project=new URLSearchParams(location.search).get("project");
-    S.state=await (await fetch(`/api/projects/${S.project}/state`)).json();
+    S.state=window.__EDITORO_EXPORT_STATE||
+      await (await fetch(`/api/projects/${S.project}/state`)).json();
+    S.fps=S.state.source_info.fps||30;
     const c=document.createElement("canvas");
     c.width=S.state.source_info.width;c.height=S.state.source_info.height;
     // preload all referenced images, videos, and pack textures before signalling ready
-    const waits=[];
+    const waits=[],assetRequests=new Map();
     for(const i of S.state.instances.filter(i=>i.fields.asset)){
-      let url=`/media/${S.project}/assets/${i.fields.asset}`;
-      if(i.template==="highlight"&&i.fields.asset.toLowerCase().endsWith(".pdf"))
+      let url=`/media/${encodeURIComponent(S.project)}/assets/${encodeURIComponent(i.fields.asset)}`;
+      if(["highlight","image-pop"].includes(i.template)&&i.fields.asset.toLowerCase().endsWith(".pdf"))
         url=`/api/projects/${S.project}/pdf-page?asset=${encodeURIComponent(i.fields.asset)}&page=${i.fields.page||0}`;
-      if(i.template==="video-clip"){const clip=A.video(url);
+      assetRequests.set(url,i.template==="video-clip"?"video":"image");
+    }
+    for(const [url,kind] of assetRequests){
+      if(kind==="video"){const clip=A.video(url);
         waits.push(new Promise(res=>{if(clip.readyState>=1)res();else{clip.onloadedmetadata=clip.onerror=res}}))}
       else{const im=A.load(url);waits.push(new Promise(res=>{if(im.complete)res();else im.onload=im.onerror=res}))}
     }

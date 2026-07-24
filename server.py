@@ -5,7 +5,7 @@
 #    [1] Imports & config
 #    [2] Pydantic models (project state)
 #    [3] Template pack scanning
-#    [4] First-run placeholder SFX generation (pure-python wav synthesis)
+#    [4] Template foley event resolution
 #    [5] Media helpers (ffprobe, waveform peaks, thumbnails, PDF raster)
 #    [6] Directive parser (da7ee7-director grammar)  + unit tests
 #    [7] HTTP API (projects, uploads, media, directives)
@@ -17,7 +17,8 @@
 
 # ---------------------------------------------------------------- [1] Imports
 from __future__ import annotations
-import asyncio, json, math, os, re, shutil, struct, subprocess, sys, threading, time, uuid, wave, webbrowser
+import asyncio, json, math, os, re, shutil, struct, subprocess, sys, threading, time, uuid, webbrowser
+import importlib.util
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -33,9 +34,15 @@ PROJECTS_DIR = ROOT / "projects"
 PROJECTS_DIR.mkdir(exist_ok=True)
 
 PORT = 8765
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.2.0"
 FFMPEG = shutil.which("ffmpeg") or "ffmpeg"
 FFPROBE = shutil.which("ffprobe") or "ffprobe"
+PRIVATE_BROWSERS_DIR = ROOT / ".venv" / "playwright-browsers"
+WHISPER_MODELS_DIR = ROOT / ".models" / "whisper"
+if PRIVATE_BROWSERS_DIR.is_dir():
+    # `launch.cmd` sets this too, but keeping the server self-contained makes
+    # direct starts, tests, and export workers use the same private renderer.
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(PRIVATE_BROWSERS_DIR))
 SAFE_PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 SAFE_FILE = re.compile(r"[^A-Za-z0-9._ -]+")
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
@@ -52,6 +59,47 @@ def run(cmd: list[str], log_file: Optional[Path] = None, check: bool = False) ->
         detail = (p.stderr or p.stdout or "command failed").strip()[-2000:]
         raise RuntimeError(f"{Path(cmd[0]).name} failed ({p.returncode}): {detail}")
     return p
+
+
+async def run_cancelable(
+    cmd: list[str],
+    log_file: Optional[Path],
+    cancel: asyncio.Event,
+    check: bool = False,
+) -> subprocess.CompletedProcess:
+    """Run an export subprocess while honoring cancellation immediately."""
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    communicate = asyncio.create_task(process.communicate())
+    canceled = asyncio.create_task(cancel.wait())
+    done, _ = await asyncio.wait(
+        {communicate, canceled},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    if canceled in done and cancel.is_set() and not communicate.done():
+        process.terminate()
+        try:
+            await asyncio.wait_for(communicate, timeout=3)
+        except asyncio.TimeoutError:
+            process.kill()
+            await communicate
+        raise asyncio.CancelledError()
+    canceled.cancel()
+    await asyncio.gather(canceled, return_exceptions=True)
+    stdout_bytes, stderr_bytes = await communicate
+    stdout = stdout_bytes.decode("utf-8", "replace")
+    stderr = stderr_bytes.decode("utf-8", "replace")
+    result = subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
+    if log_file:
+        with open(log_file, "a", encoding="utf-8") as handle:
+            handle.write("\n$ " + " ".join(cmd) + "\n" + stderr + "\n")
+    if check and result.returncode:
+        detail = (stderr or stdout or "command failed").strip()[-2000:]
+        raise RuntimeError(f"{Path(cmd[0]).name} failed ({result.returncode}): {detail}")
+    return result
 
 
 # ------------------------------------------------------- [2] Pydantic models
@@ -83,6 +131,7 @@ class CaptionWord(BaseModel):
     w: str
     s: float
     e: float
+    p: float = Field(default=1.0, ge=0, le=1)
 
     @model_validator(mode="after")
     def ordered(self):
@@ -121,6 +170,7 @@ class ProjectState(BaseModel):
     version: int = 1
     name: str
     source: str = ""                  # filename of source video inside project folder
+    source_revision: str = ""         # cache-buster changed on every source replacement
     source_info: MediaInfo = Field(default_factory=MediaInfo)
     cuts: list[Cut] = Field(default_factory=list)          # empty = whole source
     instances: list[Instance] = Field(default_factory=list)
@@ -138,14 +188,60 @@ class ProjectState(BaseModel):
 
     @model_validator(mode="after")
     def coherent(self):
+        fps = max(1.0, self.source_info.fps or 30)
+        frame = 1 / fps
+
+        def snap(value: float) -> float:
+            return math.floor(max(0.0, value) * fps + 0.5) / fps
+
+        for cut in self.cuts:
+            cut.src_in = snap(cut.src_in)
+            cut.src_out = (
+                self.source_info.duration
+                if self.source_info.duration and abs(cut.src_out - self.source_info.duration) <= frame
+                else snap(cut.src_out)
+            )
         self.cuts.sort(key=lambda c: c.src_in)
+        previous_out = -1.0
         if self.source_info.duration:
             for cut in self.cuts:
                 if cut.src_out > self.source_info.duration + 0.05:
                     raise ValueError("cut exceeds source duration")
+                if cut.src_in < previous_out - 1e-6:
+                    raise ValueError("source cuts may not overlap")
+                previous_out = cut.src_out
+        elif self.cuts:
+            raise ValueError("source cuts require readable source metadata")
+        instance_ids = [item.id for item in self.instances]
+        caption_ids = [item.id for item in self.captions]
+        if len(instance_ids) != len(set(instance_ids)):
+            raise ValueError("template instance ids must be unique")
+        if len(caption_ids) != len(set(caption_ids)):
+            raise ValueError("caption ids must be unique")
+        timeline_duration = sum(cut.src_out - cut.src_in for cut in self.cuts)
+        if not timeline_duration:
+            timeline_duration = self.source_info.duration
+        for item in self.instances:
+            item.start = snap(item.start)
+            item.duration = max(frame, snap(item.duration))
+            if timeline_duration:
+                item.start = min(item.start, max(0.0, timeline_duration - frame))
+                item.duration = min(item.duration, max(frame, timeline_duration - item.start))
+        for block in self.captions:
+            block.start = snap(block.start)
+            block.end = max(block.start + frame, snap(block.end))
+            if timeline_duration:
+                block.start = min(block.start, max(0.0, timeline_duration - frame))
+                block.end = min(timeline_duration, max(block.start + frame, block.end))
         self.instances.sort(key=lambda item: (item.start, item.track, item.id))
         self.captions.sort(key=lambda item: (item.start, item.id))
         return self
+
+
+class TranscriptionRequest(BaseModel):
+    model: Literal["large-v3", "large-v3-turbo"] = "large-v3"
+    language: Literal["auto", "en", "ar"] = "auto"
+    terms: str = Field(default="", max_length=2000)
 
 
 def project_dir(name: str) -> Path:
@@ -155,6 +251,17 @@ def project_dir(name: str) -> Path:
     if PROJECTS_DIR not in p.parents:
         raise ValueError("bad project name")
     return p
+
+
+def require_project(name: str) -> Path:
+    """Resolve an existing project or return a useful client-facing error."""
+    try:
+        folder = project_dir(name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not (folder / "project.json").is_file():
+        raise HTTPException(404, "Project not found")
+    return folder
 
 
 def load_state(name: str) -> ProjectState:
@@ -169,13 +276,15 @@ def load_state(name: str) -> ProjectState:
     return ProjectState(name=name)
 
 
-def save_state(st: ProjectState) -> None:
+def save_state(st: ProjectState) -> ProjectState:
+    st = ProjectState.model_validate(st.model_dump())
     d = project_dir(st.name)
     d.mkdir(parents=True, exist_ok=True)
     target = d / "project.json"
     temporary = d / ".project.json.tmp"
     temporary.write_text(st.model_dump_json(indent=2), encoding="utf-8")
     os.replace(temporary, target)
+    return st
 
 
 def safe_upload_name(filename: Optional[str], allowed: set[str]) -> str:
@@ -198,12 +307,17 @@ def unique_path(folder: Path, filename: str) -> Path:
 # ---------------------------------------------- [3] Template pack scanning
 TEMPLATE_PACKS: dict[str, dict] = {}
 VERB_TO_TEMPLATE: dict[str, tuple[str, bool]] = {}  # verb -> (template_id, review_flag)
+TEMPLATE_ERRORS: dict[str, str] = {}
 
 
 def scan_templates() -> None:
     TEMPLATE_PACKS.clear()
     VERB_TO_TEMPLATE.clear()
+    TEMPLATE_ERRORS.clear()
+    colors: dict[str, str] = {}
     for d in sorted(TEMPLATES_DIR.iterdir()):
+        if not d.is_dir():
+            continue
         tj = d / "template.json"
         if not tj.exists():
             continue
@@ -217,9 +331,30 @@ def scan_templates() -> None:
                 raise ValueError("template id must match its folder")
             if not re.fullmatch(r"#[0-9A-Fa-f]{6}", spec["category_color"]):
                 raise ValueError("category_color must be #RRGGBB")
+            color = spec["category_color"].upper()
+            if color in colors:
+                raise ValueError(f"category_color is already used by {colors[color]}")
+            colors[color] = spec["id"]
+            if not isinstance(spec["fields"], list):
+                raise ValueError("fields must be a list")
+            names: set[str] = set()
             for field in spec["fields"]:
                 if field.get("type") not in {"text", "asset:image", "asset:video", "strokes", "rect", "none", "number"}:
                     raise ValueError(f"unsupported field type: {field.get('type')}")
+                name = field.get("name")
+                if not isinstance(name, str) or not name or name in names:
+                    raise ValueError("field names must be non-empty and unique")
+                names.add(name)
+            for orientation in ("horizontal", "vertical"):
+                zone = spec["zones"].get(orientation)
+                if not isinstance(zone, dict):
+                    raise ValueError(f"missing {orientation} placement zone")
+                for key in ("x", "y", "scale"):
+                    if not isinstance(zone.get(key), (int, float)):
+                        raise ValueError(f"{orientation}.{key} must be numeric")
+            duration = float(spec["default_duration"])
+            if duration <= 0 and spec["id"] != "captions":
+                raise ValueError("default_duration must be positive")
             for sfx in spec.get("sfx", []):
                 if not (d / sfx["file"]).is_file():
                     raise ValueError(f"missing SFX: {sfx['file']}")
@@ -233,6 +368,7 @@ def scan_templates() -> None:
             if v:
                 VERB_TO_TEMPLATE[v] = (spec["id"], False)
         except Exception as e:
+            TEMPLATE_ERRORS[d.name] = str(e)
             print(f"[templates] skipping {d.name}: {e}")
     # Grammar-level verbs not owned by a pack:
     if "image-pop" in TEMPLATE_PACKS:
@@ -241,38 +377,34 @@ def scan_templates() -> None:
     VERB_TO_TEMPLATE["مولد"] = ("__placeholder__", True)
 
 
-# ------------------- [4] First-run placeholder SFX (pure-python synthesis)
-# Real packs ship recorded organic sounds. Until the user drops in his own
-# wavs, we synthesize short organic-ish placeholders so the pipeline works
-# end-to-end. Simplest robust option; regenerate = delete the wav.
-def _write_wav(path: Path, samples: list[float], sr: int = 44100) -> None:
-    with wave.open(str(path), "w") as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
-        w.writeframes(b"".join(struct.pack("<h", int(max(-1, min(1, s)) * 32000)) for s in samples))
-
-
-def _noise_burst(dur: float, decay: float, lp: float = 0.3, sr: int = 44100) -> list[float]:
-    import random
-    rnd = random.Random(7)
-    out, prev = [], 0.0
-    n = int(dur * sr)
-    for i in range(n):
-        v = rnd.uniform(-1, 1) * math.exp(-i / (decay * sr))
-        prev = prev + lp * (v - prev)   # one-pole low-pass = softer, papery
-        out.append(prev)
-    return out
-
-
-def ensure_placeholder_sfx() -> None:
-    wants = {  # (pack dir, filename, kind)
-        ("keyword", "paper-pop.wav", 0.10), ("image-pop", "paper-slap.wav", 0.14),
-        ("video-clip", "paper-slap.wav", 0.14), ("highlight", "marker-sweep.wav", 0.35),
-        ("punch-in", "whoosh.wav", 0.22), ("screen", "settle.wav", 0.12),
-    }
-    for pack, fn, dur in wants:
-        p = TEMPLATES_DIR / pack / fn
-        if not p.exists() and p.parent.exists():
-            _write_wav(p, _noise_burst(dur, dur * 0.5))
+# --------------------------------------- [4] Template foley event resolution
+def resolve_sfx_events(item: Instance, spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Resolve one template instance into deterministic preview/export events."""
+    events: list[dict[str, Any]] = []
+    for sound in spec.get("sfx", []):
+        repeated = item.fields.get(sound.get("repeat_field", ""))
+        count = max(1, len(repeated) if isinstance(repeated, list) else 1)
+        if "offset_ratio" in sound:
+            base = item.duration * float(sound["offset_ratio"])
+        else:
+            base = float(sound.get("offset", 0))
+        spread = item.duration * float(sound.get("spread_ratio", 0))
+        for index in range(count):
+            relative = base
+            if count > 1:
+                relative += (
+                    spread * index / max(1, count - 1)
+                    if spread
+                    else float(sound.get("repeat_spacing", 0)) * index
+                )
+            if relative <= item.duration:
+                events.append({
+                    "time": item.start + relative,
+                    "file": sound["file"],
+                    "gain": float(sound.get("gain", 0.5)),
+                    "index": index,
+                })
+    return events
 
 
 # --------------------------------------------------- [5] Media helpers
@@ -296,6 +428,28 @@ def probe(path: Path) -> MediaInfo:
     except Exception as exc:
         raise ValueError(f"Could not read media metadata for {path.name}: {exc}") from exc
     return info
+
+
+def renderer_executable() -> Optional[Path]:
+    """Return the installed private Playwright browser executable, if present."""
+    roots = []
+    configured = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if configured and configured != "0":
+        roots.append(Path(configured))
+    roots.append(Path.home() / "AppData" / "Local" / "ms-playwright")
+    patterns = (
+        "chromium_headless_shell-*/chrome-headless-shell-win64/chrome-headless-shell.exe",
+        "chromium-*/chrome-win/chrome.exe",
+        "chromium-*/chrome-win64/chrome.exe",
+    )
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for pattern in patterns:
+            match = next(root.glob(pattern), None)
+            if match and match.is_file():
+                return match
+    return None
 
 
 def waveform_peaks(name: str) -> list[float]:
@@ -437,6 +591,7 @@ def parse_directives(text: str, st: ProjectState) -> tuple[list[Instance], list[
         description = line[vm.end():].strip(" :-–—")
         if description:
             fields["description"] = description
+        fields["_directive_line"] = raw
         duration = float(spec.get("default_duration", 3.0))
         if tm and tm.group(4) is not None:
             end = _ts_to_sec(tm.group(4), tm.group(5), tm.group(6))
@@ -468,8 +623,46 @@ def _test_parser():
 
 # ----------------------------------------------------------- [7] HTTP API
 scan_templates()
-ensure_placeholder_sfx()
 app = FastAPI(title="Editoro", version=APP_VERSION)
+
+
+def group_caption_words(words: list[CaptionWord]) -> list[CaptionBlock]:
+    """Group word timestamps into readable, editable two-line caption blocks."""
+    unique: dict[tuple[float, float, str], CaptionWord] = {}
+    for word in words:
+        if word.w and word.e > word.s:
+            unique[(round(word.s, 3), round(word.e, 3), word.w)] = word
+    ordered = sorted(unique.values(), key=lambda item: (item.s, item.e))
+    captions: list[CaptionBlock] = []
+    buffer: list[CaptionWord] = []
+
+    def flush() -> None:
+        if not buffer:
+            return
+        captions.append(CaptionBlock(
+            id=f"c-{uuid.uuid4().hex[:10]}",
+            start=buffer[0].s,
+            end=buffer[-1].e,
+            text=" ".join(item.w for item in buffer),
+            words=list(buffer),
+        ))
+        buffer.clear()
+
+    for word in ordered:
+        candidate = " ".join([*(item.w for item in buffer), word.w])
+        previous_ended = bool(buffer and re.search(r"[.!?؟…]$", buffer[-1].w))
+        gap = word.s - buffer[-1].e if buffer else 0
+        if buffer and (
+            len(buffer) >= 7
+            or len(candidate) > 44
+            or word.e - buffer[0].s > 3.5
+            or gap > 0.65
+            or previous_ended
+        ):
+            flush()
+        buffer.append(word)
+    flush()
+    return captions
 
 
 def parse_transcript(data: str, filename: str) -> list[CaptionBlock]:
@@ -509,6 +702,7 @@ def parse_transcript(data: str, filename: str) -> list[CaptionBlock]:
                 w=str(raw.get("word", raw.get("w", ""))).strip(),
                 s=float(raw.get("start", raw.get("s", 0))),
                 e=float(raw.get("end", raw.get("e", 0))),
+                p=float(raw.get("probability", raw.get("p", 1))),
             ))
         for segment in segments:
             segment_words = segment.get("words", []) if isinstance(segment, dict) else []
@@ -518,6 +712,7 @@ def parse_transcript(data: str, filename: str) -> list[CaptionBlock]:
                         w=str(raw.get("word", raw.get("w", ""))).strip(),
                         s=float(raw.get("start", raw.get("s", 0))),
                         e=float(raw.get("end", raw.get("e", 0))),
+                        p=float(raw.get("probability", raw.get("p", 1))),
                     ))
             elif isinstance(segment, dict) and segment.get("text"):
                 start, end = float(segment.get("start", 0)), float(segment.get("end", 0))
@@ -526,23 +721,7 @@ def parse_transcript(data: str, filename: str) -> list[CaptionBlock]:
                     captions.append(CaptionBlock(
                         id=f"c-{uuid.uuid4().hex[:10]}", start=start, end=end, text=text
                     ))
-        words = [word for word in words if word.w and word.e > word.s]
-        words.sort(key=lambda item: item.s)
-        buffer: list[CaptionWord] = []
-        for word in words:
-            sentence_end = bool(buffer and re.search(r"[.!?]$", buffer[-1].w))
-            if buffer and (len(buffer) >= 7 or word.e - buffer[0].s > 3.5 or sentence_end):
-                captions.append(CaptionBlock(
-                    id=f"c-{uuid.uuid4().hex[:10]}", start=buffer[0].s,
-                    end=buffer[-1].e, text=" ".join(item.w for item in buffer), words=buffer
-                ))
-                buffer = []
-            buffer.append(word)
-        if buffer:
-            captions.append(CaptionBlock(
-                id=f"c-{uuid.uuid4().hex[:10]}", start=buffer[0].s,
-                end=buffer[-1].e, text=" ".join(item.w for item in buffer), words=buffer
-            ))
+        captions.extend(group_caption_words(words))
     captions.sort(key=lambda item: item.start)
     if not captions:
         raise ValueError("no timed captions were found")
@@ -568,9 +747,15 @@ def api_health():
 
 @app.get("/api/diagnostics")
 def api_diagnostics():
+    renderer = renderer_executable()
     return {
         **api_health(),
         "nvenc": has_nvenc(),
+        "whisper": importlib.util.find_spec("faster_whisper") is not None,
+        "whisper_models": str(WHISPER_MODELS_DIR),
+        "cuda_gpu": bool(shutil.which("nvidia-smi")),
+        "renderer": bool(renderer),
+        "renderer_path": str(renderer) if renderer else "",
         "python": sys.version.split()[0],
         "root": str(ROOT),
         "projects": len([
@@ -578,6 +763,11 @@ def api_diagnostics():
             if not p.name.startswith(".deleted-") and (p / "project.json").is_file()
         ]),
         "template_ids": sorted(TEMPLATE_PACKS),
+        "template_errors": TEMPLATE_ERRORS,
+        "template_renderers": {
+            template_id: bool(spec.get("_has_render"))
+            for template_id, spec in sorted(TEMPLATE_PACKS.items())
+        },
     }
 
 
@@ -622,9 +812,12 @@ def api_new_project(name: str):
 
 @app.delete("/api/projects/{name}")
 def api_delete_project(name: str):
-    d = project_dir(name)
-    if not d.exists():
-        raise HTTPException(404, "Project not found")
+    d = require_project(name)
+    if name in EXPORT_CANCEL:
+        raise HTTPException(409, "Cancel the running export before deleting this project")
+    transcription = TRANSCRIPTION_JOBS.get(name)
+    if transcription and transcription.get("status") in {"queued", "loading", "transcribing", "canceling"}:
+        raise HTTPException(409, "Cancel the running transcription before deleting this project")
     trash = PROJECTS_DIR / f".deleted-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     d.rename(trash)
     return {"ok": True, "recoverable_at": trash.name}
@@ -632,41 +825,64 @@ def api_delete_project(name: str):
 
 @app.get("/api/projects/{name}/state")
 def api_state(name: str):
+    require_project(name)
     return JSONResponse(load_state(name).model_dump())
 
 
 @app.post("/api/projects/{name}/state")
 async def api_save(name: str, req: Request):
-    st = ProjectState.model_validate(await req.json())
-    st.name = name
+    require_project(name)
+    payload = await req.json()
+    payload["name"] = name
+    st = ProjectState.model_validate(payload)
     save_state(st)
     return {"ok": True}
 
 
 @app.post("/api/projects/{name}/source")
 async def api_source(name: str, file: UploadFile):
-    d = project_dir(name)
-    if not d.exists():
-        raise HTTPException(404, "Project not found")
+    d = require_project(name)
+    transcription = TRANSCRIPTION_JOBS.get(name)
+    if transcription and transcription.get("status") in {"queued", "loading", "transcribing", "canceling"}:
+        raise HTTPException(409, "Cancel transcription before replacing the source")
     filename = safe_upload_name(file.filename, VIDEO_EXTENSIONS)
-    dest = d / ("source" + Path(filename).suffix.lower())
-    with open(dest, "wb") as f:
-        while chunk := await file.read(1 << 20):
-            f.write(chunk)
+    suffix = Path(filename).suffix.lower()
+    incoming = d / f".source-upload-{uuid.uuid4().hex}{suffix}"
+    try:
+        with open(incoming, "wb") as f:
+            while chunk := await file.read(1 << 20):
+                f.write(chunk)
+        info = probe(incoming)
+    except ValueError as exc:
+        incoming.unlink(missing_ok=True)
+        raise HTTPException(415, str(exc)) from exc
+    except Exception:
+        incoming.unlink(missing_ok=True)
+        raise
+    if not info.codec or not info.width or not info.duration:
+        incoming.unlink(missing_ok=True)
+        raise HTTPException(415, "The selected file does not contain a readable video stream")
+
     st = load_state(name)
     old_source = d / st.source if st.source else None
-    st.source = dest.name
+    dest = d / ("source" + suffix)
+    backup = d / f".source-backup-{uuid.uuid4().hex}{suffix}"
+    if dest.exists():
+        os.replace(dest, backup)
     try:
-        st.source_info = probe(dest)
-    except ValueError as exc:
+        os.replace(incoming, dest)
+        st.source = dest.name
+        st.source_revision = uuid.uuid4().hex
+        st.source_info = info
+        st.orientation = "vertical" if st.source_info.height > st.source_info.width else "horizontal"
+        st.cuts = [Cut(src_in=0, src_out=st.source_info.duration)]
+        st = save_state(st)
+    except Exception:
         dest.unlink(missing_ok=True)
-        raise HTTPException(415, str(exc)) from exc
-    if not st.source_info.codec or not st.source_info.width or not st.source_info.duration:
-        dest.unlink(missing_ok=True)
-        raise HTTPException(415, "The selected file does not contain a readable video stream")
-    st.orientation = "vertical" if st.source_info.height > st.source_info.width else "horizontal"
-    st.cuts = [Cut(src_in=0, src_out=st.source_info.duration)]
-    save_state(st)
+        if backup.exists():
+            os.replace(backup, dest)
+        raise
+    backup.unlink(missing_ok=True)
     if old_source and old_source != dest:
         old_source.unlink(missing_ok=True)
     (d / "waveform.json").unlink(missing_ok=True)
@@ -675,7 +891,7 @@ async def api_source(name: str, file: UploadFile):
 
 @app.post("/api/projects/{name}/asset")
 async def api_asset(name: str, file: UploadFile):
-    d = project_dir(name) / "assets"; d.mkdir(exist_ok=True)
+    d = require_project(name) / "assets"; d.mkdir(exist_ok=True)
     filename = safe_upload_name(file.filename, ASSET_EXTENSIONS)
     dest = unique_path(d, filename)
     with open(dest, "wb") as f:
@@ -693,7 +909,7 @@ async def api_asset(name: str, file: UploadFile):
 
 @app.get("/api/projects/{name}/assets")
 def api_assets(name: str):
-    d = project_dir(name) / "assets"
+    d = require_project(name) / "assets"
     files = []
     if d.exists():
         for path in sorted(d.iterdir()):
@@ -712,26 +928,29 @@ async def api_transcript(name: str, file: UploadFile):
     """Import SRT or word-level JSON (faster-whisper). Groups words into blocks."""
     filename = safe_upload_name(file.filename, {".srt", ".json"})
     data = (await file.read()).decode("utf-8-sig", "replace")
+    folder = require_project(name)
     st = load_state(name)
     try:
         st.captions = parse_transcript(data, filename)
     except (ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(400, f"Transcript could not be imported: {exc}") from exc
     suffix = Path(filename).suffix.lower()
-    for old in project_dir(name).glob("transcript.*"):
+    for old in folder.glob("transcript.*"):
         old.unlink(missing_ok=True)
-    (project_dir(name) / f"transcript{suffix}").write_text(data, encoding="utf-8")
-    save_state(st)
+    (folder / f"transcript{suffix}").write_text(data, encoding="utf-8")
+    st = save_state(st)
     return st.model_dump()
 
 
 @app.get("/api/projects/{name}/waveform")
 def api_waveform(name: str):
+    require_project(name)
     return {"peaks": waveform_peaks(name)}
 
 
 @app.get("/api/projects/{name}/thumb")
 def api_thumb(name: str, t: float = 0):
+    require_project(name)
     try:
         return FileResponse(thumbnail(name, t))
     except ValueError as exc:
@@ -740,6 +959,7 @@ def api_thumb(name: str, t: float = 0):
 
 @app.get("/api/projects/{name}/pdf-page")
 def api_pdf(name: str, asset: str, page: int = 0):
+    require_project(name)
     try:
         return FileResponse(raster_pdf(name, asset, page))
     except (ValueError, IndexError) as exc:
@@ -750,11 +970,18 @@ def api_pdf(name: str, asset: str, page: int = 0):
 async def api_directives(name: str, req: Request):
     body = await req.json()
     text = body.get("text", "")
+    folder = require_project(name)
     st = load_state(name)
     if len(text) > 1_000_000:
         raise HTTPException(413, "Directive text is too large")
-    (project_dir(name) / "directives.txt").write_text(text, encoding="utf-8")
+    (folder / "directives.txt").write_text(text, encoding="utf-8")
     inst, review = parse_directives(text, st)
+    # Re-applying the paste box refreshes directive-owned blocks instead of
+    # silently duplicating them; manually placed blocks are preserved.
+    st.instances = [
+        item for item in st.instances
+        if "_directive_line" not in item.fields
+    ]
     # place on first free overlay track (simple greedy per instance)
     for i in inst:
         tr = 1
@@ -764,15 +991,30 @@ async def api_directives(name: str, req: Request):
         i.track = tr
         st.instances.append(i)
     st.directives_review = review
-    save_state(st)
+    st = save_state(st)
     return st.model_dump()
+
+
+@app.get("/api/projects/{name}/directives")
+def api_get_directives(name: str):
+    folder = require_project(name)
+    state = load_state(name)
+    path = folder / "directives.txt"
+    return {
+        "text": path.read_text(encoding="utf-8") if path.is_file() else "",
+        "review": state.directives_review,
+    }
 
 
 # ------------------------------- [8] Range-request media serving (iOS Safari)
 @app.get("/media/{name}/{path:path}")
 def media(name: str, path: str, request: Request):
-    f = (project_dir(name) / path).resolve()
-    if project_dir(name) not in f.parents or not f.is_file():
+    try:
+        folder = project_dir(name)
+    except ValueError:
+        return Response(status_code=404)
+    f = (folder / path).resolve()
+    if folder not in f.parents or not f.is_file():
         return Response(status_code=404)
     size = f.stat().st_size
     rng = request.headers.get("range")
@@ -842,10 +1084,29 @@ async def ws(ws: WebSocket):
             msg = await ws.receive_json()
             if msg.get("type") == "state":                      # debounced autosave from a client
                 st = ProjectState.model_validate(msg["state"])
-                save_state(st)
+                if not (project_dir(st.name) / "project.json").is_file():
+                    raise ValueError("Project not found")
+                st = save_state(st)
+                msg["state"] = st.model_dump()
+                await ws.send_json({"type": "saved", "project": st.name})
                 await HUB.broadcast(msg, exclude=ws)            # sync other devices
             elif msg.get("type") == "export":
-                asyncio.create_task(export(msg["project"], msg.get("mode", "lossless")))
+                export_name = str(msg.get("project", ""))
+                require_project(export_name)
+                if export_name in EXPORT_CANCEL:
+                    raise ValueError("An export is already running for this project")
+                transcription = TRANSCRIPTION_JOBS.get(export_name)
+                if transcription and transcription.get("status") in {"queued", "loading", "transcribing", "canceling"}:
+                    raise ValueError("Wait for transcription to finish before exporting")
+                export_mode = msg.get("mode", "lossless")
+                export_resolution = msg.get("resolution", "source")
+                if export_mode not in {"lossless", "hq"}:
+                    raise ValueError("Unknown export mode")
+                if export_resolution not in {"source", "1080", "720"}:
+                    raise ValueError("Unknown export resolution")
+                asyncio.create_task(export(
+                    export_name, export_mode, export_resolution,
+                ))
             elif msg.get("type") == "cancel_export":
                 event = EXPORT_CANCEL.get(msg.get("project", ""))
                 if event:
@@ -865,6 +1126,303 @@ async def progress(project: str, **kw):
     await HUB.broadcast({"type": "export_progress", "project": project, **kw})
 
 
+# -------------------------------------- [9b] Local Whisper transcription
+class TranscriptionCanceled(Exception):
+    pass
+
+
+TRANSCRIPTION_JOBS: dict[str, dict[str, Any]] = {}
+CUDA_DLL_HANDLES: list[Any] = []
+
+
+def _public_transcription(project: str, job: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    if not job:
+        return {"project": project, "status": "idle", "progress": 0}
+    allowed = {
+        "status", "progress", "message", "error", "caption_count",
+        "device", "model", "language", "started", "finished",
+    }
+    payload = {key: value for key, value in job.items() if key in allowed}
+    payload["project"] = project
+    payload["done"] = payload.get("status") == "complete"
+    return payload
+
+
+def _configure_cuda_dlls() -> None:
+    """Expose pip-installed NVIDIA DLLs before importing CTranslate2."""
+    if os.name != "nt":
+        return
+    candidates = [
+        Path(sys.prefix) / "Lib" / "site-packages" / "nvidia" / "cudnn" / "bin",
+        Path(sys.prefix) / "Lib" / "site-packages" / "nvidia" / "cublas" / "bin",
+    ]
+    additions = [str(path) for path in candidates if path.is_dir()]
+    if additions:
+        os.environ["PATH"] = os.pathsep.join([
+            *additions, *os.environ.get("PATH", "").split(os.pathsep),
+        ])
+        if hasattr(os, "add_dll_directory") and not CUDA_DLL_HANDLES:
+            for path in candidates:
+                if path.is_dir():
+                    CUDA_DLL_HANDLES.append(os.add_dll_directory(str(path)))
+
+
+def _transcribe_attempt(
+    source: Path,
+    request: TranscriptionRequest,
+    device: str,
+    compute_type: str,
+    cancel: threading.Event,
+    notify,
+) -> dict[str, Any]:
+    from faster_whisper import WhisperModel
+
+    notify(
+        status="loading",
+        progress=0.01,
+        device=f"{device} · {compute_type}",
+        message=(
+            f"Loading {request.model} on {device}. "
+            "The first run may download the model once…"
+        ),
+    )
+    WHISPER_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    model = WhisperModel(
+        request.model,
+        device=device,
+        compute_type=compute_type,
+        download_root=str(WHISPER_MODELS_DIR),
+    )
+    if cancel.is_set():
+        raise TranscriptionCanceled()
+    segments, info = model.transcribe(
+        str(source),
+        language=None if request.language == "auto" else request.language,
+        beam_size=5,
+        word_timestamps=True,
+        vad_filter=True,
+        vad_parameters={"min_silence_duration_ms": 500, "speech_pad_ms": 180},
+        condition_on_previous_text=True,
+        initial_prompt=request.terms or None,
+        hotwords=request.terms or None,
+        temperature=0.0,
+        hallucination_silence_threshold=1.0,
+    )
+    duration = max(0.001, float(getattr(info, "duration", 0) or 0))
+    detected = str(getattr(info, "language", request.language))
+    words: list[CaptionWord] = []
+    raw_segments: list[dict[str, Any]] = []
+    notify(
+        status="transcribing",
+        progress=0.03,
+        language=detected,
+        message=f"Transcribing locally · language {detected}…",
+    )
+    for segment in segments:
+        if cancel.is_set():
+            raise TranscriptionCanceled()
+        segment_words: list[dict[str, Any]] = []
+        for word in getattr(segment, "words", None) or []:
+            text = str(getattr(word, "word", "")).strip()
+            start = float(getattr(word, "start", segment.start))
+            end = float(getattr(word, "end", segment.end))
+            probability = float(getattr(word, "probability", 1) or 0)
+            if text and end > start:
+                words.append(CaptionWord(w=text, s=start, e=end, p=probability))
+                segment_words.append({
+                    "word": text,
+                    "start": start,
+                    "end": end,
+                    "probability": probability,
+                })
+        if not segment_words and str(segment.text).strip() and segment.end > segment.start:
+            words.append(CaptionWord(
+                w=str(segment.text).strip(),
+                s=float(segment.start),
+                e=float(segment.end),
+                p=1,
+            ))
+        raw_segments.append({
+            "start": float(segment.start),
+            "end": float(segment.end),
+            "text": str(segment.text).strip(),
+            "words": segment_words,
+        })
+        notify(
+            status="transcribing",
+            progress=min(0.98, max(0.03, float(segment.end) / duration)),
+            message=f"Transcribing locally · {float(segment.end):.0f}s / {duration:.0f}s",
+        )
+    if cancel.is_set():
+        raise TranscriptionCanceled()
+    return {
+        "words": words,
+        "raw": {
+            "model": request.model,
+            "device": device,
+            "compute_type": compute_type,
+            "language": detected,
+            "language_probability": float(getattr(info, "language_probability", 0) or 0),
+            "duration": duration,
+            "segments": raw_segments,
+        },
+        "device": f"{device} · {compute_type}",
+        "language": detected,
+    }
+
+
+def _transcribe_source(
+    source: Path,
+    request: TranscriptionRequest,
+    cancel: threading.Event,
+    notify,
+) -> dict[str, Any]:
+    _configure_cuda_dlls()
+    failures: list[str] = []
+    for device, compute_type in (("cuda", "int8_float16"), ("cpu", "int8")):
+        try:
+            return _transcribe_attempt(
+                source, request, device, compute_type, cancel, notify,
+            )
+        except TranscriptionCanceled:
+            raise
+        except Exception as exc:
+            failures.append(f"{device}: {exc}")
+            if device == "cuda":
+                notify(
+                    status="loading",
+                    progress=0.01,
+                    device="cpu · int8",
+                    message="GPU transcription is unavailable; retrying locally on CPU…",
+                )
+    raise RuntimeError(" | ".join(failures)[-3000:])
+
+
+async def _run_transcription(
+    project: str,
+    request: TranscriptionRequest,
+    source_name: str,
+    source_revision: str,
+) -> None:
+    job = TRANSCRIPTION_JOBS[project]
+    loop = asyncio.get_running_loop()
+
+    def notify(**updates) -> None:
+        job.update(updates)
+        payload = {
+            "type": "transcription_progress",
+            **_public_transcription(project, job),
+        }
+        loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(HUB.broadcast(payload))
+        )
+
+    try:
+        source = project_dir(project) / source_name
+        result = await asyncio.to_thread(
+            _transcribe_source,
+            source,
+            request,
+            job["cancel"],
+            notify,
+        )
+        if job["cancel"].is_set():
+            raise TranscriptionCanceled()
+        captions = group_caption_words(result["words"])
+        if not captions:
+            raise RuntimeError("Whisper did not find any timed speech")
+        current = load_state(project)
+        if current.source != source_name or current.source_revision != source_revision:
+            raise RuntimeError("The source changed while transcription was running")
+        current.captions = captions
+        save_state(current)
+        raw_target = project_dir(project) / "transcript.generated.json"
+        raw_temporary = project_dir(project) / ".transcript.generated.json.tmp"
+        raw_temporary.write_text(
+            json.dumps(result["raw"], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(raw_temporary, raw_target)
+        notify(
+            status="complete",
+            progress=1,
+            caption_count=len(captions),
+            device=result["device"],
+            language=result["language"],
+            finished=time.time(),
+            message=f"Generated {len(captions)} editable caption blocks",
+        )
+    except TranscriptionCanceled:
+        notify(
+            status="canceled",
+            progress=job.get("progress", 0),
+            finished=time.time(),
+            message="Transcription canceled · existing captions kept",
+        )
+    except Exception as exc:
+        notify(
+            status="failed",
+            error=str(exc),
+            finished=time.time(),
+            message="Local transcription failed",
+        )
+
+
+@app.get("/api/projects/{name}/transcribe")
+def api_transcription_status(name: str):
+    require_project(name)
+    return _public_transcription(name, TRANSCRIPTION_JOBS.get(name))
+
+
+@app.post("/api/projects/{name}/transcribe")
+async def api_start_transcription(name: str, request: TranscriptionRequest):
+    require_project(name)
+    state = load_state(name)
+    if not state.source:
+        raise HTTPException(409, "Import source footage before generating captions")
+    current = TRANSCRIPTION_JOBS.get(name)
+    if current and current.get("status") in {"queued", "loading", "transcribing", "canceling"}:
+        raise HTTPException(409, "A transcription is already running for this project")
+    if name in EXPORT_CANCEL:
+        raise HTTPException(409, "Wait for the export to finish before transcribing")
+    if importlib.util.find_spec("faster_whisper") is None:
+        raise HTTPException(
+            503,
+            "Local Whisper is not installed yet. Close Editoro and run launch.cmd once.",
+        )
+    TRANSCRIPTION_JOBS[name] = {
+        "status": "queued",
+        "progress": 0,
+        "message": "Preparing local transcription…",
+        "model": request.model,
+        "language": request.language,
+        "started": time.time(),
+        "cancel": threading.Event(),
+    }
+    asyncio.create_task(_run_transcription(
+        name, request, state.source, state.source_revision,
+    ))
+    return JSONResponse(
+        _public_transcription(name, TRANSCRIPTION_JOBS[name]),
+        status_code=202,
+    )
+
+
+@app.post("/api/projects/{name}/transcribe/cancel")
+async def api_cancel_transcription(name: str):
+    require_project(name)
+    job = TRANSCRIPTION_JOBS.get(name)
+    if job and job.get("status") in {"queued", "loading", "transcribing"}:
+        job["cancel"].set()
+        job["status"] = "canceling"
+        job["message"] = "Canceling after the current audio segment…"
+        await HUB.broadcast({
+            "type": "transcription_progress",
+            **_public_transcription(name, job),
+        })
+    return _public_transcription(name, job)
+
+
 # ------------------------------------------- [10] Export — smart rendering
 def has_nvenc() -> bool:
     listed = run([FFMPEG, "-hide_banner", "-encoders"])
@@ -872,7 +1430,8 @@ def has_nvenc() -> bool:
         return False
     probe_encode = run([
         FFMPEG, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-        "-i", "color=black:s=64x64:r=1", "-frames:v", "1",
+        # Turing NVENC rejects frames below its minimum supported dimension.
+        "-i", "color=black:s=256x256:r=1", "-frames:v", "1",
         "-c:v", "h264_nvenc", "-f", "null", "-"
     ])
     return probe_encode.returncode == 0
@@ -904,12 +1463,27 @@ def timeline_segments(st: ProjectState) -> list[dict]:
     spans = [(i.start, i.start + i.duration) for i in st.instances] + \
             [(b.start, b.end) for b in st.captions]
     out = []
+    frame = 1 / max(1.0, st.source_info.fps or 30)
+
+    def on_frame(value: float) -> float:
+        return math.floor(value / frame + 0.5) * frame
+
     for s in segs:
         length = s["src_out"] - s["src_in"]
-        marks = sorted({0.0, length} | {max(0, min(length, a - s["tl"])) for a, b in spans}
-                       | {max(0, min(length, b - s["tl"])) for a, b in spans})
+        raw_marks = (
+            {0.0, length}
+            | {max(0, min(length, a - s["tl"])) for a, _ in spans}
+            | {max(0, min(length, b - s["tl"])) for _, b in spans}
+        )
+        marks = sorted({
+            0.0 if value <= frame / 2 else
+            length if value >= length - frame / 2 else
+            max(0, min(length, on_frame(value)))
+            for value in raw_marks
+        })
         for a, b in zip(marks, marks[1:]):
-            if b - a < 1 / 120: continue
+            if b - a < frame / 2:
+                continue
             mid = s["tl"] + (a + b) / 2
             dirty = any(x <= mid < y for x, y in spans)
             out.append({"src_in": s["src_in"] + a, "src_out": s["src_in"] + b,
@@ -933,27 +1507,142 @@ def video_encoder(st: ProjectState, nvenc: bool) -> list[str]:
     ]
 
 
-async def render_overlays(name: str, st: ProjectState, seg: dict, outdir: Path, log) -> Path:
-    """Headless Playwright drives the SAME overlay engine (index.html?export=1),
-    rendering transparent PNGs frame-by-frame → pixel-identical to preview."""
-    from playwright.async_api import async_playwright
-    fps = st.source_info.fps or 30
-    outdir.mkdir(parents=True, exist_ok=True)
-    async with async_playwright() as pw:
-        b = await pw.chromium.launch(args=["--disable-gpu-sandbox"])
-        pg = await b.new_page(viewport={"width": st.source_info.width, "height": st.source_info.height})
-        await pg.goto(f"http://127.0.0.1:{PORT}/?export=1&project={name}")
-        await pg.wait_for_function("window.__exportReady === true", timeout=30000)
-        count = max(1, int(math.ceil((seg["src_out"] - seg["src_in"]) * fps)))
+def punch_filter_graph(st: ProjectState, seg: dict, fps: float) -> str:
+    """Build the source-video transform used by a punch-in for one dirty span.
+
+    Timeline segmentation already cuts at every instance boundary, so selecting
+    the first intersecting punch mirrors the preview's track-ordered behavior.
+    """
+    punches = sorted(
+        (
+            item for item in st.instances
+            if item.template == "punch-in"
+            and isinstance(item.fields.get("rect"), dict)
+            and item.start < seg["tl"] + (seg["src_out"] - seg["src_in"])
+            and seg["tl"] < item.start + item.duration
+        ),
+        key=lambda item: (item.track, item.start, item.id),
+    )
+    if not punches:
+        return "[0:v]setpts=PTS-STARTPTS[base]"
+
+    punch = punches[0]
+    rect = punch.fields["rect"]
+    width = max(0.05, min(1.0, float(rect.get("w", 1.0))))
+    height = max(0.05, min(1.0, float(rect.get("h", 1.0))))
+    x = max(0.0, min(1.0 - width, float(rect.get("x", 0.0))))
+    y = max(0.0, min(1.0 - height, float(rect.get("y", 0.0))))
+    center_x, center_y = x + width / 2, y + height / 2
+    target = 1.0 / max(width, height)
+    animation = TEMPLATE_PACKS.get("punch-in", {}).get("animation", {})
+    entrance = max(1 / fps, float(animation.get("entrance_ms", 450)) / 1000)
+    exit_duration = max(1 / fps, float(animation.get("exit_ms", 400)) / 1000)
+    start, end = punch.start, punch.start + punch.duration
+    global_time = f"({seg['tl']:.9f}+on/{fps:.9f})"
+    in_k = f"clip(({global_time}-{start:.9f})/{entrance:.9f},0,1)"
+    out_k = f"clip(({end:.9f}-{global_time})/{exit_duration:.9f},0,1)"
+    ease_in = f"(1-pow(1-{in_k},3))"
+    ease_out = f"(1-pow(1-{out_k},3))"
+    amount = (
+        f"if(lt({global_time},{start + entrance:.9f}),{ease_in},"
+        f"if(gt({global_time},{end - exit_duration:.9f}),{ease_out},1))"
+    )
+    zoom = f"(1+{target - 1:.9f}*{amount})"
+    return (
+        "[0:v]setpts=PTS-STARTPTS,"
+        f"zoompan=z='{zoom}':"
+        f"x='{center_x:.9f}*iw*(1-1/zoom)':"
+        f"y='{center_y:.9f}*ih*(1-1/zoom)':"
+        f"d=1:s={st.source_info.width}x{st.source_info.height}:fps={fps:.9f}"
+        "[base]"
+    )
+
+
+class OverlayRenderSession:
+    """One shared browser page per export, regardless of dirty segment count."""
+
+    def __init__(self, name: str, state: ProjectState):
+        self.name = name
+        self.state = state
+        self.playwright = None
+        self.browser = None
+        self.page = None
+        self.errors: list[str] = []
+
+    async def start(self) -> None:
+        from playwright.async_api import async_playwright
+
+        executable = renderer_executable()
+        if not executable:
+            raise RuntimeError(
+                "The export renderer is not installed. Close Editoro, run launch.cmd once, "
+                "and let setup finish."
+            )
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(
+            executable_path=str(executable),
+            args=["--disable-gpu-sandbox"],
+        )
+        self.page = await self.browser.new_page(viewport={
+            "width": self.state.source_info.width,
+            "height": self.state.source_info.height,
+        })
+        self.page.on("pageerror", lambda error: self.errors.append(str(error)))
+        self.page.on(
+            "console",
+            lambda message: self.errors.append(message.text)
+            if message.type == "error" else None,
+        )
+        snapshot = json.dumps(self.state.model_dump(), ensure_ascii=True)
+        await self.page.add_init_script(
+            f"window.__EDITORO_EXPORT_STATE = {snapshot};"
+        )
+        await self.page.goto(
+            f"http://127.0.0.1:{PORT}/?export=1&project={self.name}"
+        )
         try:
-            for frame in range(count):
-                t = seg["tl"] + frame / fps
-                data = await pg.evaluate("t => window.__renderFrame(t)", t)
-                (outdir / f"f{frame:06d}.png").write_bytes(
-                    __import__("base64").b64decode(data.split(",", 1)[1]))
-        finally:
-            await b.close()
-    return outdir
+            await self.page.wait_for_function(
+                "window.__exportReady === true",
+                timeout=30000,
+            )
+        except Exception as exc:
+            detail = " | ".join(self.errors[-5:]) or str(exc)
+            raise RuntimeError(f"Export renderer did not become ready: {detail}") from exc
+
+    async def render(
+        self,
+        seg: dict,
+        outdir: Path,
+        cancel: asyncio.Event,
+    ) -> Path:
+        if not self.page:
+            raise RuntimeError("overlay renderer is not started")
+        fps = self.state.source_info.fps or 30
+        outdir.mkdir(parents=True, exist_ok=True)
+        count = max(1, int(math.ceil((seg["src_out"] - seg["src_in"]) * fps)))
+        for frame in range(count):
+            if cancel.is_set():
+                raise asyncio.CancelledError()
+            timeline_time = seg["tl"] + frame / fps
+            data = await self.page.evaluate(
+                "time => window.__renderFrame(time)",
+                timeline_time,
+            )
+            (outdir / f"f{frame:06d}.png").write_bytes(
+                __import__("base64").b64decode(data.split(",", 1)[1])
+            )
+        if self.errors:
+            raise RuntimeError(
+                "Template renderer error: " + " | ".join(self.errors[-5:])
+            )
+        return outdir
+
+    async def close(self) -> None:
+        if self.browser:
+            await self.browser.close()
+        if self.playwright:
+            await self.playwright.stop()
+        self.browser = self.playwright = self.page = None
 
 
 EXPORT_CANCEL: dict[str, asyncio.Event] = {}
@@ -961,7 +1650,7 @@ EXPORT_CANCEL: dict[str, asyncio.Event] = {}
 
 @app.get("/api/projects/{name}/exports")
 def api_exports(name: str):
-    folder = project_dir(name) / "exports"
+    folder = require_project(name) / "exports"
     files = []
     if folder.exists():
         for path in sorted(folder.glob("*.mp4"), key=lambda item: item.stat().st_mtime, reverse=True):
@@ -973,7 +1662,37 @@ def api_exports(name: str):
     return {"files": files}
 
 
-async def export(name: str, mode: str):
+@app.post("/api/projects/{name}/export")
+async def api_start_export(name: str, req: Request):
+    require_project(name)
+    if name in EXPORT_CANCEL:
+        raise HTTPException(409, "An export is already running for this project")
+    transcription = TRANSCRIPTION_JOBS.get(name)
+    if transcription and transcription.get("status") in {"queued", "loading", "transcribing", "canceling"}:
+        raise HTTPException(409, "Wait for transcription to finish before exporting")
+    body = await req.json()
+    mode = body.get("mode", "lossless")
+    resolution = body.get("resolution", "source")
+    if mode not in {"lossless", "hq"}:
+        raise HTTPException(400, "Unknown export mode")
+    if resolution not in {"source", "1080", "720"}:
+        raise HTTPException(400, "Unknown export resolution")
+    asyncio.create_task(export(
+        name, mode, resolution,
+    ))
+    return JSONResponse({"accepted": True}, status_code=202)
+
+
+@app.post("/api/projects/{name}/export/cancel")
+def api_cancel_export(name: str):
+    require_project(name)
+    event = EXPORT_CANCEL.get(name)
+    if event:
+        event.set()
+    return {"ok": True, "running": bool(event)}
+
+
+async def export(name: str, mode: str, resolution: str = "source"):
     if name in EXPORT_CANCEL:
         await progress(name, error="An export is already running for this project")
         return
@@ -993,11 +1712,16 @@ async def export(name: str, mode: str):
     if not nvenc:
         await progress(name, note="NVENC unavailable — falling back to libx264 -crf 12")
     work = exp / f"work-{stamp}"
+    renderer: Optional[OverlayRenderSession] = None
     try:
         if not st.source or not src.is_file():
             raise ValueError("Import source footage before exporting")
         if mode not in {"lossless", "hq"}:
             raise ValueError("Unknown export mode")
+        if resolution not in {"source", "1080", "720"}:
+            raise ValueError("Unknown export resolution")
+        if mode == "lossless":
+            resolution = "source"
         segs = timeline_segments(st)
         if not segs:
             raise ValueError("The timeline is empty")
@@ -1019,84 +1743,152 @@ async def export(name: str, mode: str):
                 if kf - seg["src_in"] > 1 / fps:      # slice before next keyframe → tiny re-encode
                     sl = work / f"p{idx:03d}a.mp4"
                     slice_end = min(kf, seg["src_out"])
-                    run([FFMPEG, "-y", "-ss", str(seg["src_in"]),
-                         "-t", str(slice_end - seg["src_in"]), "-i", str(src),
-                         *vcodec, "-c:a", "aac", "-b:a", "256k",
-                         "-movflags", "+faststart", str(sl)], log, check=True)
+                    await run_cancelable([
+                        FFMPEG, "-y", "-ss", str(seg["src_in"]),
+                        "-t", str(slice_end - seg["src_in"]), "-i", str(src),
+                        *vcodec, "-an", "-movflags", "+faststart", str(sl),
+                    ], log, cancel, check=True)
                     parts.append(sl)
                     if kf >= seg["src_out"]:
                         continue
                     seg = {**seg, "src_in": kf}
-                run([FFMPEG, "-y", "-ss", str(seg["src_in"]),
-                     "-t", str(seg["src_out"] - seg["src_in"]), "-i", str(src),
-                     "-c:v", "copy", "-c:a", "aac", "-b:a", "256k",
-                     "-avoid_negative_ts", "make_zero", str(part)], log, check=True)
+                await run_cancelable([
+                    FFMPEG, "-y", "-ss", str(seg["src_in"]),
+                    "-t", str(seg["src_out"] - seg["src_in"]), "-i", str(src),
+                    "-c:v", "copy", "-an",
+                    "-avoid_negative_ts", "make_zero", str(part),
+                ], log, cancel, check=True)
             elif not seg["dirty"]:
-                run([FFMPEG, "-y", "-ss", str(seg["src_in"]), "-t", str(duration),
-                     "-i", str(src), *vcodec, "-r", str(fps),
-                     "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart",
-                     str(part)], log, check=True)
+                command = [
+                    FFMPEG, "-y", "-ss", str(seg["src_in"]), "-t", str(duration),
+                    "-i", str(src),
+                ]
+                if resolution != "source":
+                    target_h = int(resolution)
+                    target_w = int(round(target_h * st.source_info.width / st.source_info.height / 2) * 2)
+                    command += ["-vf", f"scale={target_w}:{target_h}:flags=lanczos"]
+                command += [
+                    *vcodec, "-r", str(fps),
+                    "-an", "-movflags", "+faststart",
+                    str(part),
+                ]
+                await run_cancelable(command, log, cancel, check=True)
             else:
-                ov = await render_overlays(name, st, seg, work / f"ov{idx:03d}", log)
-                run([FFMPEG, "-y", "-ss", str(seg["src_in"]), "-t", str(duration), "-i", str(src),
-                     "-framerate", str(fps), "-i", str(ov / "f%06d.png"),
-                     "-filter_complex", "[0:v][1:v]overlay=0:0:format=auto:shortest=1[v]",
-                     "-map", "[v]", "-map", "0:a?", *vcodec,
-                     "-r", str(fps), "-c:a", "aac", "-b:a", "256k",
-                     "-movflags", "+faststart", str(part)], log, check=True)
+                if renderer is None:
+                    renderer = OverlayRenderSession(name, st)
+                    await renderer.start()
+                ov = await renderer.render(seg, work / f"ov{idx:03d}", cancel)
+                source_filter = punch_filter_graph(st, seg, fps)
+                scale_filter = ""
+                if resolution != "source":
+                    target_h = int(resolution)
+                    target_w = int(round(target_h * st.source_info.width / st.source_info.height / 2) * 2)
+                    scale_filter = f",scale={target_w}:{target_h}:flags=lanczos"
+                await run_cancelable([FFMPEG, "-y", "-ss", str(seg["src_in"]), "-t", str(duration), "-i", str(src),
+                      "-framerate", str(fps), "-i", str(ov / "f%06d.png"),
+                      "-filter_complex",
+                      f"{source_filter};[1:v]setpts=PTS-STARTPTS[ov];"
+                      f"[base][ov]overlay=0:0:format=auto:shortest=1{scale_filter}[v]",
+                      "-map", "[v]", *vcodec,
+                      "-r", str(fps), "-an",
+                      "-movflags", "+faststart", str(part)], log, cancel, check=True)
             parts.append(part)
         # concat
         lst = work / "list.txt"
         lst.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts), encoding="utf-8")
         pre = work / "video.mp4"
-        concat = run([FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
-                      "-c", "copy", "-movflags", "+faststart", str(pre)], log)
+        concat = await run_cancelable([
+            FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
+            "-c:v", "copy", "-an", "-movflags", "+faststart", str(pre),
+        ], log, cancel)
         if concat.returncode:
-            run([FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
-                 *vcodec, "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart",
-                 str(pre)], log, check=True)
-        # audio mix: concatenated speech + SFX events + video-clip audio
+            await run_cancelable([
+                FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
+                *vcodec, "-an", "-movflags", "+faststart", str(pre),
+            ], log, cancel, check=True)
+        # Build speech once from source cuts. Encoding audio in every tiny video
+        # segment adds AAC priming at every join and causes duration drift.
         total_duration = sum(segment["src_out"] - segment["src_in"] for segment in segs)
-        inputs, filters = [str(pre)], []
+        inputs, filters, amix = [str(pre)], [], []
         if st.source_info.audio_codec:
-            amix = ["[0:a]"]
+            speech = work / "speech.wav"
+            cuts = st.cuts or [Cut(src_in=0, src_out=st.source_info.duration)]
+            speech_filters = []
+            speech_parts = []
+            source_labels = ["[0:a]"]
+            if len(cuts) > 1:
+                source_labels = [f"[src{index}]" for index in range(len(cuts))]
+                speech_filters.append(
+                    f"[0:a]asplit={len(cuts)}{''.join(source_labels)}"
+                )
+            for index, cut in enumerate(cuts):
+                speech_filters.append(
+                    f"{source_labels[index if len(cuts) > 1 else 0]}"
+                    f"atrim=start={cut.src_in}:end={cut.src_out},"
+                    f"asetpts=PTS-STARTPTS[a{index}]"
+                )
+                speech_parts.append(f"[a{index}]")
+            if len(speech_parts) == 1:
+                speech_filters.append(f"{speech_parts[0]}aresample=48000[speech]")
+            else:
+                speech_filters.append(
+                    f"{''.join(speech_parts)}concat=n={len(speech_parts)}:v=0:a=1,"
+                    "aresample=48000[speech]"
+                )
+            await run_cancelable([
+                FFMPEG, "-y", "-i", str(src), "-filter_complex", ";".join(speech_filters),
+                "-map", "[speech]", "-c:a", "pcm_s16le", str(speech),
+            ], log, cancel, check=True)
+            inputs.append(str(speech))
+            amix.append("[1:a]")
         else:
             filters.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{total_duration}[base]")
             amix = ["[base]"]
-        n = 1
         for i in st.instances:
             spec = TEMPLATE_PACKS.get(i.template, {})
-            for s in spec.get("sfx", []):
-                f = TEMPLATES_DIR / spec["_dir"] / s["file"]
+            for event in resolve_sfx_events(i, spec):
+                f = TEMPLATES_DIR / spec["_dir"] / event["file"]
                 if f.exists():
                     inputs.append(str(f))
-                    delay = int((i.start + s.get("offset", 0)) * 1000)
-                    filters.append(f"[{n}:a]adelay={delay}:all=1,volume={s.get('gain',0.8)}[s{n}]")
-                    amix.append(f"[s{n}]"); n += 1
+                    input_index = len(inputs) - 1
+                    delay = int(event["time"] * 1000)
+                    filters.append(
+                        f"[{input_index}:a]adelay={delay}:all=1,"
+                        f"volume={event['gain']}[s{input_index}]"
+                    )
+                    amix.append(f"[s{input_index}]")
             if i.template == "video-clip" and i.fields.get("asset") and not i.missing:
                 af = d / "assets" / i.fields["asset"]
-                if af.exists():
+                try:
+                    has_clip_audio = af.exists() and bool(probe(af).audio_codec)
+                except ValueError:
+                    has_clip_audio = False
+                if has_clip_audio:
                     inputs.append(str(af))
+                    input_index = len(inputs) - 1
                     delay = int(i.start * 1000)
                     filters.append(
-                        f"[{n}:a]atrim=0:{i.duration},asetpts=PTS-STARTPTS,"
-                        f"adelay={delay}:all=1,volume={i.fields.get('volume',0.8)}[s{n}]"
+                        f"[{input_index}:a]atrim=0:{i.duration},asetpts=PTS-STARTPTS,"
+                        f"adelay={delay}:all=1,volume={i.fields.get('volume',0.8)}[s{input_index}]"
                     )
-                    amix.append(f"[s{n}]"); n += 1
-        if n > 1 or not st.source_info.audio_codec:
+                    amix.append(f"[s{input_index}]")
+        if len(amix) == 1:
+            filters.append(f"{amix[0]}atrim=0:{total_duration},aresample=48000[a]")
+        else:
             filters.append(
                 f"{''.join(amix)}amix=inputs={len(amix)}:duration=first:normalize=0,"
-                f"atrim=0:{total_duration}[a]"
+                f"atrim=0:{total_duration},aresample=48000[a]"
             )
-            fc = ";".join(filters)
-            cmd = [FFMPEG, "-y"]
-            for x in inputs: cmd += ["-i", x]
-            cmd += ["-filter_complex", fc, "-map", "0:v", "-map", "[a]",
-                    "-c:v", "copy", "-c:a", "aac", "-b:a", "256k",
-                    "-movflags", "+faststart", str(final)]
-            run(cmd, log, check=True)
-        else:
-            shutil.copy2(pre, final)
+        fc = ";".join(filters)
+        cmd = [FFMPEG, "-y"]
+        for x in inputs:
+            cmd += ["-i", x]
+        cmd += [
+            "-filter_complex", fc, "-map", "0:v", "-map", "[a]",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "256k", "-shortest",
+            "-movflags", "+faststart", str(final),
+        ]
+        await run_cancelable(cmd, log, cancel, check=True)
         verified = probe(final)
         if not verified.codec or verified.duration <= 0:
             raise RuntimeError("FFmpeg created an invalid output file")
@@ -1114,6 +1906,12 @@ async def export(name: str, mode: str):
             f.write(f"\nEXPORT FAILED: {e}\n")
         await progress(name, error=str(e))
     finally:
+        if renderer is not None:
+            try:
+                await renderer.close()
+            except Exception as close_error:
+                with open(log, "a", encoding="utf-8") as handle:
+                    handle.write(f"\nRenderer cleanup warning: {close_error}\n")
         EXPORT_CANCEL.pop(name, None)
 
 
@@ -1121,9 +1919,12 @@ def run_self_tests() -> None:
     """Fast deterministic checks used by launch-independent verification."""
     _test_parser()
     assert len(TEMPLATE_PACKS) == 8, sorted(TEMPLATE_PACKS)
+    assert not TEMPLATE_ERRORS, TEMPLATE_ERRORS
     for spec in TEMPLATE_PACKS.values():
         folder = TEMPLATES_DIR / spec["_dir"]
         assert (folder / "context_template.md").is_file()
+        assert (folder / "render.js").is_file(), f"{spec['id']} has no renderer"
+        assert spec["_has_render"] is True
         for filename in spec.get("assets", []):
             assert (folder / filename).is_file(), (spec["id"], filename)
 
@@ -1138,6 +1939,27 @@ def run_self_tests() -> None:
     ]}]})
     parsed_json = parse_transcript(whisper, "captions.json")
     assert len(parsed_json) == 2 and parsed_json[0].words[0].w == "one"
+    grouped = group_caption_words([
+        CaptionWord(w="Hello", s=0.0, e=0.4, p=.97),
+        CaptionWord(w="world.", s=0.45, e=0.9, p=.93),
+        CaptionWord(w="After", s=1.0, e=1.3, p=.91),
+        CaptionWord(w="pause", s=2.1, e=2.5, p=.88),
+    ])
+    assert [block.text for block in grouped] == ["Hello world.", "After", "pause"]
+    assert grouped[0].words[0].p == .97
+
+    foley_item = Instance(
+        id="marker", template="highlight", start=3, duration=2,
+        fields={"strokes": [{}, {}, {}]},
+    )
+    foley = resolve_sfx_events(foley_item, {
+        "sfx": [{
+            "file": "marker.wav", "gain": .2, "offset_ratio": .1,
+            "repeat_field": "strokes", "spread_ratio": .6,
+        }]
+    })
+    assert [round(event["time"], 2) for event in foley] == [3.2, 3.8, 4.4]
+    assert all(event["gain"] == .2 for event in foley)
 
     sample = ProjectState(
         name="selftest", source_info=MediaInfo(duration=10),
@@ -1153,31 +1975,234 @@ def run_self_tests() -> None:
         raise AssertionError("path traversal was accepted")
     except ValueError:
         pass
+    try:
+        ProjectState(
+            name="overlap", source_info=MediaInfo(duration=10),
+            cuts=[Cut(src_in=0, src_out=6), Cut(src_in=5, src_out=8)],
+        )
+        raise AssertionError("overlapping source cuts were accepted")
+    except ValueError:
+        pass
+    punch = Instance(
+        id="punch", template="punch-in", start=1, duration=2,
+        fields={"rect": {"x": .25, "y": .25, "w": .5, "h": .5}},
+    )
+    punch_state = ProjectState(
+        name="punch", source_info=MediaInfo(width=640, height=360, fps=30, duration=4),
+        cuts=[Cut(src_in=0, src_out=4)], instances=[punch],
+    )
+    graph = punch_filter_graph(
+        punch_state,
+        {"src_in": 1.0, "src_out": 2.0, "tl": 1.0, "dirty": True},
+        30,
+    )
+    assert "zoompan" in graph and "1.000000000" in graph
 
-    from fastapi.testclient import TestClient
+    async def cancellation_check():
+        event = asyncio.Event()
+
+        async def trigger_cancel():
+            await asyncio.sleep(.15)
+            event.set()
+
+        trigger = asyncio.create_task(trigger_cancel())
+        started = time.monotonic()
+        try:
+            await run_cancelable(
+                [sys.executable, "-c", "import time; time.sleep(10)"],
+                None, event, check=True,
+            )
+            raise AssertionError("a canceled subprocess was allowed to finish")
+        except asyncio.CancelledError:
+            assert time.monotonic() - started < 5
+        finally:
+            await trigger
+
+    asyncio.run(cancellation_check())
+
+    import httpx
     test_name = "editoro-selftest"
     test_folder = project_dir(test_name)
     if test_folder.exists():
         shutil.rmtree(test_folder)
+
+    async def api_checks():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            assert (await client.get("/api/health")).json()["templates"] == 8
+            assert (await client.get("/api/projects/does-not-exist/state")).status_code == 404
+            assert (await client.get("/api/projects/does-not-exist/assets")).status_code == 404
+            assert (await client.get("/api/projects/does-not-exist/directives")).status_code == 404
+            assert (await client.post(f"/api/projects/{test_name}")).status_code == 200
+            bad_export = await client.post(
+                f"/api/projects/{test_name}/export",
+                json={"mode": "invalid", "resolution": "source"},
+            )
+            assert bad_export.status_code == 400
+            transcription_status = await client.get(
+                f"/api/projects/{test_name}/transcribe"
+            )
+            assert transcription_status.status_code == 200
+            assert transcription_status.json()["status"] == "idle"
+            no_source = await client.post(
+                f"/api/projects/{test_name}/transcribe",
+                json={"model": "large-v3", "language": "auto", "terms": ""},
+            )
+            assert no_source.status_code == 409
+            canceled_idle = await client.post(
+                f"/api/projects/{test_name}/transcribe/cancel"
+            )
+            assert canceled_idle.status_code == 200
+            assert canceled_idle.json()["status"] == "idle"
+            media_file = test_folder / "assets" / "range.bin"
+            media_file.write_bytes(b"0123456789")
+            ranged = await client.get(
+                f"/media/{test_name}/assets/range.bin",
+                headers={"Range": "bytes=2-5"},
+            )
+            assert ranged.status_code == 206 and ranged.content == b"2345"
+            suffix = await client.get(
+                f"/media/{test_name}/assets/range.bin",
+                headers={"Range": "bytes=-3"},
+            )
+            assert suffix.status_code == 206 and suffix.content == b"789"
+            invalid = await client.get(
+                f"/media/{test_name}/assets/range.bin",
+                headers={"Range": "bytes=99-"},
+            )
+            assert invalid.status_code == 416
+            transcript = await client.post(
+                f"/api/projects/{test_name}/transcript",
+                files={"file": ("captions.srt", srt.encode("utf-8"), "application/x-subrip")},
+            )
+            assert transcript.status_code == 200 and len(transcript.json()["captions"]) == 2
+
     try:
-        client = TestClient(app)
-        assert client.get("/api/health").json()["templates"] == 8
-        assert client.post(f"/api/projects/{test_name}").status_code == 200
-        media_file = test_folder / "assets" / "range.bin"
-        media_file.write_bytes(b"0123456789")
-        ranged = client.get(f"/media/{test_name}/assets/range.bin", headers={"Range": "bytes=2-5"})
-        assert ranged.status_code == 206 and ranged.content == b"2345"
-        invalid = client.get(f"/media/{test_name}/assets/range.bin", headers={"Range": "bytes=99-"})
-        assert invalid.status_code == 416
-        transcript = client.post(
-            f"/api/projects/{test_name}/transcript",
-            files={"file": ("captions.srt", srt.encode("utf-8"), "application/x-subrip")},
-        )
-        assert transcript.status_code == 200 and len(transcript.json()["captions"]) == 2
+        asyncio.run(api_checks())
     finally:
         if test_folder.exists():
             shutil.rmtree(test_folder)
     print("backend/API tests OK")
+
+
+def run_export_e2e_tests() -> None:
+    """Exercise cuts, audio, all template packs, and both export modes."""
+    from urllib.request import urlopen
+
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        raise RuntimeError("FFmpeg and FFprobe are required for end-to-end tests")
+    if not renderer_executable():
+        raise RuntimeError("Playwright Chromium is required; run launch.cmd once")
+
+    def health() -> Optional[dict]:
+        try:
+            with urlopen(f"http://127.0.0.1:{PORT}/api/health", timeout=.5) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return None
+
+    current_health = health()
+    if current_health and current_health.get("app") != "Editoro":
+        raise RuntimeError(f"Port {PORT} is already used by another application")
+    if not current_health:
+        thread = threading.Thread(
+            target=lambda: uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="error"),
+            daemon=True,
+        )
+        thread.start()
+        for _ in range(80):
+            if health():
+                break
+            time.sleep(.1)
+        else:
+            raise RuntimeError("The test server did not start")
+
+    name = f"editoro-e2e-{uuid.uuid4().hex[:8]}"
+    folder = project_dir(name)
+    folder.mkdir(parents=True)
+    (folder / "assets").mkdir()
+    (folder / "exports").mkdir()
+    try:
+        source = folder / "source.mp4"
+        run([
+            FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3",
+            "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000:duration=3",
+            "-c:v", "libx264", "-preset", "veryfast", "-g", "30", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-shortest", str(source),
+        ], check=True)
+        asset = folder / "assets" / "card.png"
+        run([
+            FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "color=c=0x4ECDC4:s=480x320",
+            "-frames:v", "1", str(asset),
+        ], check=True)
+        inserted_video = folder / "assets" / "insert.mp4"
+        shutil.copy2(source, inserted_video)
+        info = probe(source)
+        state = ProjectState(
+            name=name,
+            source=source.name,
+            source_info=info,
+            cuts=[
+                Cut(src_in=0, src_out=1.4),
+                Cut(src_in=1.8, src_out=info.duration),
+            ],
+            instances=[
+                Instance(
+                    id="ambient", template="ambient", track=1, start=.1, duration=.4,
+                ),
+                Instance(
+                    id="image", template="image-pop", track=2, start=.2, duration=.6,
+                    x=.72, y=.35, scale=.7, fields={"asset": asset.name},
+                ),
+                Instance(
+                    id="highlight", template="highlight", track=3, start=.4, duration=.8,
+                    x=.32, y=.34, scale=.65,
+                    fields={
+                        "asset": asset.name,
+                        "page": 1,
+                        "strokes": [{"x1": .18, "y": .42, "x2": .82}],
+                    },
+                ),
+                Instance(
+                    id="screen", template="screen", track=4, start=.8, duration=.6,
+                    x=.65, y=.64, scale=.55, fields={"asset": asset.name},
+                ),
+                Instance(
+                    id="punch", template="punch-in", track=5, start=1, duration=.8,
+                    fields={"rect": {"x": .25, "y": .25, "w": .5, "h": .5}},
+                ),
+                Instance(
+                    id="video", template="video-clip", track=2, start=1.4, duration=.6,
+                    x=.28, y=.66, scale=.55,
+                    fields={"asset": inserted_video.name, "volume": .25},
+                ),
+                Instance(
+                    id="keyword", template="keyword", track=3, start=2.1, duration=.5,
+                    x=.5, y=.15, scale=.8, fields={"text": "frame accurate"},
+                ),
+            ],
+            captions=[
+                CaptionBlock(id="caption", start=.3, end=1.2, text="Editoro export test"),
+            ],
+        )
+        save_state(state)
+        expected_duration = sum(cut.src_out - cut.src_in for cut in state.cuts)
+        for mode, resolution, expected_width in (("hq", "720", 1280), ("lossless", "source", 640)):
+            before = set((folder / "exports").glob("*.mp4"))
+            asyncio.run(export(name, mode, resolution))
+            created = set((folder / "exports").glob("*.mp4")) - before
+            assert len(created) == 1, (mode, (folder / "exports" / "export.log").read_text(errors="replace"))
+            output = created.pop()
+            verified = probe(output)
+            assert verified.width == expected_width, (mode, verified)
+            assert verified.audio_codec == "aac", (mode, verified)
+            assert abs(verified.duration - expected_duration) <= 1 / info.fps + .01, (mode, verified.duration)
+            assert "EXPORT FAILED" not in (folder / "exports" / "export.log").read_text(errors="replace")
+        print("synthetic HQ + smart-lossless export tests OK")
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 # ----------------------------------------------------------- [11] Entrypoint
@@ -1207,10 +2232,11 @@ def open_browser_when_ready() -> None:
 
 
 if __name__ == "__main__":
+    if "--test-e2e" in sys.argv:
+        run_self_tests(); run_export_e2e_tests(); sys.exit(0)
     if "--test" in sys.argv:
         run_self_tests(); sys.exit(0)
     scan_templates()
-    ensure_placeholder_sfx()
     print("\n" + "=" * 52)
     print(f"  EDITORO  -> http://{local_ip()}:{PORT}   (LAN)")
     print(f"             http://127.0.0.1:{PORT}       (this machine)")

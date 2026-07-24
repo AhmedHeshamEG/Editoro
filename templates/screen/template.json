@@ -1,8 +1,8 @@
-{ "id":"screen","display_name":"سكرين · Screen","category_color":"#B388FF",
+{ "id":"screen","version":3,"display_name":"سكرين · Screen","category_color":"#B388FF",
   "directive_verb":"سكرين",
-  "fields":[{"name":"asset","type":"asset:image"}],
+  "fields":[{"name":"asset","label":"Screenshot","type":"asset:image","note":"PNG, JPEG, WebP, or GIF"}],
   "zones":{"horizontal":{"x":0.68,"y":0.4,"scale":1.0},"vertical":{"x":0.5,"y":0.32,"scale":0.9}},
   "animation":{"entrance":"subtle-settle","entrance_ms":300,"hold":"static","exit":"fade","exit_ms":220,"easing":"outCubic"},
-  "sfx":[{"file":"settle.wav","offset":0.0,"gain":0.55}],
+  "sfx":[{"file":"settle.wav","offset":0.0,"gain":0.24}],
   "assets":["frame.png"],
   "default_duration":4.5 }

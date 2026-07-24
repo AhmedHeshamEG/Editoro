@@ -13,6 +13,7 @@ An image or PDF page appears as paper and receives one or more straight horizont
 | field | type | notes |
 |---|---|---|
 | asset | asset:image | image or PDF; PDFs are rasterized per page |
+| page | number | zero-based PDF page index; ignored for images |
 | strokes | strokes | normalized `{x1,x2,y}` rows, locked to 0° |
 
 ## Placement defaults
@@ -30,10 +31,12 @@ An image or PDF page appears as paper and receives one or more straight horizont
 ## SFX
 | file | fires at | volume |
 |---|---|---|
-| `marker-sweep.wav` | first stroke sweep | `0.65` |
+| `marker-sweep.wav` | once per drawn stroke, staggered with the ink animation | `0.22` |
 
 ## Assets
+- `render.js` — deterministic page and staggered marker-sweep renderer shared by preview and export
 - `stroke.png` — original generated transparent fluorescent marker stroke
+- `marker-sweep.wav` — trimmed CC0 recording of a real marker on paper; see `../SFX_SOURCES.md`
 
 ## Rules
 - Strokes remain exactly horizontal.
@@ -42,4 +45,3 @@ An image or PDF page appears as paper and receives one or more straight horizont
 
 ## Out of scope
 - Freehand drawing, angled strokes, OCR, or PDF editing.
-

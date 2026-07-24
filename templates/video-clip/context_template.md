@@ -30,10 +30,13 @@ A moving B-roll clip appears inside the same taped instant-photo frame as Image 
 ## SFX
 | file | fires at | volume |
 |---|---|---|
-| `paper-slap.wav` | 50 ms after entrance | `0.70` |
+| `paper-slap.wav` | 30 ms after entrance | `0.28` |
 
 ## Assets
+- `render.js` — deterministic, timeline-synchronized clip renderer shared by preview and export
 - `frame.png` — original generated transparent taped paper frame
+- `paper-texture.png` — self-contained ruled-paper surface
+- `paper-slap.wav` — trimmed CC0 recording of a thin notebook settling on a desk; see `../SFX_SOURCES.md`
 
 ## Rules
 - Clip playback begins at its own zero time when the instance begins.
@@ -42,4 +45,3 @@ A moving B-roll clip appears inside the same taped instant-photo frame as Image 
 
 ## Out of scope
 - Clip-internal cutting beyond the instance duration and start-at-zero policy.
-

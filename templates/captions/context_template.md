@@ -22,6 +22,7 @@ Captions use imported `text`, `start`, `end`, and optional word timestamps rathe
 Static per block. Timing comes directly from the caption track.
 
 ## Assets
+- `render.js` — deterministic two-line safe-area caption renderer shared by preview and export
 - `Inter-Latin-Variable.woff2` — editor interface font
 - `Rubik-Latin-Variable.woff2` — English caption font
 - `Rubik-Arabic-Variable.woff2` — matching future Arabic subset

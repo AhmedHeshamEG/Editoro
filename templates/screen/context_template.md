@@ -29,10 +29,12 @@ A screenshot of an article, post, or interface sits inside a restrained handmade
 ## SFX
 | file | fires at | volume |
 |---|---|---|
-| `settle.wav` | entrance start | `0.55` |
+| `settle.wav` | entrance start | `0.24` |
 
 ## Assets
+- `render.js` — deterministic handmade browser-frame renderer shared by preview and export
 - `frame.png` — original generated transparent paper browser frame
+- `settle.wav` — trimmed CC0 recording of a soft paper movement; see `../SFX_SOURCES.md`
 
 ## Rules
 - Screenshot text must remain legible.
@@ -41,4 +43,3 @@ A screenshot of an article, post, or interface sits inside a restrained handmade
 
 ## Out of scope
 - Live web browsing, scrolling capture, and webpage interaction.
-

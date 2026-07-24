@@ -1,4 +1,4 @@
-{ "id":"ambient","display_name":"Ambient","category_color":"#4A5568",
+{ "id":"ambient","version":3,"display_name":"Ambient","category_color":"#4A5568",
   "directive_verb":null,
   "fields":[],
   "zones":{"horizontal":{"x":0.5,"y":0.5,"scale":1.0},"vertical":{"x":0.5,"y":0.5,"scale":1.0}},

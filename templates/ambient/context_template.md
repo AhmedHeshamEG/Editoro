@@ -25,6 +25,7 @@ Both orientations use fullscreen position `0.50, 0.50`, scale `1.00`.
 None. Ambient is visually quiet and never introduces music.
 
 ## Assets
+- `render.js` — deterministic low-opacity paper drift renderer shared by preview and export
 - `ambient-paper.png` — original generated dark paper-collage background
 
 ## Rules
@@ -34,4 +35,3 @@ None. Ambient is visually quiet and never introduces music.
 
 ## Out of scope
 - Music, particle storms, or bright attention-grabbing loops.
-

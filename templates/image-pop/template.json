@@ -1,8 +1,8 @@
-{ "id":"image-pop","display_name":"صورة · Image pop","category_color":"#4ECDC4",
+{ "id":"image-pop","version":3,"display_name":"صورة · Image pop","category_color":"#4ECDC4",
   "directive_verb":"صورة",
-  "fields":[{"name":"asset","type":"asset:image"}],
+  "fields":[{"name":"asset","label":"Image","type":"asset:image","note":"PNG, JPEG, WebP, GIF, or PDF"},{"name":"page","label":"PDF page index","type":"number","control":"integer","min":0,"max":999,"step":1,"default":0,"note":"zero-based; ignored for images"}],
   "zones":{"horizontal":{"x":0.72,"y":0.35,"scale":1.0},"vertical":{"x":0.5,"y":0.28,"scale":0.9}},
   "animation":{"entrance":"drop-settle","entrance_ms":420,"hold":"static","exit":"shrink-fade","exit_ms":260,"easing":"outBack"},
-  "sfx":[{"file":"paper-slap.wav","offset":0.05,"gain":0.75}],
-  "assets":["frame.png"],
+  "sfx":[{"file":"paper-slap.wav","offset":0.03,"gain":0.30}],
+  "assets":["frame.png","paper-texture.png"],
   "default_duration":4.0 }

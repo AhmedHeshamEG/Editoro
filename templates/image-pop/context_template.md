@@ -13,6 +13,7 @@ An image drops into a handmade instant-photo paper frame with teal tape, settles
 | field | type | notes |
 |---|---|---|
 | asset | asset:image | PNG, JPEG, WebP, GIF first frame, or rasterized PDF page |
+| page | number | zero-based PDF page index; ignored for images |
 
 ## Placement defaults
 | orientation | zone | position | scale |
@@ -29,10 +30,13 @@ An image drops into a handmade instant-photo paper frame with teal tape, settles
 ## SFX
 | file | fires at | volume |
 |---|---|---|
-| `paper-slap.wav` | 50 ms after entrance | `0.75` |
+| `paper-slap.wav` | 30 ms after entrance | `0.30` |
 
 ## Assets
+- `render.js` — deterministic aspect-preserving paper-frame renderer shared by preview and export
 - `frame.png` — original generated transparent taped paper frame
+- `paper-texture.png` — self-contained ruled-paper surface
+- `paper-slap.wav` — trimmed CC0 recording of a real paper flick; see `../SFX_SOURCES.md`
 
 ## Rules
 - Preserve the source image aspect ratio.
@@ -41,4 +45,3 @@ An image drops into a handmade instant-photo paper frame with teal tape, settles
 
 ## Out of scope
 - Freeform borders, filters, and image retouching.
-

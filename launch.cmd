@@ -65,14 +65,16 @@ if not "!REQ_HASH!"=="!OLD_HASH!" (
   echo [OK] Python dependencies are ready.
 )
 
-if not exist "%VENV_DIR%\.playwright-ready" (
+set "BROWSER_HASH="
+if exist "%VENV_DIR%\.playwright-ready" set /p BROWSER_HASH=<"%VENV_DIR%\.playwright-ready"
+if not "!BROWSER_HASH!"=="!REQ_HASH!" (
   echo [SETUP] Installing the private rendering browser...
   "%VENV_PY%" -m playwright install chromium
   if errorlevel 1 (
     echo [ERROR] Chromium could not be installed for the export renderer.
     goto :failed
   )
-  >"%VENV_DIR%\.playwright-ready" echo ready
+  >"%VENV_DIR%\.playwright-ready" echo !REQ_HASH!
 ) else (
   echo [OK] Export renderer is ready.
 )

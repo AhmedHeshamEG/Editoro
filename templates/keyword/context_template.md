@@ -29,10 +29,12 @@ A short verbatim word or phrase appears on a warm torn notebook card above the s
 ## SFX
 | file | fires at | volume |
 |---|---|---|
-| `paper-pop.wav` | entrance start | `0.80` |
+| `paper-pop.wav` | entrance start | `0.28` |
 
 ## Assets
+- `render.js` — deterministic two-line notebook-card renderer shared by preview and export
 - `paper-texture.png` — original generated ruled-paper surface
+- `paper-pop.wav` — trimmed CC0 recording of a notebook page; see `../SFX_SOURCES.md`
 - `Rubik-Latin-Variable.woff2` — Latin on-video text
 - `Rubik-Arabic-Variable.woff2` — future Arabic-ready companion
 
@@ -43,4 +45,3 @@ A short verbatim word or phrase appears on a warm torn notebook card above the s
 
 ## Out of scope
 - Paragraphs, subtitles, and unsaid editorial claims.
-
