@@ -31,12 +31,12 @@ An image or PDF page appears as paper and receives one or more straight horizont
 ## SFX
 | file | fires at | volume |
 |---|---|---|
-| `marker-sweep.wav` | once per drawn stroke, staggered with the ink animation | `0.22` |
+| `dry-stroke.wav` | once per drawn stroke, staggered with the ink animation | `0.18` |
 
 ## Assets
 - `render.js` — deterministic page and staggered marker-sweep renderer shared by preview and export
 - `stroke.png` — original generated transparent fluorescent marker stroke
-- `marker-sweep.wav` — trimmed CC0 recording of a real marker on paper; see `../SFX_SOURCES.md`
+- `dry-stroke.wav` — trimmed dry writing stroke from Mixkit; see `../SFX_SOURCES.md`
 
 ## Rules
 - Strokes remain exactly horizontal.

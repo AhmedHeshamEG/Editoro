@@ -30,13 +30,13 @@ An image drops into a handmade instant-photo paper frame with teal tape, settles
 ## SFX
 | file | fires at | volume |
 |---|---|---|
-| `paper-slap.wav` | 30 ms after entrance | `0.30` |
+| `paper-slide.wav` | 30 ms after entrance | `0.24` |
 
 ## Assets
 - `render.js` — deterministic aspect-preserving paper-frame renderer shared by preview and export
 - `frame.png` — original generated transparent taped paper frame
 - `paper-texture.png` — self-contained ruled-paper surface
-- `paper-slap.wav` — trimmed CC0 recording of a real paper flick; see `../SFX_SOURCES.md`
+- `paper-slide.wav` — clean paper slide from Mixkit; see `../SFX_SOURCES.md`
 
 ## Rules
 - Preserve the source image aspect ratio.

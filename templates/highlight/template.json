@@ -1,8 +1,8 @@
-{ "id":"highlight","version":3,"display_name":"Highlight","category_color":"#F9F871",
+{ "id":"highlight","version":4,"display_name":"Highlight","category_color":"#F9F871",
   "directive_verb":null,
   "fields":[{"name":"asset","label":"Page image or PDF","type":"asset:image","note":"image or PDF page (rasterized server-side)"},{"name":"page","label":"PDF page index","type":"number","control":"integer","min":0,"max":999,"step":1,"default":0,"note":"zero-based; ignored for images"},{"name":"strokes","label":"Marker strokes","type":"strokes","note":"ruler-straight, locked to 0°; one drag = one stroke"}],
   "zones":{"horizontal":{"x":0.5,"y":0.45,"scale":1.0},"vertical":{"x":0.5,"y":0.4,"scale":0.9}},
   "animation":{"entrance":"fade-in","entrance_ms":260,"hold":"staggered marker sweep L→R per stroke","exit":"fade","exit_ms":220,"easing":"outCubic"},
-  "sfx":[{"file":"marker-sweep.wav","offset_ratio":0.12,"gain":0.22,"repeat_field":"strokes","spread_ratio":0.60}],
+  "sfx":[{"file":"dry-stroke.wav","offset_ratio":0.12,"gain":0.18,"repeat_field":"strokes","spread_ratio":0.60}],
   "assets":["stroke.png"],
   "default_duration":5.0 }

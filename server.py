@@ -17,7 +17,7 @@
 
 # ---------------------------------------------------------------- [1] Imports
 from __future__ import annotations
-import asyncio, json, math, os, re, shutil, struct, subprocess, sys, threading, time, uuid, webbrowser
+import asyncio, json, math, mimetypes, os, re, shutil, struct, subprocess, sys, threading, time, uuid, webbrowser
 import importlib.util
 from datetime import datetime
 from pathlib import Path
@@ -33,8 +33,8 @@ TEMPLATES_DIR = ROOT / "templates"
 PROJECTS_DIR = ROOT / "projects"
 PROJECTS_DIR.mkdir(exist_ok=True)
 
-PORT = 8765
-APP_VERSION = "1.2.0"
+PORT = int(os.environ.get("EDITORO_PORT", "8765"))
+APP_VERSION = "1.3.0"
 FFMPEG = shutil.which("ffmpeg") or "ffmpeg"
 FFPROBE = shutil.which("ffprobe") or "ffprobe"
 PRIVATE_BROWSERS_DIR = ROOT / ".venv" / "playwright-browsers"
@@ -1451,6 +1451,19 @@ def keyframes(src: Path, log) -> list[float]:
     return frames or [0.0]
 
 
+CAMERA_TEMPLATES = {"punch-in", "zoom-out"}
+
+
+def camera_effect_at(st: ProjectState, timeline_time: float) -> Optional[Instance]:
+    active = [
+        item for item in st.instances
+        if item.template in CAMERA_TEMPLATES
+        and isinstance(item.fields.get("rect"), dict)
+        and item.start <= timeline_time < item.start + item.duration
+    ]
+    return min(active, key=lambda item: (item.track, item.start, item.id), default=None)
+
+
 def timeline_segments(st: ProjectState) -> list[dict]:
     """Resolve cuts → ordered (src_in, src_out, tl_start) list, then classify
     clean/dirty by intersection with instances (incl. punch-in) & captions."""
@@ -1486,76 +1499,98 @@ def timeline_segments(st: ProjectState) -> list[dict]:
                 continue
             mid = s["tl"] + (a + b) / 2
             dirty = any(x <= mid < y for x, y in spans)
+            camera = camera_effect_at(st, mid)
             out.append({"src_in": s["src_in"] + a, "src_out": s["src_in"] + b,
-                        "tl": s["tl"] + a, "dirty": dirty})
-    return out
+                        "tl": s["tl"] + a, "dirty": dirty,
+                        "camera": camera.id if camera else None})
+    # Renderer state can change inside a dirty span, so adjacent overlay/caption
+    # intervals do not need separate FFmpeg processes. Camera intervals remain
+    # separate because their source transform is expressed by FFmpeg.
+    merged: list[dict] = []
+    for segment in out:
+        previous = merged[-1] if merged else None
+        contiguous = previous and (
+            abs(previous["src_out"] - segment["src_in"]) <= frame / 2
+            and abs(
+                previous["tl"] + previous["src_out"] - previous["src_in"]
+                - segment["tl"]
+            ) <= frame / 2
+        )
+        if (
+            contiguous
+            and previous["dirty"] == segment["dirty"]
+            and previous.get("camera") == segment.get("camera")
+        ):
+            previous["src_out"] = segment["src_out"]
+        else:
+            merged.append(segment.copy())
+    return merged
 
 
 def video_encoder(st: ProjectState, nvenc: bool) -> list[str]:
-    """Choose a concat-compatible visually-lossless encoder."""
+    """Choose a fast, concat-compatible high-quality encoder."""
     hevc = st.source_info.codec in {"hevc", "h265"}
     if nvenc:
         codec = "hevc_nvenc" if hevc else "h264_nvenc"
         return [
-            "-c:v", codec, "-preset", "p6", "-rc", "constqp", "-qp", "14",
+            "-c:v", codec, "-preset", "p4", "-tune", "hq",
+            "-rc", "constqp", "-qp", "16", "-spatial_aq", "1", "-aq-strength", "8",
             "-pix_fmt", "yuv420p",
         ]
     codec = "libx265" if hevc else "libx264"
     return [
-        "-c:v", codec, "-preset", "slow", "-crf", "12",
+        "-c:v", codec, "-preset", "veryfast", "-crf", "16",
         "-pix_fmt", "yuv420p",
     ]
 
 
-def punch_filter_graph(st: ProjectState, seg: dict, fps: float) -> str:
-    """Build the source-video transform used by a punch-in for one dirty span.
-
-    Timeline segmentation already cuts at every instance boundary, so selecting
-    the first intersecting punch mirrors the preview's track-ordered behavior.
-    """
-    punches = sorted(
-        (
-            item for item in st.instances
-            if item.template == "punch-in"
-            and isinstance(item.fields.get("rect"), dict)
-            and item.start < seg["tl"] + (seg["src_out"] - seg["src_in"])
-            and seg["tl"] < item.start + item.duration
-        ),
-        key=lambda item: (item.track, item.start, item.id),
-    )
-    if not punches:
+def camera_filter_graph(st: ProjectState, seg: dict, fps: float) -> str:
+    """Build the source-video transform shared by zoom-in and zoom-out."""
+    camera_id = seg.get("camera")
+    camera = next((item for item in st.instances if item.id == camera_id), None)
+    if camera is None:
+        midpoint = seg["tl"] + (seg["src_out"] - seg["src_in"]) / 2
+        camera = camera_effect_at(st, midpoint)
+    if camera is None:
         return "[0:v]setpts=PTS-STARTPTS[base]"
 
-    punch = punches[0]
-    rect = punch.fields["rect"]
+    rect = camera.fields["rect"]
     width = max(0.05, min(1.0, float(rect.get("w", 1.0))))
     height = max(0.05, min(1.0, float(rect.get("h", 1.0))))
     x = max(0.0, min(1.0 - width, float(rect.get("x", 0.0))))
     y = max(0.0, min(1.0 - height, float(rect.get("y", 0.0))))
     center_x, center_y = x + width / 2, y + height / 2
     target = 1.0 / max(width, height)
-    animation = TEMPLATE_PACKS.get("punch-in", {}).get("animation", {})
+    animation = TEMPLATE_PACKS.get(camera.template, {}).get("animation", {})
     entrance = max(1 / fps, float(animation.get("entrance_ms", 450)) / 1000)
     exit_duration = max(1 / fps, float(animation.get("exit_ms", 400)) / 1000)
-    start, end = punch.start, punch.start + punch.duration
+    start, end = camera.start, camera.start + camera.duration
     global_time = f"({seg['tl']:.9f}+on/{fps:.9f})"
     in_k = f"clip(({global_time}-{start:.9f})/{entrance:.9f},0,1)"
     out_k = f"clip(({end:.9f}-{global_time})/{exit_duration:.9f},0,1)"
     ease_in = f"(1-pow(1-{in_k},3))"
     ease_out = f"(1-pow(1-{out_k},3))"
-    amount = (
-        f"if(lt({global_time},{start + entrance:.9f}),{ease_in},"
-        f"if(gt({global_time},{end - exit_duration:.9f}),{ease_out},1))"
-    )
+    if camera.template == "zoom-out":
+        amount = f"if(lt({global_time},{start + entrance:.9f}),1-{ease_in},0)"
+    else:
+        amount = (
+            f"if(lt({global_time},{start + entrance:.9f}),{ease_in},"
+            f"if(gt({global_time},{end - exit_duration:.9f}),{ease_out},1))"
+        )
     zoom = f"(1+{target - 1:.9f}*{amount})"
     return (
         "[0:v]setpts=PTS-STARTPTS,"
         f"zoompan=z='{zoom}':"
-        f"x='{center_x:.9f}*iw*(1-1/zoom)':"
-        f"y='{center_y:.9f}*ih*(1-1/zoom)':"
+        f"x='clip({center_x:.9f}*iw-iw/(2*zoom),0,iw-iw/zoom)':"
+        f"y='clip({center_y:.9f}*ih-ih/(2*zoom),0,ih-ih/zoom)':"
         f"d=1:s={st.source_info.width}x{st.source_info.height}:fps={fps:.9f}"
         "[base]"
     )
+
+
+def punch_filter_graph(st: ProjectState, seg: dict, fps: float) -> str:
+    """Backward-compatible name for older tests and integrations."""
+    return camera_filter_graph(st, seg, fps)
 
 
 class OverlayRenderSession:
@@ -1581,7 +1616,13 @@ class OverlayRenderSession:
         self.playwright = await async_playwright().start()
         self.browser = await self.playwright.chromium.launch(
             executable_path=str(executable),
-            args=["--disable-gpu-sandbox"],
+            args=[
+                "--disable-gpu-sandbox",
+                "--enable-gpu-rasterization",
+                "--enable-zero-copy",
+                "--ignore-gpu-blocklist",
+                "--use-angle=d3d11",
+            ],
         )
         self.page = await self.browser.new_page(viewport={
             "width": self.state.source_info.width,
@@ -1609,33 +1650,36 @@ class OverlayRenderSession:
             detail = " | ".join(self.errors[-5:]) or str(exc)
             raise RuntimeError(f"Export renderer did not become ready: {detail}") from exc
 
-    async def render(
+    async def frame_batches(
         self,
         seg: dict,
-        outdir: Path,
         cancel: asyncio.Event,
-    ) -> Path:
+        batch_size: int = 4,
+    ):
         if not self.page:
             raise RuntimeError("overlay renderer is not started")
         fps = self.state.source_info.fps or 30
-        outdir.mkdir(parents=True, exist_ok=True)
         count = max(1, int(math.ceil((seg["src_out"] - seg["src_in"]) * fps)))
-        for frame in range(count):
+        for first in range(0, count, batch_size):
             if cancel.is_set():
                 raise asyncio.CancelledError()
-            timeline_time = seg["tl"] + frame / fps
-            data = await self.page.evaluate(
-                "time => window.__renderFrame(time)",
-                timeline_time,
+            times = [
+                seg["tl"] + frame / fps
+                for frame in range(first, min(count, first + batch_size))
+            ]
+            data_urls = await self.page.evaluate(
+                "times => window.__renderFrames(times)",
+                times,
             )
-            (outdir / f"f{frame:06d}.png").write_bytes(
+            frames = [
                 __import__("base64").b64decode(data.split(",", 1)[1])
-            )
+                for data in data_urls
+            ]
+            yield first, count, frames
         if self.errors:
             raise RuntimeError(
                 "Template renderer error: " + " | ".join(self.errors[-5:])
             )
-        return outdir
 
     async def close(self) -> None:
         if self.browser:
@@ -1645,21 +1689,159 @@ class OverlayRenderSession:
         self.browser = self.playwright = self.page = None
 
 
+async def encode_dirty_segment(
+    renderer: OverlayRenderSession,
+    st: ProjectState,
+    seg: dict,
+    src: Path,
+    part: Path,
+    vcodec: list[str],
+    resolution: str,
+    log: Path,
+    cancel: asyncio.Event,
+    project: str,
+    segment_index: int,
+    segment_total: int,
+) -> None:
+    """Stream transparent PNG frames straight into FFmpeg without disk files."""
+    fps = st.source_info.fps or 30
+    duration = seg["src_out"] - seg["src_in"]
+    source_filter = camera_filter_graph(st, seg, fps)
+    scale_filter = ""
+    if resolution != "source":
+        target_h = int(resolution)
+        target_w = int(round(target_h * st.source_info.width / st.source_info.height / 2) * 2)
+        scale_filter = f",scale={target_w}:{target_h}:flags=lanczos"
+    command = [
+        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+        "-ss", str(seg["src_in"]), "-t", str(duration), "-i", str(src),
+        "-thread_queue_size", "32", "-f", "image2pipe",
+        "-framerate", str(fps), "-vcodec", "png", "-i", "pipe:0",
+        "-filter_complex",
+        f"{source_filter};[1:v]setpts=PTS-STARTPTS[ov];"
+        f"[base][ov]overlay=0:0:format=auto:shortest=1{scale_filter}[v]",
+        "-map", "[v]", *vcodec, "-r", str(fps), "-an",
+        "-movflags", "+faststart", str(part),
+    ]
+    with open(log, "a", encoding="utf-8") as handle:
+        handle.write("\n$ " + " ".join(command) + "\n")
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stderr_task = asyncio.create_task(process.stderr.read())
+    try:
+        async for first, count, frames in renderer.frame_batches(seg, cancel):
+            if cancel.is_set():
+                raise asyncio.CancelledError()
+            if process.returncode is not None:
+                break
+            for frame in frames:
+                process.stdin.write(frame)
+            await process.stdin.drain()
+            await progress(
+                project,
+                seg=segment_index,
+                total=segment_total,
+                status="render",
+                frame=min(count, first + len(frames)),
+                frames=count,
+            )
+        if process.stdin:
+            process.stdin.close()
+            try:
+                await process.stdin.wait_closed()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        wait_task = asyncio.create_task(process.wait())
+        cancel_task = asyncio.create_task(cancel.wait())
+        done, _ = await asyncio.wait(
+            {wait_task, cancel_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if cancel_task in done and cancel.is_set() and not wait_task.done():
+            process.terminate()
+            try:
+                await asyncio.wait_for(wait_task, timeout=3)
+            except asyncio.TimeoutError:
+                process.kill()
+                await wait_task
+            raise asyncio.CancelledError()
+        cancel_task.cancel()
+        await asyncio.gather(cancel_task, return_exceptions=True)
+        await wait_task
+    except BaseException:
+        if process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=3)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+        raise
+    finally:
+        stderr = (await stderr_task).decode("utf-8", "replace")
+        if stderr:
+            with open(log, "a", encoding="utf-8") as handle:
+                handle.write(stderr + "\n")
+    if process.returncode:
+        detail = stderr.strip()[-2000:] or "FFmpeg stopped while receiving overlay frames"
+        raise RuntimeError(f"FFmpeg failed ({process.returncode}): {detail}")
+
+
 EXPORT_CANCEL: dict[str, asyncio.Event] = {}
+EXPORT_MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | {
+    ".mp3", ".wav", ".m4a", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".pdf",
+}
+
+
+def exported_media(name: str) -> list[Path]:
+    folder = require_project(name) / "exports"
+    if not folder.exists():
+        return []
+    return sorted(
+        (
+            path for path in folder.iterdir()
+            if path.is_file() and path.suffix.lower() in EXPORT_MEDIA_EXTENSIONS
+        ),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
 
 
 @app.get("/api/projects/{name}/exports")
 def api_exports(name: str):
-    folder = require_project(name) / "exports"
     files = []
-    if folder.exists():
-        for path in sorted(folder.glob("*.mp4"), key=lambda item: item.stat().st_mtime, reverse=True):
-            files.append({
-                "name": path.name, "size": path.stat().st_size,
-                "url": f"/media/{name}/exports/{path.name}",
-                "modified": path.stat().st_mtime,
-            })
+    for path in exported_media(name):
+        files.append({
+            "name": path.name, "size": path.stat().st_size,
+            "url": f"/media/{name}/exports/{path.name}",
+            "download_url": f"/api/projects/{name}/exports/latest/download"
+            if not files else f"/media/{name}/exports/{path.name}",
+            "modified": path.stat().st_mtime,
+            "media_type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+        })
     return {"files": files}
+
+
+@app.get("/api/projects/{name}/exports/latest/download")
+def api_download_latest_export(name: str):
+    files = exported_media(name)
+    if not files:
+        raise HTTPException(404, "No exported media is available yet")
+    latest = files[0]
+    return FileResponse(
+        latest,
+        filename=latest.name,
+        media_type=mimetypes.guess_type(latest.name)[0] or "application/octet-stream",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @app.post("/api/projects/{name}/export")
@@ -1710,8 +1892,9 @@ async def export(name: str, mode: str, resolution: str = "source"):
     nvenc = has_nvenc()
     vcodec = video_encoder(st, nvenc)
     if not nvenc:
-        await progress(name, note="NVENC unavailable — falling back to libx264 -crf 12")
+        await progress(name, note="NVENC unavailable — using the fast high-quality CPU encoder")
     work = exp / f"work-{stamp}"
+    partial = work / "final.mp4"
     renderer: Optional[OverlayRenderSession] = None
     try:
         if not st.source or not src.is_file():
@@ -1739,25 +1922,43 @@ async def export(name: str, mode: str, resolution: str = "source"):
             if not seg["dirty"] and mode == "lossless" and copy_compatible:
                 # smart cut: snap start forward to a keyframe; re-encode only the
                 # pre-keyframe slice if the requested cut isn't keyframe-aligned.
-                kf = min((k for k in kfs if k >= seg["src_in"] - 1e-3), default=seg["src_in"])
-                if kf - seg["src_in"] > 1 / fps:      # slice before next keyframe → tiny re-encode
+                next_keyframe = min(
+                    (k for k in kfs if k >= seg["src_in"] - 1e-3),
+                    default=None,
+                )
+                if next_keyframe is None or next_keyframe >= seg["src_out"] - 1 / fps:
+                    # A copied span cannot begin accurately without a keyframe.
+                    # Re-encode it once instead of pulling earlier frames in.
+                    await run_cancelable([
+                        FFMPEG, "-y", "-ss", str(seg["src_in"]),
+                        "-t", str(seg["src_out"] - seg["src_in"]), "-i", str(src),
+                        *vcodec, "-an", "-movflags", "+faststart", str(part),
+                    ], log, cancel, check=True)
+                elif next_keyframe - seg["src_in"] > 1 / fps:
                     sl = work / f"p{idx:03d}a.mp4"
-                    slice_end = min(kf, seg["src_out"])
+                    slice_end = min(next_keyframe, seg["src_out"])
                     await run_cancelable([
                         FFMPEG, "-y", "-ss", str(seg["src_in"]),
                         "-t", str(slice_end - seg["src_in"]), "-i", str(src),
                         *vcodec, "-an", "-movflags", "+faststart", str(sl),
                     ], log, cancel, check=True)
                     parts.append(sl)
-                    if kf >= seg["src_out"]:
+                    if next_keyframe >= seg["src_out"]:
                         continue
-                    seg = {**seg, "src_in": kf}
-                await run_cancelable([
-                    FFMPEG, "-y", "-ss", str(seg["src_in"]),
-                    "-t", str(seg["src_out"] - seg["src_in"]), "-i", str(src),
-                    "-c:v", "copy", "-an",
-                    "-avoid_negative_ts", "make_zero", str(part),
-                ], log, cancel, check=True)
+                    seg = {**seg, "src_in": next_keyframe}
+                    await run_cancelable([
+                        FFMPEG, "-y", "-ss", str(seg["src_in"]),
+                        "-t", str(seg["src_out"] - seg["src_in"]), "-i", str(src),
+                        "-c:v", "copy", "-an",
+                        "-avoid_negative_ts", "make_zero", str(part),
+                    ], log, cancel, check=True)
+                else:
+                    await run_cancelable([
+                        FFMPEG, "-y", "-ss", str(seg["src_in"]),
+                        "-t", str(seg["src_out"] - seg["src_in"]), "-i", str(src),
+                        "-c:v", "copy", "-an",
+                        "-avoid_negative_ts", "make_zero", str(part),
+                    ], log, cancel, check=True)
             elif not seg["dirty"]:
                 command = [
                     FFMPEG, "-y", "-ss", str(seg["src_in"]), "-t", str(duration),
@@ -1777,21 +1978,10 @@ async def export(name: str, mode: str, resolution: str = "source"):
                 if renderer is None:
                     renderer = OverlayRenderSession(name, st)
                     await renderer.start()
-                ov = await renderer.render(seg, work / f"ov{idx:03d}", cancel)
-                source_filter = punch_filter_graph(st, seg, fps)
-                scale_filter = ""
-                if resolution != "source":
-                    target_h = int(resolution)
-                    target_w = int(round(target_h * st.source_info.width / st.source_info.height / 2) * 2)
-                    scale_filter = f",scale={target_w}:{target_h}:flags=lanczos"
-                await run_cancelable([FFMPEG, "-y", "-ss", str(seg["src_in"]), "-t", str(duration), "-i", str(src),
-                      "-framerate", str(fps), "-i", str(ov / "f%06d.png"),
-                      "-filter_complex",
-                      f"{source_filter};[1:v]setpts=PTS-STARTPTS[ov];"
-                      f"[base][ov]overlay=0:0:format=auto:shortest=1{scale_filter}[v]",
-                      "-map", "[v]", *vcodec,
-                      "-r", str(fps), "-an",
-                      "-movflags", "+faststart", str(part)], log, cancel, check=True)
+                await encode_dirty_segment(
+                    renderer, st, seg, src, part, vcodec, resolution, log, cancel,
+                    name, idx + 1, len(segs),
+                )
             parts.append(part)
         # concat
         lst = work / "list.txt"
@@ -1806,9 +1996,18 @@ async def export(name: str, mode: str, resolution: str = "source"):
                 FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
                 *vcodec, "-an", "-movflags", "+faststart", str(pre),
             ], log, cancel, check=True)
+        expected_video_duration = sum(
+            segment["src_out"] - segment["src_in"] for segment in segs
+        )
+        joined = probe(pre)
+        if abs(joined.duration - expected_video_duration) > max(.08, 2 / fps):
+            raise RuntimeError(
+                "Video segment timestamps did not join accurately "
+                f"({joined.duration:.3f}s vs {expected_video_duration:.3f}s)"
+            )
         # Build speech once from source cuts. Encoding audio in every tiny video
         # segment adds AAC priming at every join and causes duration drift.
-        total_duration = sum(segment["src_out"] - segment["src_in"] for segment in segs)
+        total_duration = expected_video_duration
         inputs, filters, amix = [str(pre)], [], []
         if st.source_info.audio_codec:
             speech = work / "speech.wav"
@@ -1886,12 +2085,13 @@ async def export(name: str, mode: str, resolution: str = "source"):
         cmd += [
             "-filter_complex", fc, "-map", "0:v", "-map", "[a]",
             "-c:v", "copy", "-c:a", "aac", "-b:a", "256k", "-shortest",
-            "-movflags", "+faststart", str(final),
+            "-movflags", "+faststart", str(partial),
         ]
         await run_cancelable(cmd, log, cancel, check=True)
-        verified = probe(final)
+        verified = probe(partial)
         if not verified.codec or verified.duration <= 0:
             raise RuntimeError("FFmpeg created an invalid output file")
+        os.replace(partial, final)
         shutil.rmtree(work, ignore_errors=True)
         await progress(name, done=True, file=f"exports/{final.name}",
                        duration=verified.duration, codec=verified.codec, nvenc=nvenc)
@@ -1918,7 +2118,7 @@ async def export(name: str, mode: str, resolution: str = "source"):
 def run_self_tests() -> None:
     """Fast deterministic checks used by launch-independent verification."""
     _test_parser()
-    assert len(TEMPLATE_PACKS) == 8, sorted(TEMPLATE_PACKS)
+    assert len(TEMPLATE_PACKS) == 9, sorted(TEMPLATE_PACKS)
     assert not TEMPLATE_ERRORS, TEMPLATE_ERRORS
     for spec in TEMPLATE_PACKS.values():
         folder = TEMPLATES_DIR / spec["_dir"]
@@ -1927,6 +2127,8 @@ def run_self_tests() -> None:
         assert spec["_has_render"] is True
         for filename in spec.get("assets", []):
             assert (folder / filename).is_file(), (spec["id"], filename)
+    assert not TEMPLATE_PACKS["punch-in"].get("sfx")
+    assert not TEMPLATE_PACKS["zoom-out"].get("sfx")
 
     srt = "1\n00:00:00,000 --> 00:00:01,500\nHello world\n\n2\n00:00:01,500 --> 00:00:03,000\nSecond line\n"
     parsed_srt = parse_transcript(srt, "captions.srt")
@@ -1993,10 +2195,21 @@ def run_self_tests() -> None:
     )
     graph = punch_filter_graph(
         punch_state,
-        {"src_in": 1.0, "src_out": 2.0, "tl": 1.0, "dirty": True},
+        {"src_in": 1.0, "src_out": 2.0, "tl": 1.0, "dirty": True, "camera": "punch"},
         30,
     )
     assert "zoompan" in graph and "1.000000000" in graph
+    zoom_out = Instance(
+        id="zoom-out", template="zoom-out", start=1, duration=2,
+        fields={"rect": {"x": .2, "y": .2, "w": .6, "h": .6}},
+    )
+    zoom_out_state = punch_state.model_copy(update={"instances": [zoom_out]})
+    zoom_out_graph = camera_filter_graph(
+        zoom_out_state,
+        {"src_in": 1.0, "src_out": 2.0, "tl": 1.0, "dirty": True, "camera": "zoom-out"},
+        30,
+    )
+    assert "zoompan" in zoom_out_graph and "1-" in zoom_out_graph
 
     async def cancellation_check():
         event = asyncio.Event()
@@ -2029,7 +2242,7 @@ def run_self_tests() -> None:
     async def api_checks():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            assert (await client.get("/api/health")).json()["templates"] == 8
+            assert (await client.get("/api/health")).json()["templates"] == 9
             assert (await client.get("/api/projects/does-not-exist/state")).status_code == 404
             assert (await client.get("/api/projects/does-not-exist/assets")).status_code == 404
             assert (await client.get("/api/projects/does-not-exist/directives")).status_code == 404
@@ -2054,6 +2267,17 @@ def run_self_tests() -> None:
             )
             assert canceled_idle.status_code == 200
             assert canceled_idle.json()["status"] == "idle"
+            empty_download = await client.get(
+                f"/api/projects/{test_name}/exports/latest/download"
+            )
+            assert empty_download.status_code == 404
+            exported = test_folder / "exports" / "latest.mp4"
+            exported.write_bytes(b"test-export")
+            latest = await client.get(
+                f"/api/projects/{test_name}/exports/latest/download"
+            )
+            assert latest.status_code == 200 and latest.content == b"test-export"
+            assert "attachment" in latest.headers.get("content-disposition", "")
             media_file = test_folder / "assets" / "range.bin"
             media_file.write_bytes(b"0123456789")
             ranged = await client.get(
@@ -2128,7 +2352,8 @@ def run_export_e2e_tests() -> None:
             FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
             "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3",
             "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000:duration=3",
-            "-c:v", "libx264", "-preset", "veryfast", "-g", "30", "-pix_fmt", "yuv420p",
+            "-c:v", "libx264", "-preset", "veryfast", "-g", "300",
+            "-keyint_min", "300", "-sc_threshold", "0", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-shortest", str(source),
         ], check=True)
         asset = folder / "assets" / "card.png"
@@ -2174,6 +2399,10 @@ def run_export_e2e_tests() -> None:
                     fields={"rect": {"x": .25, "y": .25, "w": .5, "h": .5}},
                 ),
                 Instance(
+                    id="zoom-out", template="zoom-out", track=6, start=2, duration=.5,
+                    fields={"rect": {"x": .2, "y": .2, "w": .6, "h": .6}},
+                ),
+                Instance(
                     id="video", template="video-clip", track=2, start=1.4, duration=.6,
                     x=.28, y=.66, scale=.55,
                     fields={"asset": inserted_video.name, "volume": .25},
@@ -2199,7 +2428,9 @@ def run_export_e2e_tests() -> None:
             assert verified.width == expected_width, (mode, verified)
             assert verified.audio_codec == "aac", (mode, verified)
             assert abs(verified.duration - expected_duration) <= 1 / info.fps + .01, (mode, verified.duration)
-            assert "EXPORT FAILED" not in (folder / "exports" / "export.log").read_text(errors="replace")
+            export_log = (folder / "exports" / "export.log").read_text(errors="replace")
+            assert "EXPORT FAILED" not in export_log
+            assert "image2pipe" in export_log and "f%06d.png" not in export_log
         print("synthetic HQ + smart-lossless export tests OK")
     finally:
         shutil.rmtree(folder, ignore_errors=True)

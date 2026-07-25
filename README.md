@@ -31,6 +31,7 @@ Deleted projects are moved to a timestamped, recoverable folder instead of being
 - Inserted video clip
 - Document/PDF highlighter
 - Speaker punch-in
+- Speaker zoom-out
 - Framed screen/article capture
 - Ambient paper motion layer
 - Arabic/Latin captions
@@ -53,6 +54,8 @@ Each pack owns its design specification, generated visual assets, fonts where ne
 - Mouse-wheel: scroll horizontally; Alt+wheel: scroll tracks vertically
 - Preview drag, corner handle, or pinch: position and scale a visual
 - Speaker button and volume slider: control all monitoring audio without changing export levels
+- Fullscreen button: open the complete preview and docked transport without covering footage
+- Download button: save the newest export directly to the current desktop or phone
 - Double-click a split source segment: delete it using the visible Ripple setting
 
 Timeline edits snap to the source frame rate. The ruler automatically changes from seconds to frame timecode at deep zoom, and the Snap toggle adds magnetic alignment to nearby block edges and the playhead.
@@ -67,8 +70,10 @@ The first use downloads the selected model into `.models/whisper/`. Generated wo
 
 - **LOSSLESS (smart)** preserves clean source spans where possible and renders only edited regions.
 - **High quality** performs a consistent full encode and can output at source, 1080p, or 720p resolution.
+- Edited overlay frames stream directly from the private renderer into FFmpeg; no per-frame PNG files are written.
+- NVENC uses the local NVIDIA GPU when available, with a fast high-quality CPU fallback.
 - Original speech is rebuilt from source cuts once, then template sound effects and inserted-clip audio are mixed without per-segment AAC drift.
-- Progress, safe cancellation, completed-file history, CPU/GPU fallback, and the detailed `export.log` are available from the export dialog/project folder.
+- Progress, safe cancellation, completed-file history, one-tap latest download, CPU/GPU fallback, and the detailed `export.log` are available from the export dialog/project folder.
 
 ## Built-in checks
 
@@ -78,10 +83,10 @@ Run all local backend, template, parser, API, range-streaming, and safety checks
 .venv\Scripts\python.exe server.py --test
 ```
 
-Run the complete synthetic edit/export regression—including two source cuts, synchronized audio, all eight template packs, HQ output, and smart-lossless output—with:
+Run the complete synthetic edit/export regression—including two source cuts, synchronized audio, all nine template packs, HQ output, and smart-lossless output—with:
 
 ```text
 .venv\Scripts\python.exe server.py --test-e2e
 ```
 
-FFmpeg, FFprobe, all eight template renderers, CPU/GPU encoding availability, and any invalid pack are also reported on the home screen and at `/api/diagnostics`.
+FFmpeg, FFprobe, all nine template renderers, CPU/GPU encoding availability, and any invalid pack are also reported on the home screen and at `/api/diagnostics`.

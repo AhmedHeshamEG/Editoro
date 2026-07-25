@@ -28,7 +28,7 @@
   /* category colors — fixed, never reused (§7) */
   --c-keyword:#FFD166; --c-image:#4ECDC4; --c-video:#6C9BFF;
   --c-highlight:#F9F871; --c-punch:#FF6B6B; --c-screen:#B388FF;
-  --c-ambient:#4A5568; --c-captions:#F2F2F2; --c-sfx:#FFA36C;
+  --c-zoomout:#22D3EE; --c-ambient:#4A5568; --c-captions:#F2F2F2; --c-sfx:#FFA36C;
   --r:10px;
 }
 *{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent}
@@ -47,23 +47,25 @@ input,textarea{font:inherit;color:var(--tx);background:var(--bg2);
 select{font:inherit;color:var(--tx);background:var(--bg2);border:1px solid var(--line);
   border-radius:8px;padding:10px;width:100%;min-height:44px}
 #app{display:grid;height:100%;
-  grid-template:"preview panel" minmax(240px,1fr) "timeline timeline" 360px / minmax(0,1fr) 340px}
+  grid-template:"preview panel" minmax(300px,1fr) "timeline timeline" 320px / minmax(0,1fr) 340px}
 @media (max-width:820px){ /* phone: panel becomes bottom sheet */
-  #app{grid-template:"preview" minmax(210px,1fr) "timeline" 300px / 1fr}
+  #app{grid-template:"preview" minmax(280px,1fr) "timeline" 250px / 1fr}
   #panel{position:fixed;left:0;right:0;bottom:0;top:auto;max-height:70%;
     transform:translateY(calc(100% - 52px));transition:transform .25s;z-index:30;
     border-radius:16px 16px 0 0;box-shadow:0 -8px 40px #000a}
   #panel.open{transform:none}
 }
 /* preview */
-#preview{grid-area:preview;position:relative;background:#000;overflow:hidden}
-#stage{position:absolute;inset:0;display:grid;place-items:center}
-#stage video{width:auto;height:auto;max-width:none;max-height:none;object-fit:fill;
-  transition:transform .08s linear;will-change:transform}
-#projectBar{position:absolute;z-index:12;left:12px;right:12px;top:12px;display:flex;
-  gap:8px;align-items:center;pointer-events:none}
-#projectBar>*{pointer-events:auto}
-#projectTitle{font-weight:700;background:#111b;padding:10px 12px;border-radius:10px;
+#preview{grid-area:preview;position:relative;background:#090a0c;overflow:hidden;
+  display:grid;grid-template-rows:56px minmax(0,1fr) 58px;min-width:0;min-height:0}
+#stage{position:relative;min-width:0;min-height:0;overflow:hidden;
+  background:radial-gradient(circle at 50% 45%,#1a1c21,#060708 72%)}
+#mediaViewport{position:absolute;overflow:hidden;background:#000;box-shadow:0 12px 50px #0008}
+#mediaViewport video{position:absolute;inset:0;width:100%;height:100%;max-width:none;max-height:none;
+  object-fit:fill;transform-origin:0 0;will-change:transform}
+#projectBar{z-index:12;display:flex;gap:8px;align-items:center;padding:6px 10px;
+  background:#15161a;border-bottom:1px solid var(--line);min-width:0}
+#projectTitle{font-weight:700;padding:10px 4px;
   max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #projectBar .spacer{flex:1}
 #syncStatus{width:10px;height:10px;border-radius:50%;background:#888;box-shadow:0 0 0 4px #0007}
@@ -84,18 +86,30 @@ select{font:inherit;color:var(--tx);background:var(--bg2);border:1px solid var(-
   display:none;pointer-events:none}
 .zoneguide{position:absolute;border:1px dashed #ffffff55;color:#ffffff77;
   font-size:11px;padding:2px 6px;display:none;pointer-events:none}
-#transport{position:absolute;left:12px;bottom:12px;display:flex;gap:8px;align-items:center;
-  z-index:10;background:#000a;padding:6px 10px;border-radius:12px;backdrop-filter:blur(8px)}
+#transport{display:flex;gap:6px;align-items:center;z-index:10;background:#15161a;
+  padding:6px 10px;border-top:1px solid var(--line);min-width:0;overflow-x:auto;
+  scrollbar-width:none}
+#transport::-webkit-scrollbar{display:none}
+#transport .transportSpacer{flex:1 0 8px}
+#transport button{min-height:42px;min-width:42px;padding:7px 10px;flex:0 0 auto}
 #tc{font-variant-numeric:tabular-nums;color:var(--tx2)}
 #monitor{display:flex;align-items:center;gap:4px}
 #monitorVolume{width:88px;padding:0;accent-color:var(--c-keyword)}
+#latestBtn.ready{color:var(--c-keyword);border-color:#FFD16688}
+#preview:fullscreen{width:100vw;height:100vh;grid-template-rows:58px minmax(0,1fr) 62px}
+#preview:fullscreen #stage{background:#000}
+#preview:fullscreen #projectBar,#preview:fullscreen #transport{background:#0d0e10}
 @media (max-width:480px){
-  #transport{left:8px;right:8px;gap:4px;padding:5px 6px}
+  #preview{grid-template-rows:52px minmax(0,1fr) 54px}
+  #projectBar{padding:4px 6px}
+  #projectTitle{max-width:120px}
+  #projectBar #sourceBtn,#projectBar #transcriptBtn{padding-inline:8px}
+  #transport{gap:4px;padding:5px 6px}
   #transport button{min-width:36px;padding:6px 8px}
   #transport #frameBack,#transport #frameForward{min-width:32px;padding:6px}
-  #transport #undoBtn,#transport #redoBtn{display:none}
+  #transport #undoBtn,#transport #redoBtn,#transport #splitBtn{display:none}
   #tc{display:none}
-  #monitorVolume{width:52px}
+  #monitorVolume{display:none}
   #exportBtn{padding-inline:10px}
 }
 /* timeline */
@@ -182,7 +196,7 @@ dialog::backdrop{background:#000a}
       <button id="sourceBtn">Source</button><button id="transcriptBtn">Transcript</button>
     </div>
     <div id="stage">
-      <video id="vid" playsinline preload="auto"></video>
+      <div id="mediaViewport"><video id="vid" playsinline preload="auto"></video></div>
       <canvas id="overlay"></canvas>
       <div id="selbox"></div>
       <div class="zoneguide" data-z="فوق_الراس">فوق الراس</div>
@@ -207,6 +221,9 @@ dialog::backdrop{background:#000a}
       </div>
       <button id="splitBtn" title="split at playhead">✂</button>
       <button id="undoBtn">↺</button><button id="redoBtn">↻</button>
+      <div class="transportSpacer"></div>
+      <button id="latestBtn" title="Download the latest export" aria-label="Download latest export" disabled>⇩</button>
+      <button id="fullscreenBtn" title="Fullscreen preview" aria-label="Enter fullscreen preview">⛶</button>
       <button id="exportBtn" class="primary">Export</button>
     </div>
   </div>
@@ -274,6 +291,7 @@ dialog::backdrop{background:#000a}
   <div id="expProg" style="color:var(--tx2);min-height:22px"></div>
   <progress id="expBar" value="0" max="1" hidden></progress>
   <button id="expCancel" class="danger" style="width:100%;margin-top:8px" hidden>Cancel export</button>
+  <button id="expLatest" style="width:100%;margin-top:8px" disabled>Download latest export</button>
   <button id="expClose" style="width:100%;margin-top:8px">Close</button>
   <div id="expHistory"></div>
 </dialog>
@@ -318,10 +336,10 @@ const S={ project:null, state:null, packs:{}, peaks:[], sel:null,
   t:0, playing:false, fps:30, zoom:80 /*px per second*/, scroll:0, trackScroll:0,
   snapEnabled:true, ws:null, undo:[], redo:[], booted:false, resizeObserver:null,
   monitorGain:Number.isFinite(storedMonitor)?Math.max(0,Math.min(1,storedMonitor)):.8,
-  monitorMuted:false,previewLayout:null,overlayQueued:false,lastPlaybackFrame:-1 };
+  monitorMuted:false,previewLayout:null,overlayQueued:false,lastPlaybackFrame:-1,lastExport:null };
 const MIN_ZOOM=4,MAX_ZOOM=6000;
 const CAT={keyword:"--c-keyword","image-pop":"--c-image","video-clip":"--c-video",
-  highlight:"--c-highlight","punch-in":"--c-punch",screen:"--c-screen",
+  highlight:"--c-highlight","punch-in":"--c-punch","zoom-out":"--c-zoomout",screen:"--c-screen",
   ambient:"--c-ambient",captions:"--c-captions"};
 const cc=t=>getComputedStyle(document.documentElement).getPropertyValue(CAT[t]||"--c-sfx").trim();
 const toast=m=>{const d=document.createElement("div");d.className="toast";d.textContent=m;
@@ -509,14 +527,15 @@ registerTemplate("captions",{draw(ctx,inst,t){}});
 
 function activeInstances(t){return (S.state?.instances||[]).filter(i=>t>=i.start&&t<i.start+i.duration)
   .sort((a,b)=>a.track-b.track)}
-function punchZoom(t){ // returns {x,y,scale} for the source video at time t
-  const p=activeInstances(t).find(i=>i.template==="punch-in"&&i.fields.rect);
-  if(!p)return null;
-  const tt=(t-p.start)/p.duration, e=env(p,tt);
-  const custom=REG["punch-in"]?.sourceTransform?.(p,tt,A);
+function isCameraEffect(item){return item&&["punch-in","zoom-out"].includes(item.template)}
+function cameraTransform(t){ // shared normalized source-camera state
+  const item=activeInstances(t).find(i=>isCameraEffect(i)&&i.fields.rect);
+  if(!item)return null;
+  const tt=(t-item.start)/item.duration,e=env(item,tt);
+  const custom=REG[item.template]?.sourceTransform?.(item,tt,A);
   if(custom)return custom;
   const k=e.phase==="in"?easeOut(e.k):e.phase==="out"?easeOut(e.k):1;
-  const r=p.fields.rect;                                    // normalized {x,y,w,h}
+  const r=item.fields.rect;                                 // normalized {x,y,w,h}
   const target=1/Math.max(r.w,r.h);
   return{cx:r.x+r.w/2,cy:r.y+r.h/2,scale:1+(target-1)*k};
 }
@@ -550,7 +569,7 @@ async function prepareVideoAssets(t){
 function drawFrame(ctx,W,H,t){ // THE shared render — preview + export use this
   ctx.clearRect(0,0,W,H);
   for(const inst of activeInstances(t)){
-    if(inst.template==="punch-in")continue;
+    if(isCameraEffect(inst))continue;
     const fns=REG[inst.template];if(!fns)continue;
     const nt=(t-inst.start)/inst.duration;
     ctx.save();ctx.translate(inst.x*W,inst.y*H);
@@ -588,7 +607,9 @@ function layoutOverlay(force=false){
   if(!force&&S.previewLayout?.key===key)return S.previewLayout;
   S.previewLayout={key,stageLeft:s.left,stageTop:s.top,left,top,displayW,displayH,
     mediaW,mediaH,backingW,backingH};
-  vid.style.width=displayW+"px";vid.style.height=displayH+"px";
+  const viewport=$("#mediaViewport");
+  viewport.style.left=left+"px";viewport.style.top=top+"px";
+  viewport.style.width=displayW+"px";viewport.style.height=displayH+"px";
   ov.style.left=left+"px";ov.style.top=top+"px";
   ov.style.width=displayW+"px";ov.style.height=displayH+"px";
   if(ov.width!==backingW)ov.width=backingW;
@@ -597,9 +618,12 @@ function layoutOverlay(force=false){
 }
 function paintOverlay(){S.overlayQueued=false;if(!S.state)return;layoutOverlay();
   syncOverlayVideos(S.t);
-  const z=punchZoom(S.t);
-  vid.style.transformOrigin=z?`${z.cx*100}% ${z.cy*100}%`:"";
-  vid.style.transform=z?`scale(${z.scale})`:"";
+  const z=cameraTransform(S.t),layout=S.previewLayout;
+  if(z&&layout){
+    const tx=Math.max(1-z.scale,Math.min(0,.5-z.cx*z.scale))*layout.displayW;
+    const ty=Math.max(1-z.scale,Math.min(0,.5-z.cy*z.scale))*layout.displayH;
+    vid.style.transform=`matrix(${z.scale},0,0,${z.scale},${tx},${ty})`;
+  }else vid.style.transform="";
   const context=ov.getContext("2d");drawFrame(context,ov.width,ov.height,S.t);
   drawPreviewToolOverlay(context);
   drawSelection();
@@ -610,7 +634,7 @@ function drawOverlay(){
   requestAnimationFrame(paintOverlay);
 }
 function instanceNormBounds(item){
-  if(item.template==="punch-in"&&item.fields.rect)return item.fields.rect;
+  if(isCameraEffect(item)&&item.fields.rect)return item.fields.rect;
   if(item.template==="ambient")return{x:0,y:0,w:1,h:1};
   const measured=REG[item.template]?.measure?.(item,A,{width:ov.width,height:ov.height});
   if(measured?.width&&measured?.height){
@@ -631,6 +655,19 @@ function drawSelection(){const b=$("#selbox");const i=S.sel&&S.state.instances.f
   if(!b.firstChild){const hd=document.createElement("div");hd.className="handle";
     hd.style.right="-11px";hd.style.bottom="-11px";hd.style.left="auto";hd.style.top="auto";
     hd.style.transform="none";b.append(hd);}
+}
+function clampInstanceScale(value){return Math.min(10,Math.max(.05,value))}
+function applyUniformScale(item,original,factor){
+  const safeFactor=Math.max(.05,Number.isFinite(factor)?factor:1);
+  if(isCameraEffect(item)&&original.rect){
+    const rect=original.rect,cx=rect.x+rect.w/2,cy=rect.y+rect.h/2;
+    const maxW=Math.max(.05,Math.min(1,2*Math.min(cx,1-cx)));
+    const maxH=Math.max(.05,Math.min(1,2*Math.min(cy,1-cy)));
+    const scale=Math.min(safeFactor,maxW/rect.w,maxH/rect.h);
+    const w=Math.max(.05,rect.w*scale),h=Math.max(.05,rect.h*scale);
+    item.fields.rect={x:Math.max(0,Math.min(1-w,cx-w/2)),
+      y:Math.max(0,Math.min(1-h,cy-h/2)),w,h};
+  }else item.scale=clampInstanceScale(original.scale*safeFactor);
 }
 /* touch/mouse: drag to move, corner handle or pinch to scale */
 let drag=null,pinch=null,previewTool=null;
@@ -695,7 +732,7 @@ G.addEventListener("pointerdown",e=>{
     const box=instanceNormBounds(i);return p.x>=box.x&&p.x<=box.x+box.w&&p.y>=box.y&&p.y<=box.y+box.h})());
   if(hit){S.sel=hit.id;snapshot();const box=instanceNormBounds(hit);
     drag={id:hit.id,dx:p.x-box.x,dy:p.y-box.y,box,
-      rect:hit.template==="punch-in"&&hit.fields.rect?structuredClone(hit.fields.rect):null};
+      rect:isCameraEffect(hit)&&hit.fields.rect?structuredClone(hit.fields.rect):null};
     $$(".zoneguide").forEach(z=>z.style.display="block");positionGuides();}
   else S.sel=null;
   renderInspector();drawOverlay();
@@ -716,9 +753,11 @@ G.addEventListener("touchmove",e=>{ // pinch to scale selected
   if(e.touches.length===2&&S.sel){e.preventDefault();
     const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
                        e.touches[0].clientY-e.touches[1].clientY);
-    if(!pinch)pinch={d,base:S.state.instances.find(x=>x.id===S.sel).scale};
     const i=S.state.instances.find(x=>x.id===S.sel);
-    i.scale=Math.min(3,Math.max(0.2,pinch.base*d/pinch.d));drawOverlay();
+    if(!i)return;
+    if(!pinch){snapshot();pinch={d,original:{scale:i.scale,
+      rect:isCameraEffect(i)&&i.fields.rect?structuredClone(i.fields.rect):null}}}
+    applyUniformScale(i,pinch.original,d/pinch.d);drawOverlay();
   }},{passive:false});
 G.addEventListener("touchend",()=>{if(pinch){pinch=null;afterMutate()}});
 $("#selbox").addEventListener("pointerdown",e=>{ // corner handle uniform scale
@@ -727,14 +766,11 @@ $("#selbox").addEventListener("pointerdown",e=>{ // corner handle uniform scale
   const layout=layoutOverlay(),box=instanceNormBounds(i);
   const centerX=layout.stageLeft+layout.left+(box.x+box.w/2)*layout.displayW;
   const centerY=layout.stageTop+layout.top+(box.y+box.h/2)*layout.displayH;
-  const start={distance:Math.max(8,Math.hypot(e.clientX-centerX,e.clientY-centerY)),base:i.scale};
-  const rect=i.template==="punch-in"&&i.fields.rect?structuredClone(i.fields.rect):null;
+  const start={distance:Math.max(8,Math.hypot(e.clientX-centerX,e.clientY-centerY)),
+    original:{scale:i.scale,rect:isCameraEffect(i)&&i.fields.rect?structuredClone(i.fields.rect):null}};
   e.target.setPointerCapture?.(e.pointerId);
   const mv=ev=>{const factor=Math.max(.1,Math.hypot(ev.clientX-centerX,ev.clientY-centerY)/start.distance);
-    if(rect){const cx=rect.x+rect.w/2,cy=rect.y+rect.h/2;
-      const w=Math.max(.05,Math.min(1,rect.w*factor)),h=Math.max(.05,Math.min(1,rect.h*factor));
-      i.fields.rect={x:Math.max(0,Math.min(1-w,cx-w/2)),y:Math.max(0,Math.min(1-h,cy-h/2)),w,h};
-    }else i.scale=Math.min(10,Math.max(0.05,start.base*factor));drawOverlay()};
+    applyUniformScale(i,start.original,factor);drawOverlay()};
   const up=()=>{removeEventListener("pointermove",mv);removeEventListener("pointerup",up);afterMutate()};
   addEventListener("pointermove",mv);addEventListener("pointerup",up);
 });
@@ -874,6 +910,31 @@ $("#monitorVolume").oninput=event=>{
 };
 $("#monitorMute").onclick=()=>{S.monitorMuted=!S.monitorMuted;applyMonitorGain()};
 applyMonitorGain();
+function previewIsFullscreen(){
+  return (document.fullscreenElement||document.webkitFullscreenElement)===$("#preview");
+}
+async function togglePreviewFullscreen(){
+  try{
+    if(previewIsFullscreen()){
+      const exit=document.exitFullscreen||document.webkitExitFullscreen;
+      if(exit)await exit.call(document);
+    }else{
+      const preview=$("#preview"),enter=preview.requestFullscreen||preview.webkitRequestFullscreen;
+      if(!enter)throw new Error("Fullscreen preview is not supported by this browser");
+      await enter.call(preview,{navigationUI:"hide"});
+    }
+  }catch(error){toast(error.message||"Could not open fullscreen preview")}
+}
+function syncFullscreenButton(){
+  const active=previewIsFullscreen(),button=$("#fullscreenBtn");
+  button.textContent=active?"⤢":"⛶";
+  button.title=active?"Exit fullscreen preview":"Fullscreen preview";
+  button.setAttribute("aria-label",button.title);
+  S.previewLayout=null;drawOverlay();drawTimeline();
+}
+$("#fullscreenBtn").onclick=togglePreviewFullscreen;
+document.addEventListener("fullscreenchange",syncFullscreenButton);
+document.addEventListener("webkitfullscreenchange",syncFullscreenButton);
 
 /* ============================================= [F] timeline (canvas) */
 const tl=$("#tl"),tctx=tl.getContext("2d");
@@ -1228,15 +1289,30 @@ function renderInspector(){const p=$("#inspPane");
     else i.duration=Math.max(frameDuration(),frameSnap(+input.value));
     if(i.start+i.duration>tlDuration())i.duration=Math.max(frameDuration(),frameSnap(tlDuration()-i.start));
     afterMutate()});p.append(timing);
+  const camera=isCameraEffect(i)&&i.fields.rect,cameraRect=camera?i.fields.rect:null;
+  const placementX=camera?cameraRect.x+cameraRect.w/2:i.x;
+  const placementY=camera?cameraRect.y+cameraRect.h/2:i.y;
+  const placementScale=camera?1/Math.max(cameraRect.w,cameraRect.h):i.scale;
   const placement=document.createElement("div");placement.className="fieldrow";placement.innerHTML=
-    `<label>Placement</label><div class="buttonrow">
-      <input data-place="x" type="number" min="0" max="1" step=".01" value="${i.x.toFixed(3)}" aria-label="Horizontal position">
-      <input data-place="y" type="number" min="0" max="1" step=".01" value="${i.y.toFixed(3)}" aria-label="Vertical position">
-      <input data-place="scale" type="number" min=".05" max="10" step=".05" value="${i.scale.toFixed(3)}" aria-label="Scale">
+    `<label>${camera?"Camera target · center X / center Y / zoom":"Placement · X / Y / scale"}</label><div class="buttonrow">
+      <input data-place="x" type="number" min="0" max="1" step=".01" value="${placementX.toFixed(3)}" aria-label="${camera?"Target center X":"Horizontal position"}">
+      <input data-place="y" type="number" min="0" max="1" step=".01" value="${placementY.toFixed(3)}" aria-label="${camera?"Target center Y":"Vertical position"}">
+      <input data-place="scale" type="number" min="${camera?1:.05}" max="${camera?20:10}" step=".05" value="${placementScale.toFixed(3)}" aria-label="${camera?"Target zoom":"Scale"}">
     </div>`;
   placement.querySelectorAll("input").forEach(input=>input.onchange=()=>{snapshot();
     const key=input.dataset.place,value=+input.value;
-    i[key]=key==="scale"?Math.max(.05,Math.min(10,value)):Math.max(0,Math.min(1,value));afterMutate()});p.append(placement);
+    if(camera){
+      const rect=i.fields.rect;
+      if(key==="scale"){
+        const nextZoom=Math.max(1,Math.min(20,value)),currentZoom=1/Math.max(rect.w,rect.h);
+        applyUniformScale(i,{scale:i.scale,rect:structuredClone(rect)},currentZoom/nextZoom);
+      }else{
+        const next=Math.max(0,Math.min(1,value));
+        if(key==="x")rect.x=Math.max(0,Math.min(1-rect.w,next-rect.w/2));
+        else rect.y=Math.max(0,Math.min(1-rect.h,next-rect.h/2));
+      }
+    }else i[key]=key==="scale"?clampInstanceScale(value):Math.max(0,Math.min(1,value));
+    afterMutate()});p.append(placement);
   for(const f of sp.fields||[]){
     const row=document.createElement("div");row.className="fieldrow";
     const lab=document.createElement("label");lab.textContent=f.label||f.name;row.append(lab);
@@ -1290,7 +1366,10 @@ function renderInspector(){const p=$("#inspPane");
     p.append(row);}
   const reset=document.createElement("button");reset.textContent="Reset placement";reset.style.width="100%";
   reset.onclick=()=>{snapshot();const zone=sp.zones?.[S.state.orientation]||{};
-    i.x=zone.x??.5;i.y=zone.y??.3;i.scale=zone.scale??1;afterMutate()};p.append(reset);
+    i.x=zone.x??.5;i.y=zone.y??.3;i.scale=zone.scale??1;
+    if(isCameraEffect(i)){const field=sp.fields?.find(item=>item.name==="rect");
+      if(field?.default)i.fields.rect=structuredClone(field.default)}
+    afterMutate()};p.append(reset);
   if(i.review){const approve=document.createElement("button");approve.textContent="Mark reviewed";approve.style.cssText="width:100%;margin-top:8px";
     approve.onclick=()=>{snapshot();i.review=false;afterMutate()};p.append(approve)}
   const del=document.createElement("button");del.className="danger";del.textContent="Delete block";del.style.cssText="width:100%;margin-top:8px";
@@ -1383,14 +1462,30 @@ function renderCutInspector(panel,index){
 }
 
 /* ============================== [I] export dialog + progress over WS */
+function setLatestExport(file){
+  S.lastExport=file||null;
+  for(const button of [$("#latestBtn"),$("#expLatest")]){
+    button.disabled=!S.lastExport;
+    button.classList.toggle("ready",Boolean(S.lastExport));
+    button.title=S.lastExport?`Download ${S.lastExport.name}`:"No export is available yet";
+  }
+}
+function downloadLatestExport(){
+  if(!S.project||!S.lastExport){toast("Export a video first");return}
+  const link=document.createElement("a");
+  link.href=`/api/projects/${encodeURIComponent(S.project)}/exports/latest/download`;
+  link.download=S.lastExport.name;document.body.append(link);link.click();link.remove();
+}
 async function loadExportHistory(){
   const history=$("#expHistory");history.innerHTML="";
   try{const {files}=await api(`/api/projects/${S.project}/exports`);
+    setLatestExport(files[0]||null);
     if(files.length){const heading=document.createElement("small");heading.className="catmeta";heading.textContent="RECENT EXPORTS";history.append(heading)}
     for(const file of files.slice(0,6)){const link=document.createElement("a");link.href=file.url;link.download=file.name;
       link.textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB`;history.append(link)}
-  }catch(error){history.textContent=error.message}
+  }catch(error){setLatestExport(null);history.textContent=error.message}
 }
+$("#latestBtn").onclick=$("#expLatest").onclick=downloadLatestExport;
 $("#exportBtn").onclick=()=>{$("#exportDlg").showModal();loadExportHistory()};
 $("#expClose").onclick=()=>$("#exportDlg").close();
 $$("#exportDlg [data-m]").forEach(b=>b.onclick=async()=>{
@@ -1458,12 +1553,16 @@ function connectWS(){const socket=new WebSocket(`${location.protocol==="https:"?
     if(m.type==="export_progress"&&m.project===S.project){
       if(m.error){$("#expProg").textContent="Failed: "+m.error;toast("Export failed — see export.log");finishExportUI()}
       else if(m.canceled){$("#expProg").textContent="Export canceled";finishExportUI()}
-      else if(m.done){$("#expProg").innerHTML=
-        `Done → <a style="color:var(--c-keyword)" href="/media/${S.project}/${m.file}" download>${m.file}</a>`;
+      else if(m.done){setLatestExport({name:m.file.split("/").pop()});$("#expProg").innerHTML=
+        `Done · <button id="expDoneDownload" style="color:var(--c-keyword)">Download now</button>`;
+        $("#expDoneDownload").onclick=downloadLatestExport;
         $("#expBar").value=1;finishExportUI();loadExportHistory();toast(`Export finished · ${m.codec}${m.nvenc?" · NVENC":""}`)}
       else if(m.note)toast(m.note);
-      else{$("#expProg").textContent=`Segment ${m.seg}/${m.total} — ${m.status}`;
-        $("#expBar").value=(m.seg-1)/Math.max(1,m.total)}}
+      else{const frameProgress=m.frames?Math.max(0,Math.min(1,(m.frame||0)/m.frames)):0;
+        $("#expProg").textContent=m.frames
+          ?`Segment ${m.seg}/${m.total} · rendering frame ${m.frame}/${m.frames}`
+          :`Segment ${m.seg}/${m.total} — ${m.status}`;
+        $("#expBar").value=((m.seg-1)+frameProgress)/Math.max(1,m.total)}}
     if(m.type==="transcription_progress"&&m.project===S.project){
       renderTranscriptionStatus(m);
       if(m.done){const previousState=S.state;S.state=await api(`/api/projects/${S.project}/state`);
@@ -1481,6 +1580,7 @@ addEventListener("keydown",e=>{
   if(!editing&&["ArrowLeft","ArrowRight"].includes(e.key)){e.preventDefault();
     seek(S.t+(e.key==="ArrowRight"?1:-1)*frameDuration()*(e.shiftKey?10:1))}
   if(!editing&&e.key.toLowerCase()==="s"){e.preventDefault();$("#splitBtn").click()}
+  if(!editing&&e.key.toLowerCase()==="f"){e.preventDefault();togglePreviewFullscreen()}
   if(!editing&&(e.key==="+"||e.key==="=")){e.preventDefault();setTimelineZoom(S.zoom*1.35)}
   if(!editing&&e.key==="-"){e.preventDefault();setTimelineZoom(S.zoom/1.35)}
   if(!editing&&e.key==="0"){e.preventDefault();fitTimeline()}
@@ -1539,6 +1639,7 @@ async function openProject(name){S.project=name;
   for(const clip of Object.values(A.vid))clip.pause();
   S.sel=null;S.t=0;S.scroll=0;S.trackScroll=0;S.undo=[];S.redo=[];S.peaks=[];
   S.previewLayout=null;S.lastPlaybackFrame=-1;SFX_AUDIO.fired.clear();A.img={};A.vid={};
+  setLatestExport(null);
   $("#home").hidden=true;$("#app").hidden=false;
   $("#projectTitle").textContent=name;document.title=`${name} · Editoro`;
   S.fps=S.state.source_info.fps||30;
@@ -1551,6 +1652,7 @@ async function openProject(name){S.project=name;
     $("#dirText").value=directives.text||"";S.state.directives_review=directives.review||[];renderDirectiveReview();
   }catch(error){$("#dirText").value="";toast("Directives could not be loaded: "+error.message)}
   renderCats();renderInspector();if(!S.ws||S.ws.readyState>1)connectWS();drawTimeline();drawOverlay();fitTimeline();
+  loadExportHistory();
   applyMonitorGain();
   if(!S.booted){S.booted=true;requestAnimationFrame(tick)}
   if(!S.resizeObserver){S.resizeObserver=new ResizeObserver(()=>{S.previewLayout=null;drawOverlay();drawTimeline()});
@@ -1624,8 +1726,11 @@ if(EXPORT_MODE){
       waits.push(new Promise(res=>{if(im.complete)res();else im.onload=im.onerror=res}))}
     await Promise.all(waits);
     await document.fonts.ready;
-    window.__renderFrame=async t=>{await prepareVideoAssets(t);drawFrame(c.getContext("2d"),c.width,c.height,t);
-      return c.toDataURL("image/png")};
+    window.__renderFrames=async times=>{const frames=[],context=c.getContext("2d");
+      for(const t of times){await prepareVideoAssets(t);drawFrame(context,c.width,c.height,t);
+        frames.push(c.toDataURL("image/png"))}
+      return frames};
+    window.__renderFrame=async t=>(await window.__renderFrames([t]))[0];
     window.__exportReady=true;})();
 }else home();
 </script>

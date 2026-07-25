@@ -1,8 +1,8 @@
-{ "id":"video-clip","version":3,"display_name":"ب-رول · Video clip","category_color":"#6C9BFF",
+{ "id":"video-clip","version":4,"display_name":"ب-رول · Video clip","category_color":"#6C9BFF",
   "directive_verb":"ب-رول",
   "fields":[{"name":"asset","label":"Video clip","type":"asset:video","note":"MP4, MOV, MKV, WebM, M4V, or AVI"},{"name":"volume","label":"Clip audio volume","type":"number","min":0,"max":1,"step":0.05,"default":0.8}],
   "zones":{"horizontal":{"x":0.72,"y":0.35,"scale":1.0},"vertical":{"x":0.5,"y":0.28,"scale":0.9}},
   "animation":{"entrance":"drop-settle","entrance_ms":420,"hold":"static","exit":"shrink-fade","exit_ms":260,"easing":"outBack"},
-  "sfx":[{"file":"paper-slap.wav","offset":0.03,"gain":0.28}],
+  "sfx":[{"file":"paper-land.wav","offset":0.03,"gain":0.22}],
   "assets":["frame.png","paper-texture.png"],
   "default_duration":6.0 }
