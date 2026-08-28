@@ -1,0 +1,66 @@
+{
+  "id": "censor",
+  "version": 1,
+  "schema": 2,
+  "display_name": "تغطية · Censor",
+  "category": "annotation",
+  "category_color": "#64748B",
+  "directive_verb": null,
+  "description": "Covers a region with a pixelated or solid block. Use it for a face, a name, a token or anything on screen that should not ship.",
+  "fields": [
+    {
+      "name": "rect",
+      "label": "Region",
+      "type": "rect",
+      "default": {
+        "x": 0.4,
+        "y": 0.4,
+        "w": 0.2,
+        "h": 0.14
+      },
+      "description": "The region to cover, in 0..1 frame coordinates."
+    },
+    {
+      "name": "style",
+      "label": "Cover",
+      "type": "select",
+      "default": "pixelate",
+      "options": [
+        "pixelate",
+        "solid",
+        "blur"
+      ],
+      "description": "How the region is obscured."
+    }
+  ],
+  "full_frame": true,
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "ease",
+      "easing": "linear",
+      "ms": 1,
+      "from": {}
+    },
+    "out": {
+      "type": "ease",
+      "easing": "linear",
+      "ms": 1,
+      "to": {}
+    }
+  },
+  "sfx": [],
+  "assets": [],
+  "default_duration": 3.0
+}

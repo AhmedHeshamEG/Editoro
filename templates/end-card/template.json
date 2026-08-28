@@ -1,0 +1,82 @@
+{
+  "id": "end-card",
+  "version": 1,
+  "schema": 2,
+  "display_name": "نهاية · End card",
+  "category": "structure",
+  "category_color": "#34D399",
+  "directive_verb": null,
+  "description": "The closing card: one line of what to do next, plus up to three short pointers. Keep it on screen long enough to read twice.",
+  "fields": [
+    {
+      "name": "title",
+      "label": "Title",
+      "type": "text",
+      "max_length": 48,
+      "default": "",
+      "description": "The single line telling the viewer what to do next."
+    },
+    {
+      "name": "items",
+      "label": "Pointers",
+      "type": "textarea",
+      "max_length": 180,
+      "default": "",
+      "description": "One per line, or separated by |. Up to three."
+    }
+  ],
+  "full_frame": true,
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 200,
+      "damping": 21,
+      "ms": 720,
+      "from": {
+        "opacity": 0,
+        "scale": 0.92,
+        "y": 44
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 380,
+      "to": {
+        "opacity": 0,
+        "scale": 0.97
+      }
+    },
+    "stagger": {
+      "step_ms": 120,
+      "elements": [
+        "scrim",
+        "title",
+        "item0",
+        "item1",
+        "item2"
+      ]
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/chime-soft.wav",
+      "offset": 0.06,
+      "gain": 0.3
+    }
+  ],
+  "assets": [],
+  "default_duration": 5.0
+}

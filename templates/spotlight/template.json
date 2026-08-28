@@ -1,0 +1,79 @@
+{
+  "id": "spotlight",
+  "version": 1,
+  "schema": 2,
+  "display_name": "تركيز · Spotlight",
+  "category": "annotation",
+  "category_color": "#FACC15",
+  "directive_verb": "تركيز",
+  "description": "Dims the whole frame except one region, so the eye has nowhere else to go. Works over footage or over another template.",
+  "fields": [
+    {
+      "name": "rect",
+      "label": "Lit region",
+      "type": "rect",
+      "default": {
+        "x": 0.34,
+        "y": 0.28,
+        "w": 0.32,
+        "h": 0.36
+      },
+      "description": "The region left bright, in 0..1 frame coordinates."
+    },
+    {
+      "name": "dim",
+      "label": "Dim amount",
+      "type": "number",
+      "min": 0.1,
+      "max": 0.95,
+      "step": 0.05,
+      "default": 0.62,
+      "description": "How dark everything outside becomes."
+    },
+    {
+      "name": "shape",
+      "label": "Shape",
+      "type": "select",
+      "default": "ellipse",
+      "options": [
+        "ellipse",
+        "rounded"
+      ],
+      "description": "The shape of the lit region."
+    }
+  ],
+  "full_frame": true,
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "ease",
+      "easing": "outCubic",
+      "ms": 420,
+      "from": {
+        "opacity": 0
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 340,
+      "to": {
+        "opacity": 0
+      }
+    }
+  },
+  "sfx": [],
+  "assets": [],
+  "default_duration": 3.5
+}

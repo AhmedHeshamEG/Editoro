@@ -1,0 +1,97 @@
+{
+  "id": "chapter-card",
+  "version": 1,
+  "schema": 2,
+  "display_name": "فصل · Chapter",
+  "category": "structure",
+  "category_color": "#F59E0B",
+  "directive_verb": "فصل",
+  "description": "A section title that wipes across the frame. Use it where the video genuinely changes subject, not as decoration.",
+  "fields": [
+    {
+      "name": "number",
+      "label": "Number",
+      "type": "text",
+      "max_length": 6,
+      "default": "",
+      "description": "Optional chapter number or numeral."
+    },
+    {
+      "name": "title",
+      "label": "Title",
+      "type": "text",
+      "max_length": 56,
+      "default": "",
+      "description": "The section title."
+    },
+    {
+      "name": "subtitle",
+      "label": "Subtitle",
+      "type": "text",
+      "max_length": 72,
+      "default": "",
+      "description": "One supporting line under the title. Optional."
+    }
+  ],
+  "full_frame": true,
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 175,
+      "damping": 21,
+      "ms": 820,
+      "from": {
+        "opacity": 0,
+        "x": -120
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 420,
+      "to": {
+        "opacity": 0,
+        "x": 90
+      }
+    },
+    "stagger": {
+      "step_ms": 96,
+      "elements": [
+        "band",
+        "number",
+        "title",
+        "subtitle"
+      ]
+    },
+    "blur": {
+      "motion": true,
+      "max": 9
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/swell.wav",
+      "offset": 0.0,
+      "gain": 0.34
+    },
+    {
+      "file": "_shared/sfx/page-turn.wav",
+      "offset": 0.1,
+      "gain": 0.4
+    }
+  ],
+  "assets": [],
+  "default_duration": 3.2
+}

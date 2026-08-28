@@ -1,0 +1,69 @@
+{
+  "id": "ken-burns",
+  "version": 1,
+  "schema": 2,
+  "display_name": "تحريك · Ken Burns",
+  "category": "camera",
+  "category_color": "#818CF8",
+  "directive_verb": null,
+  "description": "A slow continuous drift from one framing to another across the whole block. Use under narration to keep a static shot alive.",
+  "fields": [
+    {
+      "name": "rect",
+      "label": "Start framing",
+      "type": "rect",
+      "default": {
+        "x": 0.1,
+        "y": 0.08,
+        "w": 0.8,
+        "h": 0.84
+      },
+      "description": "Where the move begins, in 0..1 frame coordinates."
+    },
+    {
+      "name": "rect2",
+      "label": "End framing",
+      "type": "rect2",
+      "default": {
+        "x": 0.22,
+        "y": 0.18,
+        "w": 0.56,
+        "h": 0.62
+      },
+      "description": "Where the move ends. Keep the change small; this should be felt, not seen."
+    }
+  ],
+  "camera": {
+    "mode": "drift",
+    "easing": "inOutCubic"
+  },
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "ease",
+      "easing": "linear",
+      "ms": 1,
+      "from": {}
+    },
+    "out": {
+      "type": "ease",
+      "easing": "linear",
+      "ms": 1,
+      "to": {}
+    }
+  },
+  "sfx": [],
+  "assets": [],
+  "default_duration": 8.0
+}

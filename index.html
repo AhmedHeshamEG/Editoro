@@ -193,6 +193,8 @@ dialog::backdrop{background:#000a}
       <button id="homeBtn" class="icon" title="Projects">←</button>
       <div id="projectTitle">Project</div><span id="syncStatus" title="Save connection"></span>
       <div class="spacer"></div>
+      <button id="layoutBtn" title="Template layout: 16:9 or 9:16">16:9</button>
+      <button id="captionStyleBtn" title="Caption placement and style">Aa</button>
       <button id="sourceBtn">Source</button><button id="transcriptBtn">Transcript</button>
     </div>
     <div id="stage">
@@ -296,6 +298,41 @@ dialog::backdrop{background:#000a}
   <div id="expHistory"></div>
 </dialog>
 
+<dialog id="captionDlg">
+  <h3 style="margin-bottom:6px">Captions</h3>
+  <p class="dialogNote">Placement is kept separately for 16:9 and 9:16. A caption you drag on
+    the preview stops following this and keeps its own spot until you send it back.</p>
+  <div class="fieldrow"><label id="capOrientationLabel">Position preset</label>
+    <div class="buttonrow">
+      <button data-preset="upper">Upper</button>
+      <button data-preset="center">Center</button>
+      <button data-preset="lower">Lower</button>
+    </div>
+  </div>
+  <div class="fieldrow"><label>Fine placement · X / Y / size</label><div class="buttonrow">
+    <input id="capX" type="number" min="0" max="1" step=".01" aria-label="Caption X">
+    <input id="capY" type="number" min="0" max="1" step=".01" aria-label="Caption Y">
+    <input id="capScale" type="number" min=".2" max="4" step=".05" aria-label="Caption size">
+  </div></div>
+  <div class="fieldrow"><label for="capMode">Grouping</label>
+    <select id="capMode">
+      <option value="chunk">Short chunks</option>
+      <option value="sentence">One full sentence at a time</option>
+    </select>
+  </div>
+  <div class="fieldrow"><label for="capWords">Words per chunk</label>
+    <input id="capWords" type="number" min="1" max="24" step="1"></div>
+  <div class="fieldrow"><label for="capSize">Font size</label>
+    <input id="capSize" type="number" min="12" max="160" step="1"></div>
+  <div class="buttonrow" style="margin-bottom:14px">
+    <button id="capHighlight" aria-pressed="true">Active word</button>
+    <button id="capBox" aria-pressed="true">Backing box</button>
+  </div>
+  <button id="capRegroup" style="width:100%">Re-group captions from word timings</button>
+  <button id="capFollowAll" style="width:100%;margin-top:8px">Send every caption back to this position</button>
+  <button id="capClose" style="width:100%;margin-top:8px">Close</button>
+</dialog>
+
 <dialog id="transcriptDlg">
   <h3 style="margin-bottom:6px">Captions</h3>
   <p class="dialogNote">Generate word-timed captions on this laptop, or import an existing SRT/Whisper file. Existing captions are replaced only after a successful generation.</p>
@@ -338,10 +375,11 @@ const S={ project:null, state:null, packs:{}, peaks:[], sel:null,
   monitorGain:Number.isFinite(storedMonitor)?Math.max(0,Math.min(1,storedMonitor)):.8,
   monitorMuted:false,previewLayout:null,overlayQueued:false,lastPlaybackFrame:-1,lastExport:null };
 const MIN_ZOOM=4,MAX_ZOOM=6000;
-const CAT={keyword:"--c-keyword","image-pop":"--c-image","video-clip":"--c-video",
-  highlight:"--c-highlight","punch-in":"--c-punch","zoom-out":"--c-zoomout",screen:"--c-screen",
-  ambient:"--c-ambient",captions:"--c-captions"};
-const cc=t=>getComputedStyle(document.documentElement).getPropertyValue(CAT[t]||"--c-sfx").trim();
+/* One fixed colour per template, declared by the pack itself. Dropping a new
+   template folder in must never require editing this file, so there is no map
+   of ids here and no per-template CSS variable. */
+const cc=t=>S.packs?.[t]?.category_color||getComputedStyle(document.documentElement)
+  .getPropertyValue("--c-sfx").trim();
 const toast=m=>{const d=document.createElement("div");d.className="toast";d.textContent=m;
   $("#toasts").append(d);setTimeout(()=>d.remove(),3800)};
 window.onerror=(m)=>{toast("Error: "+m);return false};   // never a dead screen
@@ -379,214 +417,431 @@ function afterMutate(pushUndo=true,persist=true){
 }
 
 /* ============================== [D] OVERLAY ENGINE (shared preview/export)
-   registerTemplate(id,{draw(ctx,inst,t,A),measure}) — t is normalized 0→1
-   inside the instance. Deterministic: no Date.now(), seeded rand from inst.id.
-   Pack render.js modules call the same registerTemplate. */
-const REG={};
-window.registerTemplate=(id,fns)=>REG[id]=fns;
-const A={img:{},vid:{},load(url){if(!url)return null;if(this.img[url])return this.img[url];
-  const im=new Image();im.crossOrigin="anonymous";im.src=url;im.onload=()=>drawOverlay();
-  this.img[url]=im;return im;},
-  video(url){if(!url)return null;if(this.vid[url])return this.vid[url];
-    const v=document.createElement("video");v.src=url;v.preload="auto";v.muted=true;
-    v.playsInline=true;v.crossOrigin="anonymous";this.vid[url]=v;return v;}};
-function fitContain(iw,ih,maxW,maxH){const k=Math.min(maxW/iw,maxH/ih);
-  return{w:iw*k,h:ih*k}}
-function viewportUnit(viewport){return Math.max(.18,Math.min(viewport.width,viewport.height)/1080)}
-function renderUnit(ctx){return viewportUnit(ctx.canvas)}
-function srand(seed){let h=2166136261;for(const c of seed)h=Math.imul(h^c.charCodeAt(0),16777619);
-  return()=>{h=Math.imul(h^h>>>15,2246822507);h=Math.imul(h^h>>>13,3266489909);
-  return ((h^=h>>>16)>>>0)/4294967296}}
-const easeOutBack=t=>{const c=1.70158;return 1+(c+1)*Math.pow(t-1,3)+c*Math.pow(t-1,2)};
-const easeOut=t=>1-Math.pow(1-t,3);
-function env(inst,t){ // entrance/hold/exit envelope from pack animation spec
-  const sp=S.packs[inst.template]||{}, an=sp.animation||{};
-  const ein=(an.entrance_ms||350)/1000/inst.duration, eout=(an.exit_ms||250)/1000/inst.duration;
-  if(t<ein)return{phase:"in",k:t/ein};
-  if(t>1-eout)return{phase:"out",k:(1-t)/eout};
-  return{phase:"hold",k:1};
+   One engine, one source of truth. Template packs register themselves from
+   templates/<pack>/render.js; nothing about a specific template lives here.
+
+   A pack's draw(ctx, inst, t, A) receives t normalised 0→1 across the instance
+   and a context already translated to the instance origin. Everything is
+   deterministic — seeded randomness, no Date.now() — so the headless export
+   renders exactly the frame the preview showed.                              */
+const REG = {};
+window.registerTemplate = (id, fns) => { REG[id] = fns; };
+
+const A = {
+  img: {}, vid: {},
+  load(url) {
+    if (!url) return null;
+    if (this.img[url]) return this.img[url];
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.src = url;
+    image.onload = () => drawOverlay();
+    this.img[url] = image;
+    return image;
+  },
+  video(url) {
+    if (!url) return null;
+    if (this.vid[url]) return this.vid[url];
+    const clip = document.createElement("video");
+    clip.src = url; clip.preload = "auto"; clip.muted = true;
+    clip.playsInline = true; clip.crossOrigin = "anonymous";
+    this.vid[url] = clip;
+    return clip;
+  },
+};
+
+function fitContain(iw, ih, maxW, maxH) {
+  const k = Math.min(maxW / Math.max(1, iw), maxH / Math.max(1, ih));
+  return { w: iw * k, h: ih * k };
 }
-Object.assign(A,{
-  projectAsset:file=>file?`/media/${S.project}/assets/${encodeURIComponent(file)}`:"",
-  templateAsset:(pack,file)=>`/tpl/${encodeURIComponent(pack)}/${encodeURIComponent(file)}`,
-  instanceAssetUrl:instance=>{
-    const file=instance?.fields?.asset;if(!file)return "";
-    if(["highlight","image-pop"].includes(instance.template)&&file.toLowerCase().endsWith(".pdf"))
-      return `/api/projects/${encodeURIComponent(S.project)}/pdf-page?asset=${encodeURIComponent(file)}&page=${instance.fields.page||0}`;
+function viewportUnit(viewport) { return Math.max(.18, Math.min(viewport.width, viewport.height) / 1080); }
+function renderUnit(ctx) { return viewportUnit(ctx.canvas); }
+function srand(seed) {
+  let h = 2166136261;
+  for (const c of String(seed)) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
+  return () => { h = Math.imul(h ^ h >>> 15, 2246822507); h = Math.imul(h ^ h >>> 13, 3266489909);
+    return ((h ^= h >>> 16) >>> 0) / 4294967296; };
+}
+
+/* ---------------------------------------------------------------- easing */
+const EASE = {
+  linear: t => t,
+  inQuad: t => t * t,
+  outQuad: t => 1 - (1 - t) ** 2,
+  inOutQuad: t => t < .5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2,
+  inCubic: t => t ** 3,
+  outCubic: t => 1 - (1 - t) ** 3,
+  inOutCubic: t => t < .5 ? 4 * t ** 3 : 1 - (-2 * t + 2) ** 3 / 2,
+  outQuart: t => 1 - (1 - t) ** 4,
+  outQuint: t => 1 - (1 - t) ** 5,
+  inExpo: t => t <= 0 ? 0 : 2 ** (10 * t - 10),
+  outExpo: t => t >= 1 ? 1 : 1 - 2 ** (-10 * t),
+  inOutSine: t => -(Math.cos(Math.PI * t) - 1) / 2,
+  outSine: t => Math.sin(t * Math.PI / 2),
+  inBack: t => 2.70158 * t ** 3 - 1.70158 * t * t,
+  outBack: t => { const c = 1.70158; return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2; },
+  outElastic: t => t <= 0 ? 0 : t >= 1 ? 1
+    : 2 ** (-10 * t) * Math.sin((t * 10 - .75) * (2 * Math.PI / 3)) + 1,
+  outBounce: t => {
+    const n = 7.5625, d = 2.75;
+    if (t < 1 / d) return n * t * t;
+    if (t < 2 / d) return n * (t -= 1.5 / d) * t + .75;
+    if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + .9375;
+    return n * (t -= 2.625 / d) * t + .984375;
+  },
+};
+const easeOut = EASE.outCubic, easeOutBack = EASE.outBack;
+
+/* Analytic damped-harmonic response. Deterministic and time-invariant: the
+   value at a given second is the same whether we render forwards, seek, or
+   render one isolated export frame — a stateful spring integrator could not
+   promise that, and preview/export would drift apart. */
+function springValue(seconds, { stiffness = 200, damping = 18, mass = 1 }) {
+  if (seconds <= 0) return 0;
+  const w0 = Math.sqrt(Math.max(1e-4, stiffness) / Math.max(1e-4, mass));
+  const zeta = damping / (2 * Math.sqrt(Math.max(1e-4, stiffness * mass)));
+  if (zeta < 1 - 1e-6) {
+    const wd = w0 * Math.sqrt(1 - zeta * zeta);
+    return 1 - Math.exp(-zeta * w0 * seconds)
+      * (Math.cos(wd * seconds) + (zeta * w0 / wd) * Math.sin(wd * seconds));
+  }
+  if (zeta < 1 + 1e-6) return 1 - Math.exp(-w0 * seconds) * (1 + w0 * seconds);
+  const root = w0 * Math.sqrt(zeta * zeta - 1);
+  const r1 = -w0 * zeta + root, r2 = -w0 * zeta - root;
+  return 1 - (r1 * Math.exp(r2 * seconds) - r2 * Math.exp(r1 * seconds)) / (r1 - r2);
+}
+
+/* --------------------------------------------------- motion spec resolution */
+const IDENTITY = { opacity: 1, scale: 1, x: 0, y: 0, rotate: 0 };
+const DEFAULT_MOTION = {
+  in: { type: "ease", easing: "outCubic", ms: 340, from: { opacity: 0, scale: .94, y: -10 } },
+  out: { type: "ease", easing: "inCubic", ms: 240, to: { opacity: 0, scale: .97 } },
+  stagger: { step_ms: 0, elements: [] },
+  idle: null,
+  blur: { motion: false, max: 6 },
+  shadow: { layers: 3, elevation: 22, opacity: .40, color: "#000000", lift: true },
+};
+
+function motionSpec(templateId) {
+  const pack = S.packs[templateId];
+  if (!pack) return DEFAULT_MOTION;
+  if (pack._motion) return pack._motion;
+  const legacy = pack.animation || {};
+  const spec = {
+    in: { ...DEFAULT_MOTION.in, ms: legacy.entrance_ms ?? DEFAULT_MOTION.in.ms,
+          from: { ...DEFAULT_MOTION.in.from } },
+    out: { ...DEFAULT_MOTION.out, ms: legacy.exit_ms ?? DEFAULT_MOTION.out.ms,
+           to: { ...DEFAULT_MOTION.out.to } },
+    stagger: { ...DEFAULT_MOTION.stagger },
+    idle: null,
+    blur: { ...DEFAULT_MOTION.blur },
+    shadow: { ...DEFAULT_MOTION.shadow },
+  };
+  const declared = pack.motion || {};
+  if (declared.in) spec.in = { ...spec.in, ...declared.in, from: { ...spec.in.from, ...(declared.in.from || {}) } };
+  if (declared.out) spec.out = { ...spec.out, ...declared.out, to: { ...spec.out.to, ...(declared.out.to || {}) } };
+  if (declared.stagger) spec.stagger = { ...spec.stagger, ...declared.stagger };
+  if (declared.idle) spec.idle = { type: "drift", amplitude: .0035, hz: .16, ...declared.idle };
+  if (declared.blur) spec.blur = { ...spec.blur, ...declared.blur };
+  if (declared.shadow) spec.shadow = { ...spec.shadow, ...declared.shadow };
+  pack._motion = spec;
+  return spec;
+}
+
+function phaseCurve(definition, progress, windowSeconds) {
+  const clamped = Math.max(0, Math.min(1, progress));
+  if (definition.type === "spring") return springValue(clamped * windowSeconds, definition);
+  return (EASE[definition.easing] || EASE.outCubic)(clamped);
+}
+
+/* Raw transform at one moment, before idle drift. Kept separate so velocity can
+   be measured by sampling it one frame earlier — that is what feeds motion blur. */
+function rawState(spec, duration, seconds, delayIn, delayOut) {
+  const inWindow = Math.max(1e-3, Math.min((spec.in.ms || 0) / 1000, duration * .7));
+  const outWindow = Math.max(1e-3, Math.min((spec.out.ms || 0) / 1000, duration * .7));
+  const outStart = Math.max(delayIn + inWindow, duration - outWindow - delayOut);
+  let phase = "hold", p = 1;
+  let from = IDENTITY, to = IDENTITY, k = 1;
+  if (seconds < delayIn) {
+    phase = "in"; p = 0; k = 0; from = { ...IDENTITY, ...spec.in.from };
+  } else if (seconds < delayIn + inWindow) {
+    phase = "in";
+    p = (seconds - delayIn) / inWindow;
+    k = phaseCurve(spec.in, p, inWindow);
+    from = { ...IDENTITY, ...spec.in.from };
+  } else if (seconds >= outStart) {
+    phase = "out";
+    p = Math.min(1, (seconds - outStart) / outWindow);
+    k = 1 - phaseCurve(spec.out, p, outWindow);
+    from = { ...IDENTITY, ...spec.out.to };
+  }
+  const blend = (start, end) => start + (end - start) * k;
+  return {
+    phase, p, k,
+    opacity: Math.max(0, blend(from.opacity ?? 1, to.opacity ?? 1)),
+    scale: blend(from.scale ?? 1, to.scale ?? 1),
+    dx: blend(from.x ?? 0, to.x ?? 0),
+    dy: blend(from.y ?? 0, to.y ?? 0),
+    rotate: blend(from.rotate ?? 0, to.rotate ?? 0) * Math.PI / 180,
+  };
+}
+
+/**
+ * The animation state of one instance (or one staggered element inside it) at
+ * normalised time t. Packs call A.motion() and then A.stage(); they never do
+ * their own easing arithmetic, which is what keeps 37 templates feeling like
+ * one product instead of 37 separate opinions about timing.
+ */
+function motionAt(inst, t, element) {
+  const spec = motionSpec(inst.template);
+  const duration = Math.max(.001, inst.duration || 1);
+  const elements = spec.stagger.elements || [];
+  const index = element ? Math.max(0, elements.indexOf(element)) : 0;
+  const step = (spec.stagger.step_ms || 0) / 1000;
+  const delayIn = index * step;
+  // Elements leave in the reverse order they arrived: the accent that landed
+  // last is the first thing to go, which reads as one object, not a pile.
+  const delayOut = Math.max(0, (elements.length - 1 - index)) * step * .6;
+  const seconds = Math.max(0, Math.min(duration, t * duration));
+  const state = rawState(spec, duration, seconds, delayIn, delayOut);
+  const frame = 1 / Math.max(1, S.fps || 30);
+  const previous = rawState(spec, duration, Math.max(0, seconds - frame), delayIn, delayOut);
+  state.velocity = {
+    x: (state.dx - previous.dx) / frame,
+    y: (state.dy - previous.dy) / frame,
+    scale: (state.scale - previous.scale) / frame,
+  };
+  if (spec.idle && state.phase === "hold") {
+    const random = srand(`${inst.id}-idle`);
+    const phaseA = random() * 6.283, phaseB = random() * 6.283;
+    const hz = spec.idle.hz || .16, amplitude = spec.idle.amplitude || .0035;
+    state.scale *= 1 + amplitude * Math.sin(seconds * 6.283 * hz + phaseA);
+    state.dy += amplitude * 260 * Math.sin(seconds * 6.283 * hz * .74 + phaseB);
+    state.rotate += amplitude * .35 * Math.sin(seconds * 6.283 * hz * .53 + phaseA);
+  }
+  state.seconds = seconds;
+  state.duration = duration;
+  state.blur = spec.blur;
+  state.shadowSpec = spec.shadow;
+  state.element = element || null;
+  return state;
+}
+
+/* --------------------------------------------------- orientation variants */
+function packVariant(templateId, orientation) {
+  const pack = S.packs[templateId] || {};
+  const chosen = orientation || S.state?.orientation || "horizontal";
+  const variants = pack.variants || {};
+  const zones = pack.zones || {};
+  return {
+    x: .5, y: .3, scale: 1, max_width: .72, max_lines: 2, font_scale: 1,
+    ...(zones[chosen] || {}),
+    ...(variants.base || {}),
+    ...(variants[chosen] || {}),
+  };
+}
+
+/* ------------------------------------------------------- shared draw help */
+function layeredShadow(ctx, options, pathFn) {
+  const u = renderUnit(ctx);
+  const { layers = 3, elevation = 22, opacity = .4, color = "#000000" } = options || {};
+  const toRGBA = a => {
+    const value = parseInt(String(color).replace("#", ""), 16) || 0;
+    return `rgba(${value >> 16 & 255},${value >> 8 & 255},${value & 255},${Math.max(0, Math.min(1, a))})`;
+  };
+  ctx.save();
+  for (let layer = layers; layer >= 1; layer--) {
+    const f = layer / layers;
+    ctx.save();
+    ctx.shadowColor = toRGBA(opacity * (.16 + .55 * f * f));
+    ctx.shadowBlur = elevation * u * f * 1.55;
+    ctx.shadowOffsetY = elevation * u * f * .48;
+    ctx.fillStyle = "#000";
+    pathFn(ctx);
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function stageMotion(ctx, state, drawFn) {
+  const u = renderUnit(ctx);
+  const paint = (offsetX, offsetY, alphaScale) => {
+    ctx.save();
+    ctx.globalAlpha *= state.opacity * alphaScale;
+    ctx.translate(state.dx * u + offsetX, state.dy * u + offsetY);
+    ctx.rotate(state.rotate);
+    ctx.scale(state.scale, state.scale);
+    drawFn(ctx, state);
+    ctx.restore();
+  };
+  const blur = state.blur || {};
+  const fps = Math.max(1, S.fps || 30);
+  const smearX = (state.velocity?.x || 0) * u / fps;
+  const smearY = (state.velocity?.y || 0) * u / fps;
+  const smear = Math.hypot(smearX, smearY);
+  if (!blur.motion || smear < 1.6) { paint(0, 0, 1); return; }
+  const samples = Math.max(2, Math.min(blur.max || 6, Math.round(smear / 2.2)));
+  for (let sample = 0; sample < samples; sample++) {
+    const k = sample / (samples - 1) - .5;
+    paint(-smearX * k, -smearY * k, 1 / samples);
+  }
+}
+
+Object.assign(A, {
+  projectAsset: file => file ? `/media/${S.project}/assets/${encodeURIComponent(file)}` : "",
+  templateAsset: (pack, file) => `/tpl/${encodeURIComponent(pack)}/${encodeURIComponent(file)}`,
+  sharedAsset: file => `/tpl/_shared/${file}`,
+  instanceAssetUrl: instance => {
+    const file = instance?.fields?.asset;
+    if (!file) return "";
+    if (file.toLowerCase().endsWith(".pdf"))
+      return `/api/projects/${encodeURIComponent(S.project)}/pdf-page`
+        + `?asset=${encodeURIComponent(file)}&page=${instance.fields.page || 0}`;
     return `/media/${encodeURIComponent(S.project)}/assets/${encodeURIComponent(file)}`;
   },
-  fitContain,unit:renderUnit,viewportUnit,envelope:env,easeOut,easeOutBack,seeded:srand,
-  categoryColor:cc,project:()=>S.project,pack:id=>S.packs[id]||{}
+  fitContain, unit: renderUnit, viewportUnit, seeded: srand,
+  ease: EASE, easeOut, easeOutBack, spring: springValue,
+  motion: motionAt, stage: stageMotion, shadow: layeredShadow,
+  variant: packVariant,
+  orientation: () => S.state?.orientation || "horizontal",
+  isCamera: id => Boolean(S.packs[id]?.camera),
+  categoryColor: cc, project: () => S.project, pack: id => S.packs[id] || {},
+  fps: () => Math.max(1, S.fps || 30),
+  /* Kept so packs written against the first engine keep rendering. */
+  envelope: (inst, t) => {
+    const state = motionAt(inst, t);
+    return { phase: state.phase, k: state.phase === "out" ? 1 - state.p : state.k };
+  },
 });
-function paper(ctx,w,h,seed){ // procedural notebook-paper card (student desk)
-  const u=renderUnit(ctx);
-  const texture=A.load("/tpl/keyword/paper-texture.png");
-  ctx.fillStyle=texture?.complete&&texture.naturalWidth?ctx.createPattern(texture,"repeat"):"#faf6ec";
-  ctx.strokeStyle="#00000022";
-  ctx.shadowColor="#00000066";ctx.shadowBlur=18*u;ctx.shadowOffsetY=6*u;
-  ctx.beginPath();ctx.roundRect(-w/2,-h/2,w,h,Math.max(2,8*u));ctx.fill();ctx.shadowBlur=0;ctx.stroke();
-  const r=srand(seed);ctx.strokeStyle="#8aa7c633";           // faint ruled lines
-  for(let y=-h/2+18*u;y<h/2-6*u;y+=16*u){ctx.beginPath();ctx.moveTo(-w/2+8*u,y+r()*1.5*u);
-    ctx.lineTo(w/2-8*u,y+r()*1.5*u);ctx.stroke();}
-}
-/* ---- built-in renderers (packs may override via render.js) ---- */
-registerTemplate("keyword",{draw(ctx,inst,t){
-  const e=env(inst,t),txt=inst.fields.text||"…",u=renderUnit(ctx);
-  ctx.font=`800 ${64*inst.scale*u}px Rubik`;
-  const w=Math.min(ctx.canvas.width*.72,ctx.measureText(txt).width+70*u),h=100*inst.scale*u;
-  let s=e.phase==="in"?easeOutBack(e.k):e.phase==="out"?easeOut(e.k):1;
-  ctx.save();ctx.scale(s,s);ctx.rotate(-0.02);
-  paper(ctx,w,h,inst.id);
-  ctx.fillStyle="#1c1c1c";ctx.textAlign="center";ctx.textBaseline="middle";
-  ctx.fillText(txt,0,4);ctx.restore();}});
-registerTemplate("image-pop",{draw(ctx,inst,t){
-  const e=env(inst,t),u=renderUnit(ctx);const im=inst.fields.asset&&A.load(`/media/${S.project}/assets/${inst.fields.asset}`);
-  const ready=im&&im.complete&&im.naturalWidth;
-  const iw=ready?im.naturalWidth:480, ih=ready?im.naturalHeight:300;
-  const fitted=fitContain(iw,ih,560*inst.scale*u,420*inst.scale*u),w=fitted.w,h=fitted.h;
-  let s=e.phase==="in"?easeOutBack(e.k):e.phase==="out"?easeOut(e.k):1;
-  let dy=e.phase==="in"?(1-easeOut(e.k))*-60*u:0;           // drop + settle
-  ctx.save();ctx.translate(0,dy);ctx.scale(s,s);ctx.rotate(srand(inst.id)()*0.06-0.03);
-  paper(ctx,w+34*u,h+58*u,inst.id);                          // polaroid frame
-  if(ready)ctx.drawImage(im,-w/2,-h/2-10*u,w,h);
-  else{ctx.fillStyle="#00000018";ctx.fillRect(-w/2,-h/2-10*u,w,h);}
-  const frame=A.load("/tpl/image-pop/frame.png");
-  if(frame?.complete&&frame.naturalWidth)ctx.drawImage(frame,-w/2-30*u,-h/2-40*u,w+60*u,h+100*u);
-  ctx.restore();}});
-registerTemplate("video-clip",{draw(ctx,inst,t){
-  const e=env(inst,t),u=renderUnit(ctx),url=inst.fields.asset&&`/media/${S.project}/assets/${inst.fields.asset}`;
-  const clip=url&&A.video(url),ready=clip&&clip.readyState>=2;
-  const iw=ready?clip.videoWidth:480,ih=ready?clip.videoHeight:300;
-  const fitted=fitContain(iw,ih,560*inst.scale*u,420*inst.scale*u),w=fitted.w,h=fitted.h;
-  const s=e.phase==="in"?easeOutBack(e.k):e.phase==="out"?easeOut(e.k):1;
-  const dy=e.phase==="in"?(1-easeOut(e.k))*-60*u:0;
-  ctx.save();ctx.translate(0,dy);ctx.scale(s,s);ctx.rotate(srand(inst.id)()*0.05-0.025);
-  paper(ctx,w+34*u,h+58*u,inst.id);
-  if(ready)ctx.drawImage(clip,-w/2,-h/2-10*u,w,h);
-  else{ctx.fillStyle="#101216";ctx.fillRect(-w/2,-h/2-10*u,w,h);
-    ctx.fillStyle="#6C9BFF";ctx.font=`600 ${22*u}px Inter`;ctx.textAlign="center";ctx.fillText("VIDEO",0,4*u)}
-  const frame=A.load("/tpl/video-clip/frame.png");
-  if(frame?.complete&&frame.naturalWidth)ctx.drawImage(frame,-w/2-30*u,-h/2-40*u,w+60*u,h+100*u);
-  ctx.restore();}});
-registerTemplate("screen",{draw(ctx,inst,t){
-  const e=env(inst,t),u=renderUnit(ctx);const im=inst.fields.asset&&A.load(`/media/${S.project}/assets/${inst.fields.asset}`);
-  const ready=im&&im.complete&&im.naturalWidth;
-  const iw=ready?im.naturalWidth:640, ih=ready?im.naturalHeight:400;
-  const w=Math.min(680,iw)*inst.scale*u,h=w*ih/iw;
-  const s=e.phase==="in"?0.96+0.04*easeOut(e.k):e.phase==="out"?easeOut(e.k):1;
-  ctx.save();ctx.globalAlpha=e.phase!=="hold"?e.k:1;ctx.scale(s,s);
-  ctx.fillStyle="#23252b";ctx.shadowColor="#000a";ctx.shadowBlur=24*u;
-  ctx.beginPath();ctx.roundRect(-w/2-10*u,-h/2-34*u,w+20*u,h+44*u,12*u);ctx.fill();ctx.shadowBlur=0;
-  for(let i=0;i<3;i++){ctx.fillStyle=["#ff5f57","#febc2e","#28c840"][i];
-    ctx.beginPath();ctx.arc(-w/2+8*u+i*18*u,-h/2-22*u,5*u,0,7);ctx.fill();}
-  if(ready)ctx.drawImage(im,-w/2,-h/2,w,h);else{ctx.fillStyle="#0006";ctx.fillRect(-w/2,-h/2,w,h)}
-  const frame=A.load("/tpl/screen/frame.png");
-  if(frame?.complete&&frame.naturalWidth)ctx.drawImage(frame,-w/2-36*u,-h/2-60*u,w+72*u,h+94*u);
-  ctx.restore();}});
-registerTemplate("highlight",{draw(ctx,inst,t){
-  const e=env(inst,t),u=renderUnit(ctx);
-  const im=inst.fields.asset&&A.load(inst.fields.asset.endsWith(".pdf")
-    ?`/api/projects/${S.project}/pdf-page?asset=${inst.fields.asset}&page=${inst.fields.page||0}`
-    :`/media/${S.project}/assets/${inst.fields.asset}`);
-  const ready=im&&im.complete&&im.naturalWidth;
-  const iw=ready?im.naturalWidth:600, ih=ready?im.naturalHeight:800;
-  const w=Math.min(620,iw)*inst.scale*u,h=w*ih/iw;
-  ctx.save();ctx.globalAlpha=e.phase!=="hold"?easeOut(e.k):1;
-  paper(ctx,w+30*u,h+30*u,inst.id);
-  if(ready)ctx.drawImage(im,-w/2,-h/2,w,h);
-  const strokes=inst.fields.strokes||[];                    // {x1,x2,y} normalized
-  const prog=Math.min(1,Math.max(0,(t-0.12)/0.6));          // staggered sweep window
-  strokes.forEach((st,i)=>{
-    const p=Math.min(1,Math.max(0,prog*strokes.length-i));  // stroke i sweeps after i-1
-    if(p<=0)return;
-    const x1=-w/2+st.x1*w, x2=-w/2+st.x2*w, y=-h/2+st.y*h;  // locked to 0° — horizontal
-    const stroke=A.load("/tpl/highlight/stroke.png"),sw=(x2-x1)*easeOut(p),sh=h*0.065;
-    if(stroke?.complete&&stroke.naturalWidth)ctx.drawImage(stroke,0,0,stroke.naturalWidth*easeOut(p),
-      stroke.naturalHeight,x1,y-sh/2,sw,sh);
-    else{ctx.strokeStyle=cc("highlight")+"99";ctx.lineWidth=sh;ctx.lineCap="round";
-      ctx.beginPath();ctx.moveTo(x1,y);ctx.lineTo(x1+sw,y);ctx.stroke()}});
-  ctx.restore();}});
-registerTemplate("ambient",{draw(ctx,inst,t){
-  // fullscreen calm paper loop: generated texture + slow seeded soft light
-  const r=srand(inst.id);const W=ctx.canvas.width,H=ctx.canvas.height;
-  ctx.save();ctx.setTransform(1,0,0,1,0,0);
-  const bg=A.load("/tpl/ambient/ambient-paper.png");
-  if(bg?.complete&&bg.naturalWidth){const drift=Math.sin(t*Math.PI*2)*W*0.006;
-    ctx.globalAlpha=0.30;ctx.drawImage(bg,-W*0.01+drift,-H*0.01,W*1.02,H*1.02)}
-  ctx.globalAlpha=0.07;
-  for(let i=0;i<5;i++){const ph=r()*6.28,sp=0.05+r()*0.05;
-    const x=W*(0.2+0.6*r())+Math.sin(t*6.28*sp+ph)*W*0.05;
-    const y=H*(0.2+0.6*r())+Math.cos(t*6.28*sp+ph)*H*0.05;
-    const g=ctx.createRadialGradient(x,y,0,x,y,H*0.25);
-    g.addColorStop(0,"#ffffff");g.addColorStop(1,"#ffffff00");
-    ctx.fillStyle=g;ctx.fillRect(0,0,W,H);}
-  ctx.restore();}});
-registerTemplate("punch-in",{draw(){/* punch-in transforms the video itself —
-  handled in drawOverlay()/export via the zoom rect, draws nothing itself */}});
-registerTemplate("captions",{draw(ctx,inst,t){}});
 
-function activeInstances(t){return (S.state?.instances||[]).filter(i=>t>=i.start&&t<i.start+i.duration)
-  .sort((a,b)=>a.track-b.track)}
-function isCameraEffect(item){return item&&["punch-in","zoom-out"].includes(item.template)}
-function cameraTransform(t){ // shared normalized source-camera state
-  const item=activeInstances(t).find(i=>isCameraEffect(i)&&i.fields.rect);
-  if(!item)return null;
-  const tt=(t-item.start)/item.duration,e=env(item,tt);
-  const custom=REG[item.template]?.sourceTransform?.(item,tt,A);
-  if(custom)return custom;
-  const k=e.phase==="in"?easeOut(e.k):e.phase==="out"?easeOut(e.k):1;
-  const r=item.fields.rect;                                 // normalized {x,y,w,h}
-  const target=1/Math.max(r.w,r.h);
-  return{cx:r.x+r.w/2,cy:r.y+r.h/2,scale:1+(target-1)*k};
-}
-function syncOverlayVideos(t){
-  const active=new Set();
-  for(const inst of activeInstances(t).filter(i=>i.template==="video-clip"&&i.fields.asset&&!i.missing)){
-    const url=`/media/${S.project}/assets/${inst.fields.asset}`,clip=A.video(url);
-    active.add(url);const local=Math.max(0,t-inst.start);
-    const monitor=(S.monitorMuted?0:S.monitorGain)*Math.max(0,Math.min(1,inst.fields.volume??.8));
-    clip.muted=EXPORT_MODE||monitor<=0;clip.volume=Math.max(0,Math.min(1,monitor));
-    if(clip.readyState>=1&&Math.abs(clip.currentTime-local)>.12)clip.currentTime=Math.min(local,clip.duration||local);
-    if(S.playing)clip.play().catch(()=>{});else clip.pause();
+/* -------------------------------------------------------- caption layout */
+function captionLayout(block) {
+  const style = S.state?.caption_style || {};
+  const orientation = S.state?.orientation || "horizontal";
+  const global = style[orientation] || {};
+  const base = {
+    x: .5, y: orientation === "vertical" ? .78 : .86, scale: 1,
+    align: "center", max_width: orientation === "vertical" ? .90 : .84,
+    ...global,
+  };
+  if (block && block.follow_global === false) {
+    return {
+      ...base,
+      x: block.x ?? base.x,
+      y: block.y ?? base.y,
+      scale: block.scale ?? base.scale,
+    };
   }
-  for(const [url,clip] of Object.entries(A.vid))if(!active.has(url))clip.pause();
+  return base;
 }
-async function prepareVideoAssets(t){
-  const waits=[];
-  for(const inst of activeInstances(t).filter(i=>i.template==="video-clip"&&i.fields.asset&&!i.missing)){
-    const clip=A.video(`/media/${S.project}/assets/${inst.fields.asset}`);
-    const local=Math.max(0,t-inst.start);
-    waits.push(new Promise(resolve=>{
-      const seek=()=>{if(Math.abs(clip.currentTime-local)<1/(S.fps||30)){resolve();return}
-        const done=()=>{clip.removeEventListener("seeked",done);resolve()};
-        clip.addEventListener("seeked",done,{once:true});clip.currentTime=Math.min(local,Math.max(0,(clip.duration||local)-.001));
-        setTimeout(done,1200)};
-      if(clip.readyState>=1)seek();else{clip.addEventListener("loadedmetadata",seek,{once:true});setTimeout(resolve,1800)}
+
+/** The caption blocks visible at timeline time `t`, honouring sentence mode. */
+function captionsAt(t) {
+  const blocks = S.state?.captions || [];
+  const found = blocks.find(block => t >= block.start && t < block.end);
+  return found ? [found] : [];
+}
+
+/* -------------------------------------------------------- frame assembly */
+function activeInstances(t) {
+  return (S.state?.instances || [])
+    .filter(i => t >= i.start && t < i.start + i.duration)
+    .sort((a, b) => a.track - b.track);
+}
+/* A pack is a camera effect because it declares a `camera` block, not because
+   this file knows its name. Adding a new camera template stays a folder drop. */
+function isCameraEffect(item) {
+  return Boolean(item && S.packs[item.template]?.camera);
+}
+function packUsesVideo(templateId) {
+  return (S.packs[templateId]?.fields || []).some(field => field.type === "asset:video");
+}
+
+/** Shared normalised source-camera state, mirrored exactly by the FFmpeg graph. */
+function cameraTransform(t) {
+  const item = activeInstances(t).find(i => isCameraEffect(i) && i.fields.rect);
+  if (!item) return null;
+  const local = (t - item.start) / item.duration;
+  const custom = REG[item.template]?.sourceTransform?.(item, local, A);
+  if (custom) return custom;
+  const state = motionAt(item, local);
+  const rect = item.fields.rect;
+  const target = 1 / Math.max(.05, Math.max(rect.w, rect.h));
+  const k = state.phase === "in" ? state.k : state.phase === "out" ? state.k : 1;
+  return { cx: rect.x + rect.w / 2, cy: rect.y + rect.h / 2, scale: 1 + (target - 1) * k };
+}
+
+function syncOverlayVideos(t) {
+  const active = new Set();
+  for (const inst of activeInstances(t).filter(i => i.fields.asset && !i.missing
+      && packUsesVideo(i.template))) {
+    const url = A.projectAsset(inst.fields.asset), clip = A.video(url);
+    active.add(url);
+    const local = Math.max(0, t - inst.start) + (inst.fields.clip_in || 0);
+    const monitor = (S.monitorMuted ? 0 : S.monitorGain)
+      * Math.max(0, Math.min(1, inst.fields.volume ?? .8));
+    clip.muted = EXPORT_MODE || monitor <= 0;
+    clip.volume = Math.max(0, Math.min(1, monitor));
+    if (clip.readyState >= 1 && Math.abs(clip.currentTime - local) > .12)
+      clip.currentTime = Math.min(local, clip.duration || local);
+    if (S.playing) clip.play().catch(() => {}); else clip.pause();
+  }
+  for (const [url, clip] of Object.entries(A.vid)) if (!active.has(url)) clip.pause();
+}
+
+async function prepareVideoAssets(t) {
+  const waits = [];
+  for (const inst of activeInstances(t).filter(i => i.fields.asset && !i.missing
+      && packUsesVideo(i.template))) {
+    const clip = A.video(A.projectAsset(inst.fields.asset));
+    const local = Math.max(0, t - inst.start) + (inst.fields.clip_in || 0);
+    waits.push(new Promise(resolve => {
+      const seek = () => {
+        if (Math.abs(clip.currentTime - local) < 1 / (S.fps || 30)) { resolve(); return; }
+        const done = () => { clip.removeEventListener("seeked", done); resolve(); };
+        clip.addEventListener("seeked", done, { once: true });
+        clip.currentTime = Math.min(local, Math.max(0, (clip.duration || local) - .001));
+        setTimeout(done, 1200);
+      };
+      if (clip.readyState >= 1) seek();
+      else { clip.addEventListener("loadedmetadata", seek, { once: true }); setTimeout(resolve, 1800); }
     }));
   }
   await Promise.all(waits);
 }
-function drawFrame(ctx,W,H,t){ // THE shared render — preview + export use this
-  ctx.clearRect(0,0,W,H);
-  for(const inst of activeInstances(t)){
-    if(isCameraEffect(inst))continue;
-    const fns=REG[inst.template];if(!fns)continue;
-    const nt=(t-inst.start)/inst.duration;
-    ctx.save();ctx.translate(inst.x*W,inst.y*H);
-    if(inst.missing)ctx.globalAlpha=0.45;                   // desaturated feel
-    fns.draw(ctx,inst,nt,A);
+
+/** THE shared render. The preview and the headless exporter both call this. */
+function drawFrame(ctx, W, H, t) {
+  ctx.clearRect(0, 0, W, H);
+  for (const inst of activeInstances(t)) {
+    if (isCameraEffect(inst)) continue;
+    const fns = REG[inst.template];
+    if (!fns?.draw) continue;
+    const local = (t - inst.start) / inst.duration;
+    ctx.save();
+    if (S.packs[inst.template]?.full_frame) ctx.setTransform(1, 0, 0, 1, 0, 0);
+    else ctx.translate(inst.x * W, inst.y * H);
+    if (inst.missing) ctx.globalAlpha = .45;
+    try { fns.draw(ctx, inst, local, A); }
+    catch (error) { if (EXPORT_MODE) throw error; console.warn(inst.template, error); }
     ctx.restore();
   }
-  // captions (style from captions pack spec)
-  const cs=(S.packs.captions&&S.packs.captions.style)||{};
-  const blk=(S.state?.captions||[]).find(b=>t>=b.start&&t<b.end);
-  if(blk){const renderer=REG.captions;
-    if(renderer?.draw)renderer.draw(ctx,{id:blk.id,template:"captions",x:.5,y:cs.y??.88,scale:1,
-      fields:{text:blk.text,style:cs}},(t-blk.start)/(blk.end-blk.start),A);
-    else{ctx.save();ctx.font=`700 ${(cs.size||42)*(H/1080)}px Rubik`;ctx.textAlign="center";
-      const y=H*(cs.y??0.88),pad=14,w=ctx.measureText(blk.text).width;ctx.fillStyle=cs.bg||"#000000aa";
-      ctx.beginPath();ctx.roundRect(W/2-w/2-pad,y-32*(H/1080)-pad/2,w+pad*2,52*(H/1080),9);ctx.fill();
-      ctx.fillStyle=cs.color||"#F2F2F2";ctx.fillText(blk.text,W/2,y);ctx.restore();}}
+  const renderer = REG.captions;
+  for (const block of captionsAt(t)) {
+    const layout = captionLayout(block);
+    const item = {
+      id: block.id, template: "captions", track: 0,
+      start: block.start, duration: Math.max(.001, block.end - block.start),
+      x: layout.x, y: layout.y, scale: layout.scale,
+      fields: { text: block.text, words: block.words || [], layout, style: S.state?.caption_style || {} },
+    };
+    ctx.save();
+    ctx.translate(layout.x * W, layout.y * H);
+    try { renderer?.draw?.(ctx, item, (t - block.start) / item.duration, A); }
+    catch (error) { if (EXPORT_MODE) throw error; console.warn("captions", error); }
+    ctx.restore();
+  }
 }
 
 /* =================================== [E] preview & transform controls */
@@ -635,7 +890,7 @@ function drawOverlay(){
 }
 function instanceNormBounds(item){
   if(isCameraEffect(item)&&item.fields.rect)return item.fields.rect;
-  if(item.template==="ambient")return{x:0,y:0,w:1,h:1};
+  if(S.packs[item.template]?.full_frame)return{x:0,y:0,w:1,h:1};
   const measured=REG[item.template]?.measure?.(item,A,{width:ov.width,height:ov.height});
   if(measured?.width&&measured?.height){
     const width=measured.width/Math.max(1,ov.width),height=measured.height/Math.max(1,ov.height);
@@ -644,7 +899,38 @@ function instanceNormBounds(item){
   const width=Math.min(.8,.32*item.scale),height=Math.min(.8,.22*item.scale);
   return{x:item.x-width/2,y:item.y-height/2,w:width,h:height};
 }
-function drawSelection(){const b=$("#selbox");const i=S.sel&&S.state.instances.find(x=>x.id===S.sel);
+/* A caption is not a template instance, but it can be dragged like one, so it
+   needs the same measured bounds. Building the same pseudo-instance drawFrame
+   builds keeps the selection box exactly on the painted text. */
+function captionPseudoInstance(block){
+  const layout=captionLayout(block);
+  return {id:block.id,template:"captions",track:0,start:block.start,
+    duration:Math.max(.001,block.end-block.start),
+    x:layout.x,y:layout.y,scale:layout.scale,
+    fields:{text:block.text,words:block.words||[],layout,style:S.state?.caption_style||{}}};
+}
+function captionNormBounds(block){
+  const item=captionPseudoInstance(block);
+  const measured=REG.captions?.measure?.(item,A,{width:ov.width,height:ov.height});
+  const width=(measured?.width||ov.width*.6)/Math.max(1,ov.width);
+  const height=(measured?.height||ov.height*.09)/Math.max(1,ov.height);
+  return {x:item.x-width/2,y:item.y-height/2,w:width,h:height};
+}
+function selectedCaption(){
+  return S.sel?(S.state?.captions||[]).find(block=>block.id===S.sel)||null:null;
+}
+function drawSelection(){const b=$("#selbox");
+  const caption=selectedCaption();
+  if(caption){
+    const layout=layoutOverlay();if(!layout){b.style.display="none";return}
+    const box=captionNormBounds(caption);
+    b.style.display="block";b.style.setProperty("--sel",cc("captions"));
+    b.style.left=(layout.left+box.x*layout.displayW)+"px";
+    b.style.top=(layout.top+box.y*layout.displayH)+"px";
+    b.style.width=box.w*layout.displayW+"px";b.style.height=box.h*layout.displayH+"px";
+    return;
+  }
+  const i=S.sel&&S.state.instances.find(x=>x.id===S.sel);
   if(!i){b.style.display="none";return}
   const layout=layoutOverlay();if(!layout){b.style.display="none";return}
   const box=instanceNormBounds(i),w=box.w*layout.displayW,h=box.h*layout.displayH;
@@ -667,7 +953,10 @@ function applyUniformScale(item,original,factor){
     const w=Math.max(.05,rect.w*scale),h=Math.max(.05,rect.h*scale);
     item.fields.rect={x:Math.max(0,Math.min(1-w,cx-w/2)),
       y:Math.max(0,Math.min(1-h,cy-h/2)),w,h};
-  }else item.scale=clampInstanceScale(original.scale*safeFactor);
+  }else{
+    item.scale=clampInstanceScale(original.scale*safeFactor);
+    (item.layouts??={})[S.state.orientation]={x:item.x,y:item.y,scale:item.scale};
+  }
 }
 /* touch/mouse: drag to move, corner handle or pinch to scale */
 let drag=null,pinch=null,previewTool=null;
@@ -702,7 +991,7 @@ function finishPreviewTool(){
   const tool=previewTool,a=tool.start,b=tool.current||a,item=tool.item;
   if(tool.type==="rect"){
     const x=Math.max(0,Math.min(a.x,b.x)),y=Math.max(0,Math.min(a.y,b.y));
-    item.fields.rect={x,y,w:Math.max(.05,Math.min(1-x,Math.abs(b.x-a.x))),
+    item.fields[tool.field||"rect"]={x,y,w:Math.max(.05,Math.min(1-x,Math.abs(b.x-a.x))),
       h:Math.max(.05,Math.min(1-y,Math.abs(b.y-a.y)))};
     previewTool=null;
   }else{
@@ -728,13 +1017,22 @@ G.addEventListener("pointerdown",e=>{
     snapshot();previewTool.active=true;previewTool.start=previewTool.current=point;
     G.setPointerCapture(e.pointerId);drawOverlay();return}
   const p=pt(e);
-  const hit=[...activeInstances(S.t)].reverse().find(i=>i.template!=="ambient"&&(()=>{
-    const box=instanceNormBounds(i);return p.x>=box.x&&p.x<=box.x+box.w&&p.y>=box.y&&p.y<=box.y+box.h})());
+  const inside=(box)=>p.x>=box.x&&p.x<=box.x+box.w&&p.y>=box.y&&p.y<=box.y+box.h;
+  const hit=[...activeInstances(S.t)].reverse().find(i=>!S.packs[i.template]?.full_frame
+    &&inside(instanceNormBounds(i)));
   if(hit){S.sel=hit.id;snapshot();const box=instanceNormBounds(hit);
     drag={id:hit.id,dx:p.x-box.x,dy:p.y-box.y,box,
       rect:isCameraEffect(hit)&&hit.fields.rect?structuredClone(hit.fields.rect):null};
     $$(".zoneguide").forEach(z=>z.style.display="block");positionGuides();}
-  else S.sel=null;
+  else{
+    // Captions are grabbable straight off the preview; dragging one is also how
+    // it stops following the project-wide placement.
+    const block=captionsAt(S.t).find(entry=>inside(captionNormBounds(entry)));
+    if(block){S.sel=block.id;snapshot();const box=captionNormBounds(block);
+      drag={id:block.id,caption:true,dx:p.x-box.x,dy:p.y-box.y,box};
+      $$(".zoneguide").forEach(z=>z.style.display="block");positionGuides();}
+    else S.sel=null;
+  }
   renderInspector();drawOverlay();
 });
 G.addEventListener("pointermove",e=>{
@@ -742,8 +1040,15 @@ G.addEventListener("pointermove",e=>{
   if(!drag)return;const p=pt(e);const i=S.state.instances.find(x=>x.id===drag.id);
   const left=Math.max(0,Math.min(1-drag.box.w,p.x-drag.dx));
   const top=Math.max(0,Math.min(1-drag.box.h,p.y-drag.dy));
-  if(drag.rect){i.fields.rect={...drag.rect,x:left,y:top}}
-  else{i.x=left+drag.box.w/2;i.y=top+drag.box.h/2}
+  if(drag.caption){
+    const block=S.state.captions.find(c=>c.id===drag.id);
+    if(block){block.follow_global=false;
+      block.x=Math.max(0,Math.min(1,left+drag.box.w/2));
+      block.y=Math.max(0,Math.min(1,top+drag.box.h/2));}
+  }
+  else if(drag.rect){i.fields[drag.field||"rect"]={...drag.rect,x:left,y:top}}
+  else{i.x=left+drag.box.w/2;i.y=top+drag.box.h/2;
+    (i.layouts??={})[S.state.orientation]={x:i.x,y:i.y,scale:i.scale};}
   drawOverlay();
 });
 G.addEventListener("pointerup",()=>{if(previewTool?.active){finishPreviewTool();return}if(drag){drag=null;
@@ -828,19 +1133,37 @@ $("#frameBack").onclick=()=>{vid.pause();S.playing=false;$("#play").textContent=
 $("#frameForward").onclick=()=>{vid.pause();S.playing=false;$("#play").textContent="▶";seek(S.t+frameDuration())};
 /* SFX in preview: one decoded Web Audio buffer per organic pack sound. */
 const SFX_AUDIO={context:null,master:null,buffers:new Map(),fired:new Set(),lastTime:0};
+/* A pack sound is either its own file or one from the shared, loudness-matched
+   library (templates/_shared/sfx). Packs write "_shared/sfx/pop.wav" for the
+   second form so 37 templates do not each carry a copy of the same wav. */
+function sfxUrl(spec,file){
+  return file.startsWith("_shared/")
+    ? `/tpl/_shared/${file.slice(8).split("/").map(encodeURIComponent).join("/")}`
+    : `/tpl/${encodeURIComponent(spec._dir)}/${encodeURIComponent(file)}`;
+}
+/* Mirrors sfx_repeat_count() in server.py: a repeating sound counts a list, the
+   lines of a text field, or a number, so preview and export fire identically. */
+function sfxRepeatCount(item,fieldName){
+  if(!fieldName)return 1;
+  const value=item.fields?.[fieldName];
+  if(Array.isArray(value))return Math.max(1,value.length);
+  if(typeof value==="string")
+    return Math.max(1,value.split(/\r?\n|\s*\|\s*/).filter(part=>part.trim()).length);
+  if(typeof value==="number"&&Number.isFinite(value))
+    return Math.max(1,Math.min(64,Math.round(value)));
+  return 1;
+}
 function sfxEventsForInstance(item,spec){
   const events=[];
   for(const sound of spec?.sfx||[]){
-    const repeated=sound.repeat_field&&Array.isArray(item.fields?.[sound.repeat_field])
-      ?item.fields[sound.repeat_field].length:1;
-    const count=Math.max(1,repeated);
+    const count=sfxRepeatCount(item,sound.repeat_field);
     const base=sound.offset_ratio!=null?item.duration*sound.offset_ratio:(sound.offset||0);
     const spread=sound.spread_ratio!=null?item.duration*sound.spread_ratio:0;
     for(let index=0;index<count;index++){
       const relative=base+(count>1
         ?(spread?spread*index/Math.max(1,count-1):(sound.repeat_spacing||0)*index):0);
-      if(relative<=item.duration)events.push({time:item.start+relative,file:sound.file,
-        gain:sound.gain??.5,index,dir:spec._dir});
+      if(relative<=item.duration)events.push({time:item.start+relative,
+        url:sfxUrl(spec,sound.file),gain:sound.gain??.5,index});
     }
   }
   return events;
@@ -868,12 +1191,11 @@ function sfxBuffer(url){
 }
 function preloadSfx(){
   for(const spec of Object.values(S.packs))for(const sound of spec.sfx||[])
-    sfxBuffer(`/tpl/${encodeURIComponent(spec._dir)}/${encodeURIComponent(sound.file)}`);
+    sfxBuffer(sfxUrl(spec,sound.file));
 }
 async function fireSfx(event){
   const context=await ensureSfxAudio();if(!context||!SFX_AUDIO.master)return;
-  const url=`/tpl/${encodeURIComponent(event.dir)}/${encodeURIComponent(event.file)}`;
-  const buffer=await sfxBuffer(url);if(!buffer||!S.playing)return;
+  const buffer=await sfxBuffer(event.url);if(!buffer||!S.playing)return;
   const source=context.createBufferSource(),gain=context.createGain();
   source.buffer=buffer;gain.gain.value=Math.max(0,Math.min(1.5,event.gain));
   source.connect(gain);gain.connect(SFX_AUDIO.master);source.start();
@@ -886,7 +1208,7 @@ function playSFX(){
   for(const item of activeInstances(S.t)){
     const spec=S.packs[item.template];if(!spec)continue;
     for(const event of sfxEventsForInstance(item,spec)){
-      const key=`${item.id}:${event.file}:${event.index}`;
+      const key=`${item.id}:${event.url}:${event.index}`;
       const crossed=S.t>=previous&&event.time>previous-.001&&event.time<=S.t+tolerance;
       const justStarted=S.t>=event.time&&S.t<event.time+tolerance;
       if((crossed||justStarted)&&!SFX_AUDIO.fired.has(key)){
@@ -1251,8 +1573,48 @@ function renderCats(){const p=$("#catsPane");p.innerHTML="";
     const fields=(sp.fields||[]).map(f=>f.type.replace("asset:","")).join(" · ")||"one tap";
     b.innerHTML=`<span class="catdot"></span><span>${sp.display_name||id}<small class="catmeta">${fields}</small></span>`;
     b.onclick=()=>placeInstance(id);p.append(b);}}
+/* Layout is normally decided by the footage. The override exists for the case
+   where a vertical cut is being built from horizontal footage (or the reverse)
+   and the templates should already be laid out for where the video is going. */
+function resolvedOrientation(mode){
+  if(mode!=="auto")return mode;
+  const info=S.state?.source_info||{};
+  return info.width&&info.height&&info.height>info.width?"vertical":"horizontal";
+}
+function syncLayoutButton(){
+  const mode=S.state?.orientation_mode||"auto";
+  const active=S.state?.orientation||"horizontal";
+  const shown=active==="vertical"?"9:16":"16:9";
+  const button=$("#layoutBtn");
+  button.textContent=mode==="auto"?shown:`${shown} \u00b7 fixed`;
+  button.title=mode==="auto"
+    ? `Template layout follows the footage (${shown}). Tap to fix it.`
+    : `Template layout fixed to ${shown}. Tap to change.`;
+}
+function cycleOrientation(){
+  if(!S.state)return;
+  const order=["auto","horizontal","vertical"];
+  const next=order[(order.indexOf(S.state.orientation_mode||"auto")+1)%order.length];
+  snapshot();
+  const previous=S.state.orientation;
+  for(const item of S.state.instances)
+    (item.layouts??={})[previous]={x:item.x,y:item.y,scale:item.scale};
+  S.state.orientation_mode=next;
+  S.state.orientation=resolvedOrientation(next);
+  for(const item of S.state.instances){
+    const saved=item.layouts?.[S.state.orientation];
+    const zone=packVariant(item.template,S.state.orientation);
+    item.x=saved?.x??zone.x??.5;
+    item.y=saved?.y??zone.y??.3;
+    item.scale=saved?.scale??zone.scale??1;
+  }
+  syncLayoutButton();afterMutate();
+  toast(S.state.orientation==="vertical"?"9:16 template layout":"16:9 template layout");
+}
+$("#layoutBtn").onclick=cycleOrientation;
+
 function placeInstance(tid){if(!S.state.source){toast("Import source footage before placing templates");return}snapshot();
-  const sp=S.packs[tid],z=(sp.zones||{})[S.state.orientation]||{};
+  const sp=S.packs[tid],z=packVariant(tid,S.state.orientation);
   const start=Math.min(S.t,Math.max(0,tlDuration()-frameDuration()));
   let tr=1;const dur=Math.max(frameDuration(),Math.min(sp.default_duration||3,tlDuration()-start));
   while(S.state.instances.some(o=>o.track===tr&&o.start<start+dur&&start<o.start+o.duration))tr++;
@@ -1263,8 +1625,14 @@ function placeInstance(tid){if(!S.state.source){toast("Import source footage bef
     else if(field.type==="strokes")fields[field.name]=[];
     else if(field.type==="text")fields[field.name]="";
   }
+  const placement={x:z.x??0.5,y:z.y??0.3,scale:z.scale??1};
+  const other=S.state.orientation==="vertical"?"horizontal":"vertical";
+  const alternate=packVariant(tid,other);
   const inst={id:uid("i"),template:tid,track:tr,start,duration:dur,
-    x:z.x??0.5,y:z.y??0.3,scale:z.scale??1,fields,missing:needs,review:false};
+    ...placement,
+    layouts:{[S.state.orientation]:placement,
+      [other]:{x:alternate.x??0.5,y:alternate.y??0.3,scale:alternate.scale??1}},
+    fields,missing:needs,review:false};
   S.state.instances.push(inst);S.sel=inst.id;
   selectTab("inspector");afterMutate();}
 function renderInspector(){const p=$("#inspPane");
@@ -1316,11 +1684,38 @@ function renderInspector(){const p=$("#inspPane");
   for(const f of sp.fields||[]){
     const row=document.createElement("div");row.className="fieldrow";
     const lab=document.createElement("label");lab.textContent=f.label||f.name;row.append(lab);
-    if(f.type==="text"){const inp=document.createElement("input");let captured=false;
-      inp.value=i.fields[f.name]||"";if(f.max_length)inp.maxLength=f.max_length;
+    if(f.type==="text"||f.type==="textarea"){
+      const inp=document.createElement(f.type==="textarea"?"textarea":"input");let captured=false;
+      if(f.type==="textarea")inp.rows=Math.min(8,Math.max(3,Math.ceil((f.max_length||160)/60)));
+      inp.value=i.fields[f.name]??"";if(f.max_length)inp.maxLength=f.max_length;
       inp.onfocus=()=>{if(!captured){snapshot();captured=true}};
       inp.oninput=()=>{i.fields[f.name]=inp.value;drawOverlay();drawTimeline()};
       inp.onchange=()=>afterMutate();row.append(inp);}
+    else if(f.type==="select"){
+      const pick=document.createElement("select");
+      for(const option of f.options||[]){
+        const node=document.createElement("option");
+        node.value=option;node.textContent=option;
+        if((i.fields[f.name]??f.default)===option)node.selected=true;
+        pick.append(node);
+      }
+      pick.onchange=()=>{snapshot();i.fields[f.name]=pick.value;afterMutate()};
+      row.append(pick);}
+    else if(f.type==="boolean"){
+      const toggle=document.createElement("button");toggle.style.width="100%";
+      const paint=()=>{const on=Boolean(i.fields[f.name]??f.default);
+        toggle.textContent=on?"On":"Off";toggle.setAttribute("aria-pressed",String(on));
+        toggle.classList.toggle("on",on)};
+      toggle.onclick=()=>{snapshot();i.fields[f.name]=!(i.fields[f.name]??f.default);
+        paint();afterMutate()};
+      paint();row.append(toggle);}
+    else if(f.type==="color"){
+      const inp=document.createElement("input");inp.type="color";
+      inp.style.height="44px";inp.style.padding="4px";
+      inp.value=i.fields[f.name]||f.default||"#ffffff";
+      inp.oninput=()=>{i.fields[f.name]=inp.value;drawOverlay()};
+      inp.onchange=()=>{snapshot();i.fields[f.name]=inp.value;afterMutate()};
+      row.append(inp);}
     else if(f.type.startsWith("asset")){
       const pick=document.createElement("select");
       pick.innerHTML=`<option value="">${i.fields.asset?i.fields.asset:"Choose from project assets…"}</option>`;
@@ -1351,9 +1746,11 @@ function renderInspector(){const p=$("#inspPane");
       const clear=document.createElement("button");clear.textContent="Clear strokes";clear.style.width="100%";clear.style.marginTop="8px";
       clear.disabled=!(i.fields.strokes||[]).length;clear.onclick=()=>{snapshot();i.fields.strokes=[];afterMutate()};
       row.append(buttons,clear);}
-    else if(f.type==="rect"){const btn=document.createElement("button");
-      btn.style.width="100%";btn.textContent=i.fields.rect?"Re-set zoom rect":"Set zoom rect on preview";
-      btn.onclick=()=>rectMode(i);row.append(btn);}
+    else if(f.type==="rect"||f.type==="rect2"){
+      const btn=document.createElement("button");btn.style.width="100%";
+      const done=Boolean(i.fields[f.name]);
+      btn.textContent=`${done?"Re-draw":"Draw"} ${(f.label||f.name).toLowerCase()} on preview`;
+      btn.onclick=()=>rectMode(i,f.name);row.append(btn);}
     else if(f.type==="number"){
       const min=f.min??0,max=f.max??1,step=f.step??.05,initial=i.fields[f.name]??f.default??.8;
       const inp=document.createElement("input"),value=document.createElement("span");let captured=false;
@@ -1365,8 +1762,9 @@ function renderInspector(){const p=$("#inspPane");
     if(f.note){const note=document.createElement("small");note.className="catmeta";note.textContent=f.note;row.append(note)}
     p.append(row);}
   const reset=document.createElement("button");reset.textContent="Reset placement";reset.style.width="100%";
-  reset.onclick=()=>{snapshot();const zone=sp.zones?.[S.state.orientation]||{};
+  reset.onclick=()=>{snapshot();const zone=packVariant(i.template,S.state.orientation);
     i.x=zone.x??.5;i.y=zone.y??.3;i.scale=zone.scale??1;
+    delete i.layouts;
     if(isCameraEffect(i)){const field=sp.fields?.find(item=>item.name==="rect");
       if(field?.default)i.fields.rect=structuredClone(field.default)}
     afterMutate()};p.append(reset);
@@ -1377,7 +1775,8 @@ function renderInspector(){const p=$("#inspPane");
     S.sel=null;afterMutate()};p.append(del);}
 /* stroke editor: one drag = one ruler-straight 0° stroke on the framed image */
 function strokeMode(i){previewTool={type:"stroke",item:i,active:false};toast("Draw straight horizontal strokes on the page. Use Finish drawing when done.");renderInspector()}
-function rectMode(i){previewTool={type:"rect",item:i,active:false};toast("Drag a target rectangle on the source preview.");renderInspector()}
+function rectMode(i,field="rect"){previewTool={type:"rect",item:i,field,active:false};
+  toast("Drag the rectangle on the preview.");renderInspector()}
 function stopPreviewTool(){previewTool=null;drawOverlay();renderInspector()}
 /* tabs + phone bottom-sheet */
 function selectTab(t){$$("#tabs button").forEach(b=>b.classList.toggle("on",b.dataset.t===t));
@@ -1409,9 +1808,24 @@ function renderCaptionInspector(panel,block){
     <div class="fieldrow"><label>Timing</label><div class="buttonrow">
       <input data-time="start" type="number" min="0" step="${1/S.fps}" value="${block.start.toFixed(3)}">
       <input data-time="end" type="number" min="0" step="${1/S.fps}" value="${block.end.toFixed(3)}"></div></div>
+    <div class="fieldrow"><label>Placement</label>
+      <button data-action="follow" style="width:100%"></button></div>
     <div class="buttonrow"><button data-action="split">Split at playhead</button>
       <button data-action="merge">Merge next</button></div>
     <button class="danger" data-action="delete" style="width:100%;margin-top:8px">Delete caption</button>`;
+  const follow=panel.querySelector('[data-action="follow"]');
+  const paintFollow=()=>{
+    const on=block.follow_global!==false;
+    follow.textContent=on?"Following the project placement":"Pinned here \u00b7 tap to release";
+    follow.setAttribute("aria-pressed",String(!on));
+    follow.classList.toggle("on",!on);
+  };
+  follow.onclick=()=>{snapshot();
+    if(block.follow_global===false){block.follow_global=true;block.x=block.y=block.scale=null}
+    else{const layout=captionLayout(block);block.follow_global=false;
+      block.x=layout.x;block.y=layout.y;block.scale=layout.scale}
+    paintFollow();afterMutate()};
+  paintFollow();
   const text=panel.querySelector("textarea");text.value=block.text;let captured=false;
   text.onfocus=()=>{if(!captured){snapshot();captured=true}};
   text.oninput=()=>{block.text=text.value;block.words=[];drawOverlay();drawTimeline()};text.onchange=()=>afterMutate();
@@ -1543,6 +1957,82 @@ function openTranscriptDialog(){
   $("#whisperTerms").value=localStorage.getItem("editoro-whisper-terms")||"";
   $("#transcriptDlg").showModal();refreshTranscriptionStatus();
 }
+/* -------------------------------------------- caption placement and grouping */
+const CAPTION_PRESETS={upper:{y:.16},center:{y:.5},lower:{y:null}};
+function captionGlobal(){
+  const style=S.state.caption_style??={};
+  const orientation=S.state.orientation||"horizontal";
+  style[orientation]??={x:.5,y:orientation==="vertical"?.78:.86,scale:1,
+    align:"center",max_width:orientation==="vertical"?.9:.84};
+  return style[orientation];
+}
+function renderCaptionDialog(){
+  if(!S.state)return;
+  const style=S.state.caption_style??={};
+  const global=captionGlobal();
+  const orientation=S.state.orientation||"horizontal";
+  $("#capOrientationLabel").textContent=
+    `Position preset \u00b7 ${orientation==="vertical"?"9:16":"16:9"}`;
+  $("#capX").value=global.x.toFixed(3);
+  $("#capY").value=global.y.toFixed(3);
+  $("#capScale").value=(global.scale??1).toFixed(2);
+  $("#capMode").value=style.mode||"chunk";
+  $("#capWords").value=style.words_per_chunk??5;
+  $("#capSize").value=style.font_size??44;
+  for(const [id,key] of [["#capHighlight","highlight_active_word"],["#capBox","box"]]){
+    const on=style[key]!==false;
+    $(id).setAttribute("aria-pressed",String(on));
+    $(id).classList.toggle("on",on);
+  }
+  $$("#captionDlg [data-preset]").forEach(button=>
+    button.classList.toggle("on",(style.preset||"lower")===button.dataset.preset));
+}
+function applyCaptionPreset(preset){
+  snapshot();
+  const global=captionGlobal();
+  const orientation=S.state.orientation||"horizontal";
+  const fallback=preset==="lower"?(orientation==="vertical"?.78:.86)
+    :CAPTION_PRESETS[preset]?.y??.86;
+  global.y=fallback;global.x=.5;
+  S.state.caption_style.preset=preset;
+  renderCaptionDialog();afterMutate();
+}
+$$("#captionDlg [data-preset]").forEach(button=>
+  button.onclick=()=>applyCaptionPreset(button.dataset.preset));
+for(const [id,key] of [["#capX","x"],["#capY","y"],["#capScale","scale"]]){
+  $(id).onchange=()=>{snapshot();const global=captionGlobal();
+    global[key]=Math.max(key==="scale"?.2:0,Math.min(key==="scale"?4:1,+$(id).value));
+    S.state.caption_style.preset="custom";renderCaptionDialog();afterMutate()};
+}
+$("#capMode").onchange=()=>{snapshot();S.state.caption_style.mode=$("#capMode").value;afterMutate()};
+$("#capWords").onchange=()=>{snapshot();
+  S.state.caption_style.words_per_chunk=Math.max(1,Math.min(24,+$("#capWords").value));afterMutate()};
+$("#capSize").onchange=()=>{snapshot();
+  S.state.caption_style.font_size=Math.max(12,Math.min(160,+$("#capSize").value));afterMutate()};
+$("#capHighlight").onclick=()=>{snapshot();
+  S.state.caption_style.highlight_active_word=S.state.caption_style.highlight_active_word===false;
+  renderCaptionDialog();afterMutate()};
+$("#capBox").onclick=()=>{snapshot();
+  S.state.caption_style.box=S.state.caption_style.box===false;
+  renderCaptionDialog();afterMutate()};
+$("#capFollowAll").onclick=()=>{snapshot();
+  for(const block of S.state.captions){block.follow_global=true;
+    block.x=block.y=block.scale=null}
+  afterMutate();toast("All captions follow the project placement again")};
+$("#capRegroup").onclick=async()=>{
+  try{
+    S.state=await api(`/api/projects/${S.project}/captions/regroup`,
+      {method:"POST",body:JSON.stringify({mode:$("#capMode").value,
+        words_per_chunk:Math.max(1,Math.min(24,+$("#capWords").value))})});
+    afterMutate(false);toast(`${S.state.captions.length} caption blocks`);
+  }catch(error){toast(error.message)}
+};
+$("#capClose").onclick=()=>$("#captionDlg").close();
+$("#captionStyleBtn").onclick=()=>{
+  if(!S.state){toast("Open a project first");return}
+  renderCaptionDialog();$("#captionDlg").showModal();
+};
+
 function connectWS(){const socket=new WebSocket(`${location.protocol==="https:"?"wss":"ws"}://${location.host}/ws`);S.ws=socket;
   socket.onopen=()=>$("#syncStatus").classList.add("on");
   socket.onmessage=async e=>{const m=JSON.parse(e.data);
@@ -1597,7 +2087,9 @@ $("#undoBtn").onclick=$("#timelineUndo").onclick=undo;
 $("#redoBtn").onclick=$("#timelineRedo").onclick=redo;
 
 /* ------------------------------------------------ boot / home screen */
-async function loadPacks(){const {packs}=await api("/api/templates");S.packs={};const modules=[];
+async function loadPacks(){
+  const {packs,shared}=await api("/api/templates");
+  S.packs={};S.shared=shared||[];const modules=[];
   for(const p of packs){S.packs[p.id]=p;
     if(p._has_render)modules.push(import(`/tpl/${p._dir}/render.js?v=${encodeURIComponent(p.version||"1")}`)
       .catch(error=>{throw new Error(`${p.display_name}: ${error.message}`)}));}
@@ -1626,7 +2118,7 @@ async function importSource(file){if(!file||!S.project)return;
   const fd=new FormData();fd.append("file",file);toast("Uploading and reading source footage…");
   const previousState=S.state;
   S.state=await api(`/api/projects/${S.project}/source`,{method:"POST",body:fd});
-  await syncSourceMedia(previousState);seek(0);fitTimeline();afterMutate(false);
+  await syncSourceMedia(previousState);seek(0);fitTimeline();syncLayoutButton();afterMutate(false);
   toast(`Source ready · ${S.state.source_info.width}×${S.state.source_info.height} · ${S.fps} fps`)}
 async function importTranscript(file){if(!file||!S.project)return;
   const fd=new FormData();fd.append("file",file);
@@ -1651,7 +2143,8 @@ async function openProject(name){S.project=name;
   try{const directives=await api(`/api/projects/${name}/directives`);
     $("#dirText").value=directives.text||"";S.state.directives_review=directives.review||[];renderDirectiveReview();
   }catch(error){$("#dirText").value="";toast("Directives could not be loaded: "+error.message)}
-  renderCats();renderInspector();if(!S.ws||S.ws.readyState>1)connectWS();drawTimeline();drawOverlay();fitTimeline();
+  renderCats();renderInspector();syncLayoutButton();
+  if(!S.ws||S.ws.readyState>1)connectWS();drawTimeline();drawOverlay();fitTimeline();
   loadExportHistory();
   applyMonitorGain();
   if(!S.booted){S.booted=true;requestAnimationFrame(tick)}
@@ -1698,40 +2191,69 @@ document.body.addEventListener("drop",async e=>{const file=e.dataTransfer?.files
   if(/\.(srt|json)$/i.test(file.name)){e.preventDefault();await importTranscript(file)}
   else if(/^video\//.test(file.type)&&!S.state.source){e.preventDefault();await importSource(file)}});
 
-/* ============ [J] headless export entry — same engine, no UI, no video */
+/* ============ [J] headless export entry — same engine, no UI, no video
+   Chromium renders the exact same drawFrame() the preview uses, at source
+   resolution, and hands frames to FFmpeg. Nothing may be lazily loaded once
+   rendering starts, so every asset any instance can touch is fetched and
+   decoded before __exportReady flips. */
 if(EXPORT_MODE){
-  (async()=>{await loadPacks();
-    S.project=new URLSearchParams(location.search).get("project");
-    S.state=window.__EDITORO_EXPORT_STATE||
-      await (await fetch(`/api/projects/${S.project}/state`)).json();
-    S.fps=S.state.source_info.fps||30;
-    const c=document.createElement("canvas");
-    c.width=S.state.source_info.width;c.height=S.state.source_info.height;
-    // preload all referenced images, videos, and pack textures before signalling ready
-    const waits=[],assetRequests=new Map();
-    for(const i of S.state.instances.filter(i=>i.fields.asset)){
-      let url=`/media/${encodeURIComponent(S.project)}/assets/${encodeURIComponent(i.fields.asset)}`;
-      if(["highlight","image-pop"].includes(i.template)&&i.fields.asset.toLowerCase().endsWith(".pdf"))
-        url=`/api/projects/${S.project}/pdf-page?asset=${encodeURIComponent(i.fields.asset)}&page=${i.fields.page||0}`;
-      assetRequests.set(url,i.template==="video-clip"?"video":"image");
-    }
-    for(const [url,kind] of assetRequests){
-      if(kind==="video"){const clip=A.video(url);
+  (async()=>{
+    try{
+      await loadPacks();
+      S.project=new URLSearchParams(location.search).get("project");
+      S.state=window.__EDITORO_EXPORT_STATE||
+        await (await fetch(`/api/projects/${S.project}/state`)).json();
+      S.fps=S.state.source_info.fps||30;
+      const c=document.createElement("canvas");
+      c.width=S.state.source_info.width;c.height=S.state.source_info.height;
+      const waits=[],images=new Set(),videos=new Set();
+      for(const asset of S.shared||[])images.add(`/tpl/_shared/${asset}`);
+      for(const spec of Object.values(S.packs))
+        for(const asset of spec.assets||[])images.add(A.templateAsset(spec._dir,asset));
+      for(const i of S.state.instances){
+        if(!i.fields.asset)continue;
+        (packUsesVideo(i.template)?videos:images).add(A.instanceAssetUrl(i));
+      }
+      for(const url of images){const im=A.load(url);
+        waits.push(new Promise(res=>{if(im.complete)res();else{im.onload=im.onerror=res}}))}
+      for(const url of videos){const clip=A.video(url);
         waits.push(new Promise(res=>{if(clip.readyState>=1)res();else{clip.onloadedmetadata=clip.onerror=res}}))}
-      else{const im=A.load(url);waits.push(new Promise(res=>{if(im.complete)res();else im.onload=im.onerror=res}))}
+      await Promise.all(waits);
+      await document.fonts.ready;
+      // Force each on-video face to be rasterised once; otherwise the first
+      // exported frame that uses a weight can land before it is ready.
+      for(const face of ["800 64px Rubik","600 40px Rubik","700 40px Inter","500 34px monospace"]){
+        try{await document.fonts.load(face,"Aa اختبار")}catch(e){}
+      }
+      window.__renderFrames=async times=>{
+        const frames=[],context=c.getContext("2d",{alpha:true});
+        for(const t of times){
+          await prepareVideoAssets(t);
+          drawFrame(context,c.width,c.height,t);
+          frames.push(c.toDataURL("image/png"));
+        }
+        return frames;
+      };
+      window.__renderFrame=async t=>(await window.__renderFrames([t]))[0];
+      window.__exportError=null;
+      window.__exportReady=true;
+    }catch(error){
+      window.__exportError=String(error&&error.stack||error);
+      window.__exportReady=false;
     }
-    for(const url of ["/tpl/keyword/paper-texture.png","/tpl/image-pop/frame.png",
-      "/tpl/video-clip/frame.png","/tpl/highlight/stroke.png","/tpl/screen/frame.png",
-      "/tpl/ambient/ambient-paper.png"]){const im=A.load(url);
-      waits.push(new Promise(res=>{if(im.complete)res();else im.onload=im.onerror=res}))}
-    await Promise.all(waits);
-    await document.fonts.ready;
-    window.__renderFrames=async times=>{const frames=[],context=c.getContext("2d");
-      for(const t of times){await prepareVideoAssets(t);drawFrame(context,c.width,c.height,t);
-        frames.push(c.toDataURL("image/png"))}
-      return frames};
-    window.__renderFrame=async t=>(await window.__renderFrames([t]))[0];
-    window.__exportReady=true;})();
+  })();
 }else home();
+
+/* One deliberate handle onto the running editor, for the headless UI test and
+   for anyone who wants to poke at a project from the browser console. Nothing
+   in the app reads it; it exists so that testing the real page does not require
+   rewriting the page to be testable. */
+window.editoro = {
+  state: () => S.state, store: S, renderers: REG, runtime: A,
+  openProject, placeInstance, cycleOrientation, setOrientationLabel: syncLayoutButton,
+  drawOverlay, drawTimeline, renderInspector, renderCaptionDialog,
+  snapshot, afterMutate, undo, redo, seek, captionLayout, packVariant, motionAt,
+  captionsAt, activeInstances, $,
+};
 </script>
 </body></html>

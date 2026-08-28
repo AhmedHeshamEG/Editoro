@@ -1,8 +1,103 @@
-{ "id":"screen","version":4,"display_name":"سكرين · Screen","category_color":"#B388FF",
-  "directive_verb":"سكرين",
-  "fields":[{"name":"asset","label":"Screenshot","type":"asset:image","note":"PNG, JPEG, WebP, or GIF"}],
-  "zones":{"horizontal":{"x":0.68,"y":0.4,"scale":1.0},"vertical":{"x":0.5,"y":0.32,"scale":0.9}},
-  "animation":{"entrance":"subtle-settle","entrance_ms":300,"hold":"static","exit":"fade","exit_ms":220,"easing":"outCubic"},
-  "sfx":[{"file":"ui-settle.wav","offset":0.0,"gain":0.18}],
-  "assets":["frame.png"],
-  "default_duration":4.5 }
+{
+  "id": "screen",
+  "version": 5,
+  "schema": 2,
+  "display_name": "سكرين · Screen",
+  "category": "screen",
+  "category_color": "#B388FF",
+  "directive_verb": "سكرين",
+  "description": "A screenshot of an article, tweet or interface, framed in window chrome so it reads as a captured screen rather than a pasted image.",
+  "fields": [
+    {
+      "name": "asset",
+      "label": "Screenshot",
+      "type": "asset:image",
+      "description": "PNG, JPEG, WebP or GIF."
+    },
+    {
+      "name": "title",
+      "label": "Window title / URL",
+      "type": "text",
+      "max_length": 72,
+      "default": "",
+      "description": "Shown in the chrome bar. Leave empty for a bare window."
+    },
+    {
+      "name": "chrome",
+      "label": "Frame style",
+      "type": "select",
+      "default": "window",
+      "options": [
+        "window",
+        "browser",
+        "plain"
+      ],
+      "description": "window = traffic lights, browser = URL bar, plain = no chrome."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.7,
+      "y": 0.4,
+      "scale": 1.0,
+      "max_width": 0.5,
+      "max_height": 0.62
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.32,
+      "scale": 0.95,
+      "max_width": 0.9,
+      "max_height": 0.42
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 240,
+      "damping": 24,
+      "ms": 520,
+      "from": {
+        "opacity": 0,
+        "scale": 0.955,
+        "y": 26
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 260,
+      "to": {
+        "opacity": 0,
+        "scale": 0.98
+      }
+    },
+    "stagger": {
+      "step_ms": 44,
+      "elements": [
+        "window",
+        "content",
+        "chrome"
+      ]
+    },
+    "idle": {
+      "amplitude": 0.0018,
+      "hz": 0.09
+    },
+    "shadow": {
+      "layers": 3,
+      "elevation": 40,
+      "opacity": 0.58,
+      "lift": false
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/ui-settle.wav",
+      "offset": 0.04,
+      "gain": 0.42
+    }
+  ],
+  "assets": [],
+  "default_duration": 4.5
+}

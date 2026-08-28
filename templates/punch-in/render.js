@@ -1,21 +1,10 @@
-const templateId = "punch-in";
-
-registerTemplate(templateId, {
-  draw() {
-    // The source footage is transformed by the shared preview/export pipeline.
-  },
-  sourceTransform(instance, t, assets) {
-    const rect = instance.fields.rect;
-    if (!rect) return null;
-    const envelope = assets.envelope(instance, t);
-    const amount = envelope.phase === "in"
-      ? assets.easeOut(envelope.k)
-      : envelope.phase === "out" ? assets.easeOut(envelope.k) : 1;
-    const target = 1 / Math.max(Math.max(0.05, rect.w), Math.max(0.05, rect.h));
-    return {
-      cx: rect.x + rect.w / 2,
-      cy: rect.y + rect.h / 2,
-      scale: 1 + (target - 1) * amount,
-    };
+/* Camera templates transform the source footage rather than drawing over it.
+   The preview applies A.motion() through cameraTransform(); the export builds
+   the matching FFmpeg zoompan graph from the same `camera` block. */
+registerTemplate("punch-in", {
+  draw() {},
+  measure(instance, A, viewport) {
+    const rect = instance.fields.rect || { w: 0.5, h: 0.5 };
+    return { width: rect.w * viewport.width, height: rect.h * viewport.height };
   },
 });

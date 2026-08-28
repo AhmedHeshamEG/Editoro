@@ -79,6 +79,10 @@ if not "!BROWSER_HASH!"=="!REQ_HASH!" (
   echo [OK] Export renderer is ready.
 )
 
+echo [OK] MCP server: "%VENV_PY%" "%~dp0mcp_server.py"
+echo         Add that to an MCP client to let a model do the editing.
+echo         "%VENV_PY%" "%~dp0mcp_server.py" --print-config  prints a ready config.
+echo.
 echo [START] Opening Editoro...
 "%VENV_PY%" server.py %*
 set "APP_EXIT=%ERRORLEVEL%"

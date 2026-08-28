@@ -1,0 +1,126 @@
+{
+  "id": "stat-pop",
+  "version": 1,
+  "schema": 2,
+  "display_name": "رقم · Stat",
+  "category": "text",
+  "category_color": "#FF9F1C",
+  "directive_verb": "رقم",
+  "description": "One big number that counts up as it lands, with a short label under it. Use for a figure that was just said out loud.",
+  "fields": [
+    {
+      "name": "value",
+      "label": "Number",
+      "type": "text",
+      "max_length": 16,
+      "default": "100",
+      "description": "The number itself, digits only (grouping is added automatically)."
+    },
+    {
+      "name": "label",
+      "label": "Label",
+      "type": "text",
+      "max_length": 40,
+      "default": "",
+      "description": "What the number measures. Two or three words."
+    },
+    {
+      "name": "prefix",
+      "label": "Prefix",
+      "type": "text",
+      "max_length": 6,
+      "default": "",
+      "description": "Symbol before the number, e.g. $."
+    },
+    {
+      "name": "suffix",
+      "label": "Suffix",
+      "type": "text",
+      "max_length": 6,
+      "default": "",
+      "description": "Symbol after the number, e.g. % or x."
+    },
+    {
+      "name": "decimals",
+      "label": "Decimal places",
+      "type": "number",
+      "control": "integer",
+      "min": 0,
+      "max": 4,
+      "step": 1,
+      "default": 0,
+      "description": "Digits after the point."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.24,
+      "scale": 1.0,
+      "max_width": 0.42
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.26,
+      "scale": 0.95,
+      "max_width": 0.78
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 230,
+      "damping": 16,
+      "ms": 700,
+      "from": {
+        "opacity": 0,
+        "scale": 0.5,
+        "y": -50,
+        "rotate": -3
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 250,
+      "to": {
+        "opacity": 0,
+        "scale": 0.93,
+        "y": 16
+      }
+    },
+    "shadow": {
+      "layers": 3,
+      "elevation": 30,
+      "opacity": 0.46,
+      "lift": true
+    },
+    "blur": {
+      "motion": true,
+      "max": 7
+    },
+    "stagger": {
+      "step_ms": 70,
+      "elements": [
+        "card",
+        "number",
+        "label"
+      ]
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/pop.wav",
+      "offset": 0.02,
+      "gain": 0.5
+    },
+    {
+      "file": "_shared/sfx/count-tick.wav",
+      "offset": 0.1,
+      "gain": 0.2,
+      "repeat_spacing": 0.075
+    }
+  ],
+  "assets": [],
+  "default_duration": 3.0
+}

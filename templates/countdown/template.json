@@ -1,0 +1,73 @@
+{
+  "id": "countdown",
+  "version": 1,
+  "schema": 2,
+  "display_name": "عد · Countdown",
+  "category": "structure",
+  "category_color": "#E879F9",
+  "directive_verb": null,
+  "description": "A large countdown that ticks down over the block. Use before a reveal, sized so it never fights the speaker.",
+  "fields": [
+    {
+      "name": "from",
+      "label": "Count from",
+      "type": "number",
+      "control": "integer",
+      "min": 1,
+      "max": 10,
+      "step": 1,
+      "default": 3,
+      "description": "The number the count starts at; it ticks down to one."
+    },
+    {
+      "name": "label",
+      "label": "Label",
+      "type": "text",
+      "max_length": 28,
+      "default": "",
+      "description": "Small word under the number, e.g. STARTING. Optional."
+    }
+  ],
+  "full_frame": true,
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "ease",
+      "easing": "outCubic",
+      "ms": 200,
+      "from": {
+        "opacity": 0
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 200,
+      "to": {
+        "opacity": 0
+      }
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/count-tick.wav",
+      "offset": 0.0,
+      "gain": 0.42,
+      "repeat_field": "from",
+      "repeat_spacing": 1.0
+    }
+  ],
+  "assets": [],
+  "default_duration": 3.0
+}

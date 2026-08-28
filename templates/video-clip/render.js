@@ -1,56 +1,59 @@
-const templateId = "video-clip";
+import {
+  paperCard, roundRectPath, fitContain, placeholder, grain,
+} from "/tpl/_shared/kit.js";
 
-function geometry(instance, assets, viewport) {
-  const video = instance.fields.asset && assets.video(assets.projectAsset(instance.fields.asset));
-  const ready = video?.readyState >= 2;
-  const width = ready ? video.videoWidth : 480;
-  const height = ready ? video.videoHeight : 300;
-  const unit = assets.viewportUnit(viewport);
-  const fitted = assets.fitContain(width, height, 560 * instance.scale * unit, 420 * instance.scale * unit);
-  return {video, ready, unit, ...fitted};
+const ID = "video-clip";
+
+function layout(instance, A, viewport) {
+  const u = A.viewportUnit(viewport);
+  const variant = A.variant(ID);
+  const scale = instance.scale * (variant.scale || 1);
+  const clip = A.video(A.projectAsset(instance.fields.asset));
+  const ready = Boolean(clip && clip.readyState >= 2 && clip.videoWidth);
+  const box = fitContain(
+    ready ? clip.videoWidth : 16,
+    ready ? clip.videoHeight : 9,
+    viewport.width * (variant.max_width || 0.44) * scale,
+    viewport.height * (variant.max_height || 0.56) * scale,
+  );
+  const margin = 18 * u * scale;
+  return { u, scale, clip, ready, box, margin,
+    width: box.w + margin * 2, height: box.h + margin * 2 };
 }
 
-registerTemplate(templateId, {
-  draw(ctx, instance, t, assets) {
-    const envelope = assets.envelope(instance, t);
-    const shape = geometry(instance, assets, ctx.canvas);
-    const scale = envelope.phase === "in"
-      ? assets.easeOutBack(envelope.k)
-      : envelope.phase === "out" ? assets.easeOut(envelope.k) : 1;
-    const offsetY = envelope.phase === "in" ? (1 - assets.easeOut(envelope.k)) * -60 * shape.unit : 0;
-    ctx.save();
-    ctx.translate(0, offsetY);
-    ctx.scale(scale, scale);
-    ctx.rotate(assets.seeded(instance.id)() * 0.05 - 0.025);
-    const texture = assets.load(assets.templateAsset(templateId, "paper-texture.png"));
-    ctx.fillStyle = texture?.complete && texture.naturalWidth
-      ? ctx.createPattern(texture, "repeat")
-      : "#faf6ec";
-    ctx.shadowColor = "#0008";
-    ctx.shadowBlur = 20 * shape.unit;
-    ctx.beginPath();
-    ctx.roundRect(-shape.w / 2 - 17 * shape.unit, -shape.h / 2 - 29 * shape.unit,
-      shape.w + 34 * shape.unit, shape.h + 58 * shape.unit, 8 * shape.unit);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    if (shape.ready) ctx.drawImage(shape.video, -shape.w / 2, -shape.h / 2 - 10 * shape.unit, shape.w, shape.h);
-    else {
-      ctx.fillStyle = "#101216";
-      ctx.fillRect(-shape.w / 2, -shape.h / 2 - 10 * shape.unit, shape.w, shape.h);
-      ctx.fillStyle = "#6C9BFF";
-      ctx.font = `600 ${22 * shape.unit}px Inter`;
-      ctx.textAlign = "center";
-      ctx.fillText("VIDEO", 0, 4 * shape.unit);
-    }
-    const frame = assets.load(assets.templateAsset(templateId, "frame.png"));
-    if (frame?.complete && frame.naturalWidth) {
-      ctx.drawImage(frame, -shape.w / 2 - 30 * shape.unit, -shape.h / 2 - 40 * shape.unit,
-        shape.w + 60 * shape.unit, shape.h + 100 * shape.unit);
-    }
-    ctx.restore();
+registerTemplate(ID, {
+  draw(ctx, instance, t, A) {
+    const g = layout(instance, A, ctx.canvas);
+    const tilt = (A.seeded(instance.id)() - 0.5) * 0.05;
+    const frame = A.motion(instance, t, "frame");
+    const clip = A.motion(instance, t, "clip");
+
+    A.stage(ctx, frame, () => {
+      ctx.rotate(tilt);
+      A.shadow(ctx, frame.shadowSpec,
+        c => roundRectPath(c, -g.width / 2, -g.height / 2, g.width, g.height, 8 * g.u));
+      paperCard(ctx, A, {
+        w: g.width, h: g.height, radius: 8, seed: instance.id,
+        texture: "paper-white.png",
+      });
+    });
+    A.stage(ctx, clip, () => {
+      ctx.rotate(tilt);
+      ctx.save();
+      roundRectPath(ctx, -g.box.w / 2, -g.box.h / 2, g.box.w, g.box.h, 3 * g.u);
+      ctx.clip();
+      if (g.ready) ctx.drawImage(g.clip, -g.box.w / 2, -g.box.h / 2, g.box.w, g.box.h);
+      else placeholder(ctx, A, { w: g.box.w, h: g.box.h, label: "VIDEO" });
+      grain(ctx, A, { w: g.box.w, h: g.box.h, opacity: 0.035 });
+      ctx.restore();
+      roundRectPath(ctx, -g.box.w / 2, -g.box.h / 2, g.box.w, g.box.h, 3 * g.u);
+      ctx.strokeStyle = "#00000030";
+      ctx.lineWidth = Math.max(1, g.u);
+      ctx.stroke();
+    });
   },
-  measure(instance, assets, viewport) {
-    const shape = geometry(instance, assets, viewport);
-    return {width: shape.w + 60 * shape.unit, height: shape.h + 100 * shape.unit};
+  measure(instance, A, viewport) {
+    const g = layout(instance, A, viewport);
+    return { width: g.width, height: g.height };
   },
 });

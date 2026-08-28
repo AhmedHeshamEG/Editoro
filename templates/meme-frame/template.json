@@ -1,0 +1,100 @@
+{
+  "id": "meme-frame",
+  "version": 1,
+  "schema": 2,
+  "display_name": "ميم · Meme",
+  "category": "image",
+  "category_color": "#FF8A5B",
+  "directive_verb": "ميم",
+  "directive_review": true,
+  "description": "A meme image with impact text above and below. Always flagged for manual review - comedy is never placed unchecked.",
+  "fields": [
+    {
+      "name": "asset",
+      "label": "Image",
+      "type": "asset:image",
+      "description": "The meme image."
+    },
+    {
+      "name": "top",
+      "label": "Top text",
+      "type": "text",
+      "max_length": 48,
+      "default": "",
+      "description": "Impact text across the top of the image."
+    },
+    {
+      "name": "bottom",
+      "label": "Bottom text",
+      "type": "text",
+      "max_length": 48,
+      "default": "",
+      "description": "Impact text across the bottom of the image."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0,
+      "max_width": 0.46,
+      "max_height": 0.7
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.42,
+      "scale": 0.95,
+      "max_width": 0.86,
+      "max_height": 0.46
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 260,
+      "damping": 14,
+      "ms": 640,
+      "from": {
+        "opacity": 0,
+        "scale": 0.42,
+        "rotate": -6
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inBack",
+      "ms": 260,
+      "to": {
+        "opacity": 0,
+        "scale": 0.8
+      }
+    },
+    "stagger": {
+      "step_ms": 52,
+      "elements": [
+        "image",
+        "top",
+        "bottom"
+      ]
+    },
+    "blur": {
+      "motion": true,
+      "max": 8
+    },
+    "shadow": {
+      "layers": 3,
+      "elevation": 32,
+      "opacity": 0.5,
+      "lift": false
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/pop.wav",
+      "offset": 0.0,
+      "gain": 0.5
+    }
+  ],
+  "assets": [],
+  "default_duration": 3.0
+}

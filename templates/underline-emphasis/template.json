@@ -1,0 +1,82 @@
+{
+  "id": "underline-emphasis",
+  "version": 1,
+  "schema": 2,
+  "display_name": "تسطير · Underline",
+  "category": "annotation",
+  "category_color": "#FDBA74",
+  "directive_verb": "تسطير",
+  "description": "A hand-drawn underline swiped beneath a region, lighter than circling it. Good under on-screen text.",
+  "fields": [
+    {
+      "name": "rect",
+      "label": "Region",
+      "type": "rect",
+      "default": {
+        "x": 0.3,
+        "y": 0.6,
+        "w": 0.4,
+        "h": 0.1
+      },
+      "description": "The region to underline; the stroke is drawn along its bottom edge."
+    },
+    {
+      "name": "style",
+      "label": "Mark",
+      "type": "select",
+      "default": "pen",
+      "options": [
+        "pen",
+        "marker"
+      ],
+      "description": "pen = thin ink line, marker = wide highlighter sweep."
+    },
+    {
+      "name": "colour",
+      "label": "Ink colour",
+      "type": "color",
+      "default": "#FFD166",
+      "description": "Ink colour of the mark, as #RRGGBB."
+    }
+  ],
+  "full_frame": true,
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "ease",
+      "easing": "outQuart",
+      "ms": 460,
+      "from": {
+        "opacity": 0
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 220,
+      "to": {
+        "opacity": 0
+      }
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/marker-stroke.wav",
+      "offset": 0.02,
+      "gain": 0.34
+    }
+  ],
+  "assets": [],
+  "default_duration": 2.4
+}

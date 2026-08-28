@@ -1,0 +1,74 @@
+{
+  "id": "punch-cut",
+  "version": 1,
+  "schema": 2,
+  "display_name": "قطع · Punch cut",
+  "category": "camera",
+  "category_color": "#EF4444",
+  "directive_verb": null,
+  "description": "Cuts hard to a tight framing on one frame, then releases back. Use on a single emphasised word, not on a sentence.",
+  "fields": [
+    {
+      "name": "rect",
+      "label": "Tight framing",
+      "type": "rect",
+      "default": {
+        "x": 0.28,
+        "y": 0.2,
+        "w": 0.44,
+        "h": 0.52
+      },
+      "description": "The framing the cut lands on, in 0..1 frame coordinates."
+    },
+    {
+      "name": "flash",
+      "label": "Flash",
+      "type": "number",
+      "min": 0,
+      "max": 0.6,
+      "step": 0.05,
+      "default": 0.0,
+      "description": "Optional white flash on the cut frame. 0 is off."
+    }
+  ],
+  "camera": {
+    "mode": "impact",
+    "easing": "outQuint"
+  },
+  "full_frame": true,
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "ease",
+      "easing": "linear",
+      "ms": 1,
+      "from": {}
+    },
+    "out": {
+      "type": "ease",
+      "easing": "linear",
+      "ms": 1,
+      "to": {}
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/thud-soft.wav",
+      "offset": 0.0,
+      "gain": 0.42
+    }
+  ],
+  "assets": [],
+  "default_duration": 1.2
+}

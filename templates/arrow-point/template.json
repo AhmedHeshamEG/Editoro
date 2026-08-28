@@ -1,0 +1,98 @@
+{
+  "id": "arrow-point",
+  "version": 1,
+  "schema": 2,
+  "display_name": "سهم · Arrow",
+  "category": "annotation",
+  "category_color": "#F87171",
+  "directive_verb": "سهم",
+  "description": "A hand-drawn arrow pointing at something in the frame, drawn as if by pen. Give it a target region; the tail is placed automatically unless you set one.",
+  "fields": [
+    {
+      "name": "rect",
+      "label": "Target",
+      "type": "rect",
+      "default": {
+        "x": 0.55,
+        "y": 0.35,
+        "w": 0.18,
+        "h": 0.18
+      },
+      "description": "The region the arrow points at, in 0..1 frame coordinates."
+    },
+    {
+      "name": "rect2",
+      "label": "Tail (optional)",
+      "type": "rect2",
+      "default": {
+        "x": 0.2,
+        "y": 0.62,
+        "w": 0.1,
+        "h": 0.1
+      },
+      "description": "Where the arrow starts. Leave at the default for an automatic tail."
+    },
+    {
+      "name": "label",
+      "label": "Label",
+      "type": "text",
+      "max_length": 32,
+      "default": "",
+      "description": "Optional short word written beside the tail."
+    },
+    {
+      "name": "colour",
+      "label": "Ink colour",
+      "type": "color",
+      "default": "#F87171",
+      "description": "Ink colour of the arrow, as #RRGGBB."
+    }
+  ],
+  "full_frame": true,
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "ease",
+      "easing": "outQuint",
+      "ms": 620,
+      "from": {
+        "opacity": 0
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 240,
+      "to": {
+        "opacity": 0
+      }
+    },
+    "stagger": {
+      "step_ms": 220,
+      "elements": [
+        "arrow",
+        "label"
+      ]
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/pencil-tick.wav",
+      "offset": 0.03,
+      "gain": 0.36
+    }
+  ],
+  "assets": [],
+  "default_duration": 3.0
+}

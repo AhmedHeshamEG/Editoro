@@ -1,0 +1,81 @@
+{
+  "id": "sticky-note",
+  "version": 1,
+  "schema": 2,
+  "display_name": "ملاحظة · Sticky note",
+  "category": "text",
+  "category_color": "#FDE047",
+  "directive_verb": "ملاحظة",
+  "description": "A small aside stuck to the frame, for a remark that is beside the main point rather than part of it.",
+  "fields": [
+    {
+      "name": "text",
+      "label": "Note",
+      "type": "textarea",
+      "max_length": 140,
+      "default": "",
+      "description": "The aside itself. Short - this is a margin note, not a paragraph."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.855,
+      "y": 0.72,
+      "scale": 1.0,
+      "max_width": 0.22
+    },
+    "vertical": {
+      "x": 0.72,
+      "y": 0.62,
+      "scale": 0.95,
+      "max_width": 0.46
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 250,
+      "damping": 15,
+      "ms": 640,
+      "from": {
+        "opacity": 0,
+        "scale": 0.5,
+        "rotate": -14,
+        "y": -34
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inBack",
+      "ms": 260,
+      "to": {
+        "opacity": 0,
+        "scale": 0.8,
+        "rotate": 8
+      }
+    },
+    "idle": {
+      "amplitude": 0.004,
+      "hz": 0.19
+    },
+    "blur": {
+      "motion": true,
+      "max": 6
+    },
+    "shadow": {
+      "layers": 3,
+      "elevation": 20,
+      "opacity": 0.44,
+      "lift": true
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/tape-peel.wav",
+      "offset": 0.0,
+      "gain": 0.34
+    }
+  ],
+  "assets": [],
+  "default_duration": 3.5
+}

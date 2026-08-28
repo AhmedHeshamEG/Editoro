@@ -1,0 +1,112 @@
+{
+  "id": "chat-bubble",
+  "version": 1,
+  "schema": 2,
+  "display_name": "رسالة · Chat",
+  "category": "screen",
+  "category_color": "#60A5FA",
+  "directive_verb": "رسالة",
+  "description": "A rendered message or tweet card - name, handle, body - so a quoted post can be shown without hunting for a screenshot.",
+  "fields": [
+    {
+      "name": "name",
+      "label": "Display name",
+      "type": "text",
+      "max_length": 32,
+      "default": "",
+      "description": "Display name shown in bold above the message."
+    },
+    {
+      "name": "handle",
+      "label": "Handle",
+      "type": "text",
+      "max_length": 32,
+      "default": "",
+      "description": "Shown grey after the name, e.g. @someone."
+    },
+    {
+      "name": "text",
+      "label": "Message",
+      "type": "textarea",
+      "max_length": 280,
+      "default": "",
+      "description": "The message body."
+    },
+    {
+      "name": "avatar",
+      "label": "Avatar image",
+      "type": "asset:image",
+      "description": "Optional. A coloured initial is drawn when empty."
+    },
+    {
+      "name": "theme",
+      "label": "Theme",
+      "type": "select",
+      "default": "dark",
+      "options": [
+        "dark",
+        "light"
+      ],
+      "description": "dark or light card, to match what is being quoted."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.7,
+      "y": 0.42,
+      "scale": 1.0,
+      "max_width": 0.44
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.36,
+      "scale": 0.95,
+      "max_width": 0.88
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 215,
+      "damping": 20,
+      "ms": 640,
+      "from": {
+        "opacity": 0,
+        "scale": 0.9,
+        "y": 44
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 260,
+      "to": {
+        "opacity": 0,
+        "scale": 0.96
+      }
+    },
+    "stagger": {
+      "step_ms": 60,
+      "elements": [
+        "card",
+        "head",
+        "body"
+      ]
+    },
+    "shadow": {
+      "layers": 3,
+      "elevation": 34,
+      "opacity": 0.52,
+      "lift": false
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/pop.wav",
+      "offset": 0.02,
+      "gain": 0.38
+    }
+  ],
+  "assets": [],
+  "default_duration": 4.5
+}

@@ -1,8 +1,97 @@
-{ "id":"highlight","version":4,"display_name":"Highlight","category_color":"#F9F871",
-  "directive_verb":null,
-  "fields":[{"name":"asset","label":"Page image or PDF","type":"asset:image","note":"image or PDF page (rasterized server-side)"},{"name":"page","label":"PDF page index","type":"number","control":"integer","min":0,"max":999,"step":1,"default":0,"note":"zero-based; ignored for images"},{"name":"strokes","label":"Marker strokes","type":"strokes","note":"ruler-straight, locked to 0°; one drag = one stroke"}],
-  "zones":{"horizontal":{"x":0.5,"y":0.45,"scale":1.0},"vertical":{"x":0.5,"y":0.4,"scale":0.9}},
-  "animation":{"entrance":"fade-in","entrance_ms":260,"hold":"staggered marker sweep L→R per stroke","exit":"fade","exit_ms":220,"easing":"outCubic"},
-  "sfx":[{"file":"dry-stroke.wav","offset_ratio":0.12,"gain":0.18,"repeat_field":"strokes","spread_ratio":0.60}],
-  "assets":["stroke.png"],
-  "default_duration":5.0 }
+{
+  "id": "highlight",
+  "version": 5,
+  "schema": 2,
+  "display_name": "Highlight",
+  "category": "annotation",
+  "category_color": "#F9F871",
+  "directive_verb": null,
+  "description": "A document or article page with marker strokes sweeping across the lines being read out. Strokes are ruler-straight and given in page-relative coordinates.",
+  "fields": [
+    {
+      "name": "asset",
+      "label": "Page image or PDF",
+      "type": "asset:image",
+      "description": "The page to show. PDFs are rasterised server-side."
+    },
+    {
+      "name": "page",
+      "label": "PDF page index",
+      "type": "number",
+      "control": "integer",
+      "min": 0,
+      "max": 999,
+      "step": 1,
+      "default": 0,
+      "description": "Zero-based page index; ignored for images."
+    },
+    {
+      "name": "strokes",
+      "label": "Marker strokes",
+      "type": "strokes",
+      "description": "List of {x1, x2, y} in 0..1 page coordinates. Always horizontal. Use the MCP highlight_text tool to derive these from the page text."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.46,
+      "scale": 1.0,
+      "max_width": 0.46,
+      "max_height": 0.8
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.4,
+      "scale": 0.95,
+      "max_width": 0.88,
+      "max_height": 0.52
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 200,
+      "damping": 22,
+      "ms": 520,
+      "from": {
+        "opacity": 0,
+        "scale": 0.93,
+        "y": -30
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 260,
+      "to": {
+        "opacity": 0,
+        "scale": 0.97
+      }
+    },
+    "stagger": {
+      "step_ms": 40,
+      "elements": [
+        "page",
+        "marks"
+      ]
+    },
+    "shadow": {
+      "layers": 3,
+      "elevation": 30,
+      "opacity": 0.48,
+      "lift": true
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/marker-stroke.wav",
+      "offset_ratio": 0.16,
+      "gain": 0.42,
+      "repeat_field": "strokes",
+      "spread_ratio": 0.55
+    }
+  ],
+  "assets": [],
+  "default_duration": 5.0
+}

@@ -1,0 +1,86 @@
+{
+  "id": "whip-pan",
+  "version": 1,
+  "schema": 2,
+  "display_name": "تحويلة · Whip pan",
+  "category": "camera",
+  "category_color": "#EC4899",
+  "directive_verb": null,
+  "description": "A fast pan between two framings with a directional streak over it, used as a transition between two ideas. Keep it under a second.",
+  "fields": [
+    {
+      "name": "rect",
+      "label": "From",
+      "type": "rect",
+      "default": {
+        "x": 0.06,
+        "y": 0.14,
+        "w": 0.52,
+        "h": 0.6
+      },
+      "description": "Framing the pan starts from, in 0..1 frame coordinates."
+    },
+    {
+      "name": "rect2",
+      "label": "To",
+      "type": "rect2",
+      "default": {
+        "x": 0.42,
+        "y": 0.14,
+        "w": 0.52,
+        "h": 0.6
+      },
+      "description": "Framing the pan ends on, in 0..1 frame coordinates."
+    },
+    {
+      "name": "strength",
+      "label": "Streak strength",
+      "type": "number",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.55,
+      "description": "How heavy the motion streak is over the pan."
+    }
+  ],
+  "camera": {
+    "mode": "whip",
+    "easing": "outQuint"
+  },
+  "full_frame": true,
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "ease",
+      "easing": "linear",
+      "ms": 1,
+      "from": {}
+    },
+    "out": {
+      "type": "ease",
+      "easing": "linear",
+      "ms": 1,
+      "to": {}
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/whoosh-short.wav",
+      "offset": 0.0,
+      "gain": 0.5
+    }
+  ],
+  "assets": [],
+  "default_duration": 0.7
+}

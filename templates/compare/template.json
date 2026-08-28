@@ -1,0 +1,122 @@
+{
+  "id": "compare",
+  "version": 1,
+  "schema": 2,
+  "display_name": "مقارنة · Compare",
+  "category": "text",
+  "category_color": "#F472B6",
+  "directive_verb": "مقارنة",
+  "description": "Two cards side by side with a VS badge between them. Use when two things are being weighed against each other.",
+  "fields": [
+    {
+      "name": "left",
+      "label": "Left",
+      "type": "text",
+      "max_length": 48,
+      "default": "",
+      "description": "The left-hand thing being compared."
+    },
+    {
+      "name": "left_note",
+      "label": "Left detail",
+      "type": "text",
+      "max_length": 60,
+      "default": "",
+      "description": "One short clarifying line under the left title."
+    },
+    {
+      "name": "right",
+      "label": "Right",
+      "type": "text",
+      "max_length": 48,
+      "default": "",
+      "description": "The right-hand thing being compared."
+    },
+    {
+      "name": "right_note",
+      "label": "Right detail",
+      "type": "text",
+      "max_length": 60,
+      "default": "",
+      "description": "One short clarifying line under the right title."
+    },
+    {
+      "name": "badge",
+      "label": "Middle badge",
+      "type": "text",
+      "max_length": 8,
+      "default": "VS",
+      "description": "The word in the middle badge, usually VS."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0,
+      "max_width": 0.72,
+      "stack": false
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.42,
+      "scale": 0.95,
+      "max_width": 0.86,
+      "stack": true
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 195,
+      "damping": 18,
+      "ms": 680,
+      "from": {
+        "opacity": 0,
+        "scale": 0.82,
+        "y": -40
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 260,
+      "to": {
+        "opacity": 0,
+        "scale": 0.94
+      }
+    },
+    "stagger": {
+      "step_ms": 90,
+      "elements": [
+        "left",
+        "right",
+        "badge"
+      ]
+    },
+    "blur": {
+      "motion": true,
+      "max": 6
+    },
+    "shadow": {
+      "layers": 3,
+      "elevation": 30,
+      "opacity": 0.48,
+      "lift": true
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/paper-drop.wav",
+      "offset": 0.02,
+      "gain": 0.38
+    },
+    {
+      "file": "_shared/sfx/stamp.wav",
+      "offset": 0.24,
+      "gain": 0.4
+    }
+  ],
+  "assets": [],
+  "default_duration": 5.0
+}

@@ -1,29 +1,55 @@
 {
   "id": "zoom-out",
-  "version": 1,
+  "version": 5,
+  "schema": 2,
   "display_name": "Zoom out",
+  "category": "camera",
   "category_color": "#22D3EE",
   "directive_verb": null,
+  "description": "Starts on a close-up and eases back to the full frame. Good for revealing context after a tight moment.",
   "fields": [
     {
       "name": "rect",
       "label": "Starting close-up",
       "type": "rect",
-      "default": {"x": 0.22, "y": 0.16, "w": 0.56, "h": 0.64},
-      "note": "The selected close-up eases back to the full source frame."
+      "default": {
+        "x": 0.22,
+        "y": 0.16,
+        "w": 0.56,
+        "h": 0.64
+      },
+      "description": "The close-up the shot begins on, in 0..1 frame coordinates."
     }
   ],
-  "zones": {
-    "horizontal": {"x": 0.5, "y": 0.5, "scale": 1.0},
-    "vertical": {"x": 0.5, "y": 0.5, "scale": 1.0}
+  "camera": {
+    "mode": "reveal",
+    "easing": "outQuint"
   },
-  "animation": {
-    "entrance": "zoom-out",
-    "entrance_ms": 650,
-    "hold": "full-frame",
-    "exit": "full-frame",
-    "exit_ms": 1,
-    "easing": "outCubic"
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "ease",
+      "easing": "outQuint",
+      "ms": 700,
+      "from": {}
+    },
+    "out": {
+      "type": "ease",
+      "easing": "linear",
+      "ms": 1,
+      "to": {}
+    }
   },
   "sfx": [],
   "assets": [],

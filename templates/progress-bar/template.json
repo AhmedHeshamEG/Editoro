@@ -1,0 +1,102 @@
+{
+  "id": "progress-bar",
+  "version": 1,
+  "schema": 2,
+  "display_name": "نسبة · Progress",
+  "category": "text",
+  "category_color": "#FB923C",
+  "directive_verb": "نسبة",
+  "description": "A labelled bar that fills to a percentage as it appears, with the number counting up beside it.",
+  "fields": [
+    {
+      "name": "label",
+      "label": "Label",
+      "type": "text",
+      "max_length": 40,
+      "default": "",
+      "description": "What the bar measures. Two or three words."
+    },
+    {
+      "name": "percent",
+      "label": "Percent",
+      "type": "number",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "default": 65,
+      "description": "0 to 100. The bar fills to this value."
+    },
+    {
+      "name": "colour",
+      "label": "Bar colour",
+      "type": "color",
+      "default": "#FB923C",
+      "description": "Fill colour of the bar, as #RRGGBB."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.8,
+      "scale": 1.0,
+      "max_width": 0.5
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.7,
+      "scale": 0.95,
+      "max_width": 0.84
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 210,
+      "damping": 21,
+      "ms": 640,
+      "from": {
+        "opacity": 0,
+        "scale": 0.92,
+        "y": 44,
+        "rotate": 0
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 250,
+      "to": {
+        "opacity": 0,
+        "scale": 0.93,
+        "y": 16
+      }
+    },
+    "shadow": {
+      "layers": 3,
+      "elevation": 24,
+      "opacity": 0.46,
+      "lift": true
+    },
+    "blur": {
+      "motion": true,
+      "max": 7
+    },
+    "stagger": {
+      "step_ms": 80,
+      "elements": [
+        "card",
+        "bar",
+        "value"
+      ]
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/whoosh-short.wav",
+      "offset": 0.05,
+      "gain": 0.3
+    }
+  ],
+  "assets": [],
+  "default_duration": 4.0
+}

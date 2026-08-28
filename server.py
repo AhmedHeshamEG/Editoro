@@ -17,7 +17,9 @@
 
 # ---------------------------------------------------------------- [1] Imports
 from __future__ import annotations
-import asyncio, json, math, mimetypes, os, re, shutil, struct, subprocess, sys, threading, time, uuid, webbrowser
+import copy
+import unicodedata
+import asyncio, base64, json, math, mimetypes, os, re, shutil, struct, subprocess, sys, tempfile, threading, time, uuid, webbrowser
 import importlib.util
 from datetime import datetime
 from pathlib import Path
@@ -34,7 +36,7 @@ PROJECTS_DIR = ROOT / "projects"
 PROJECTS_DIR.mkdir(exist_ok=True)
 
 PORT = int(os.environ.get("EDITORO_PORT", "8765"))
-APP_VERSION = "1.3.0"
+APP_VERSION = "2.0.0"
 FFMPEG = shutil.which("ffmpeg") or "ffmpeg"
 FFPROBE = shutil.which("ffprobe") or "ffprobe"
 PRIVATE_BROWSERS_DIR = ROOT / ".venv" / "playwright-browsers"
@@ -110,6 +112,17 @@ class MediaInfo(BaseModel):
     fps: float = 30.0
     duration: float = 0.0
     audio_codec: str = ""
+    # Matched by the encoder so re-encoded spans join copied spans invisibly.
+    profile: str = ""
+    pix_fmt: str = ""
+    bit_rate: int = 0
+
+
+class Placement(BaseModel):
+    """Where an instance sits, for one orientation."""
+    x: float = Field(default=0.5, ge=-1, le=2)
+    y: float = Field(default=0.3, ge=-1, le=2)
+    scale: float = Field(default=1.0, ge=0.05, le=10)
 
 
 class Instance(BaseModel):
@@ -122,9 +135,15 @@ class Instance(BaseModel):
     x: float = Field(default=0.5, ge=-1, le=2)
     y: float = Field(default=0.3, ge=-1, le=2)
     scale: float = Field(default=1.0, ge=0.05, le=10)
+    # Every template ships a 16:9 and a 9:16 layout. `x`/`y`/`scale` are the
+    # active placement for the project's current orientation; `layouts` keeps
+    # the other one, so switching orientation and switching back is lossless
+    # instead of resetting everything the editor moved by hand.
+    layouts: dict[Literal["horizontal", "vertical"], Placement] = Field(default_factory=dict)
     fields: dict[str, Any] = Field(default_factory=dict)  # text, asset, strokes, rect, volume...
     missing: bool = False             # asset not yet filled
     review: bool = False              # ⚠️ (meme directives)
+    locked: bool = False              # ignored by ripple edits and agent bulk ops
 
 
 class CaptionWord(BaseModel):
@@ -146,12 +165,39 @@ class CaptionBlock(BaseModel):
     end: float
     text: str
     words: list[CaptionWord] = Field(default_factory=list)
+    # Captions follow the project-wide placement unless this one was dragged
+    # somewhere specific; then it keeps its own spot and stops following.
+    follow_global: bool = True
+    x: Optional[float] = Field(default=None, ge=0, le=1)
+    y: Optional[float] = Field(default=None, ge=0, le=1)
+    scale: Optional[float] = Field(default=None, ge=0.2, le=4)
 
     @model_validator(mode="after")
     def ordered(self):
         if self.start < 0 or self.end <= self.start:
             raise ValueError("caption timestamps are invalid")
         return self
+
+
+class CaptionLayout(BaseModel):
+    """Caption placement for one orientation."""
+    x: float = Field(default=0.5, ge=0, le=1)
+    y: float = Field(default=0.86, ge=0, le=1)
+    scale: float = Field(default=1.0, ge=0.2, le=4)
+    align: Literal["center", "left", "right"] = "center"
+    max_width: float = Field(default=0.84, gt=0.1, le=1.0)
+
+
+class CaptionStyle(BaseModel):
+    """Project-wide caption behaviour, resolved per orientation."""
+    horizontal: CaptionLayout = Field(default_factory=lambda: CaptionLayout(y=0.86, max_width=0.84))
+    vertical: CaptionLayout = Field(default_factory=lambda: CaptionLayout(y=0.78, max_width=0.90))
+    mode: Literal["chunk", "sentence"] = "chunk"
+    words_per_chunk: int = Field(default=5, ge=1, le=24)
+    highlight_active_word: bool = True
+    box: bool = True
+    font_size: float = Field(default=44, ge=12, le=160)
+    preset: Literal["lower", "center", "upper", "custom"] = "lower"
 
 
 class Cut(BaseModel):
@@ -176,8 +222,13 @@ class ProjectState(BaseModel):
     instances: list[Instance] = Field(default_factory=list)
     captions: list[CaptionBlock] = Field(default_factory=list)
     orientation: Literal["horizontal", "vertical"] = "horizontal"
+    # "auto" follows the source footage; the explicit values let a vertical cut
+    # be laid out from horizontal footage (or the reverse) before reframing.
+    orientation_mode: Literal["auto", "horizontal", "vertical"] = "auto"
+    caption_style: CaptionStyle = Field(default_factory=CaptionStyle)
     directives_review: list[str] = Field(default_factory=list)  # unparseable lines
     ripple: bool = True
+    notes: str = Field(default="", max_length=8000)   # free text for agents and humans
 
     @field_validator("name")
     @classmethod
@@ -188,6 +239,12 @@ class ProjectState(BaseModel):
 
     @model_validator(mode="after")
     def coherent(self):
+        if self.orientation_mode == "auto":
+            width, height = self.source_info.width, self.source_info.height
+            if width and height:
+                self.orientation = "vertical" if height > width else "horizontal"
+        else:
+            self.orientation = self.orientation_mode
         fps = max(1.0, self.source_info.fps or 30)
         frame = 1 / fps
 
@@ -222,6 +279,13 @@ class ProjectState(BaseModel):
         if not timeline_duration:
             timeline_duration = self.source_info.duration
         for item in self.instances:
+            # Seed the active layout for states written before layouts existed,
+            # but never overwrite one that is already stored: switching
+            # orientation writes the incoming layout and then saves, and
+            # clobbering it here would make every switch reset the placement it
+            # was supposed to restore.
+            item.layouts.setdefault(
+                self.orientation, Placement(x=item.x, y=item.y, scale=item.scale))
             item.start = snap(item.start)
             item.duration = max(frame, snap(item.duration))
             if timeline_duration:
@@ -308,6 +372,99 @@ def unique_path(folder: Path, filename: str) -> Path:
 TEMPLATE_PACKS: dict[str, dict] = {}
 VERB_TO_TEMPLATE: dict[str, tuple[str, bool]] = {}  # verb -> (template_id, review_flag)
 TEMPLATE_ERRORS: dict[str, str] = {}
+ORIENTATIONS = ("horizontal", "vertical")
+
+
+FIELD_TYPES = {
+    "text", "textarea", "asset:image", "asset:video", "strokes", "rect",
+    "rect2", "number", "select", "boolean", "color", "none",
+}
+CAMERA_MODES = {"hold", "reveal", "drift", "impact", "whip"}
+SHARED_DIR_NAME = "_shared"
+
+
+def sfx_file(spec: dict[str, Any], name: str) -> Path:
+    """Resolve one pack sound: its own file, or one from the shared library."""
+    if name.startswith(SHARED_DIR_NAME + "/"):
+        return TEMPLATES_DIR / name
+    return TEMPLATES_DIR / spec.get("_dir", spec.get("id", "")) / name
+
+
+def shared_assets() -> list[str]:
+    """Every file under templates/_shared that a renderer may need up front."""
+    root = TEMPLATES_DIR / SHARED_DIR_NAME
+    if not root.is_dir():
+        return []
+    return sorted(
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".webp", ".woff2"}
+    )
+
+
+def _check_motion(motion: dict[str, Any]) -> None:
+    """Validate the declarative motion block so a bad pack fails at scan time."""
+    for key in ("in", "out"):
+        phase = motion.get(key)
+        if phase is None:
+            continue
+        if not isinstance(phase, dict):
+            raise ValueError(f"motion.{key} must be an object")
+        kind = phase.get("type", "ease")
+        if kind not in {"ease", "spring"}:
+            raise ValueError(f"motion.{key}.type must be 'ease' or 'spring'")
+        if kind == "spring":
+            for number in ("stiffness", "damping"):
+                if number in phase and not isinstance(phase[number], (int, float)):
+                    raise ValueError(f"motion.{key}.{number} must be numeric")
+        if "ms" in phase and not 0 <= float(phase["ms"]) <= 8000:
+            raise ValueError(f"motion.{key}.ms must be between 0 and 8000")
+        transform = phase.get("from" if key == "in" else "to", {})
+        if not isinstance(transform, dict):
+            raise ValueError(f"motion.{key} transform must be an object")
+        unknown = set(transform) - {"opacity", "scale", "x", "y", "rotate"}
+        if unknown:
+            raise ValueError(
+                f"motion.{key} has unknown transform keys: {', '.join(sorted(unknown))}"
+            )
+    stagger = motion.get("stagger")
+    if stagger is not None:
+        if not isinstance(stagger.get("elements", []), list):
+            raise ValueError("motion.stagger.elements must be a list of element names")
+        if not isinstance(stagger.get("step_ms", 0), (int, float)):
+            raise ValueError("motion.stagger.step_ms must be numeric")
+    shadow = motion.get("shadow")
+    if shadow is not None and not 1 <= int(shadow.get("layers", 3)) <= 6:
+        raise ValueError("motion.shadow.layers must be between 1 and 6")
+    blur = motion.get("blur")
+    if blur is not None and not 1 <= int(blur.get("max", 6)) <= 12:
+        raise ValueError("motion.blur.max must be between 1 and 12")
+
+
+def _check_variants(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Every template ships a 16:9 and a 9:16 layout; neither is optional."""
+    variants = spec.get("variants")
+    if variants is None:
+        zones = spec.get("zones") or {}
+        variants = {orientation: dict(zones.get(orientation, {})) for orientation in ORIENTATIONS}
+    if not isinstance(variants, dict):
+        raise ValueError("variants must be an object")
+    base = variants.get("base", {})
+    if not isinstance(base, dict):
+        raise ValueError("variants.base must be an object")
+    resolved: dict[str, dict[str, Any]] = {"base": base}
+    for orientation in ORIENTATIONS:
+        variant = variants.get(orientation)
+        if not isinstance(variant, dict):
+            raise ValueError(f"variants.{orientation} is required (16:9 and 9:16 both ship)")
+        merged = {**base, **variant}
+        for key in ("x", "y", "scale"):
+            if not isinstance(merged.get(key), (int, float)):
+                raise ValueError(f"variants.{orientation}.{key} must be numeric")
+        if not (0 <= float(merged["x"]) <= 1 and 0 <= float(merged["y"]) <= 1):
+            raise ValueError(f"variants.{orientation} x/y must be inside the frame")
+        resolved[orientation] = merged
+    return resolved
 
 
 def scan_templates() -> None:
@@ -316,14 +473,14 @@ def scan_templates() -> None:
     TEMPLATE_ERRORS.clear()
     colors: dict[str, str] = {}
     for d in sorted(TEMPLATES_DIR.iterdir()):
-        if not d.is_dir():
+        if not d.is_dir() or d.name.startswith("_"):
             continue
         tj = d / "template.json"
         if not tj.exists():
             continue
         try:
             spec = json.loads(tj.read_text(encoding="utf-8"))
-            required = {"id", "display_name", "category_color", "fields", "zones", "animation", "default_duration"}
+            required = {"id", "display_name", "category_color", "fields", "default_duration"}
             missing = required - spec.keys()
             if missing:
                 raise ValueError(f"missing keys: {', '.join(sorted(missing))}")
@@ -339,51 +496,91 @@ def scan_templates() -> None:
                 raise ValueError("fields must be a list")
             names: set[str] = set()
             for field in spec["fields"]:
-                if field.get("type") not in {"text", "asset:image", "asset:video", "strokes", "rect", "none", "number"}:
+                if field.get("type") not in FIELD_TYPES:
                     raise ValueError(f"unsupported field type: {field.get('type')}")
                 name = field.get("name")
                 if not isinstance(name, str) or not name or name in names:
                     raise ValueError("field names must be non-empty and unique")
+                if field["type"] == "select" and not isinstance(field.get("options"), list):
+                    raise ValueError(f"field {name}: select needs an options list")
                 names.add(name)
-            for orientation in ("horizontal", "vertical"):
-                zone = spec["zones"].get(orientation)
-                if not isinstance(zone, dict):
-                    raise ValueError(f"missing {orientation} placement zone")
-                for key in ("x", "y", "scale"):
-                    if not isinstance(zone.get(key), (int, float)):
-                        raise ValueError(f"{orientation}.{key} must be numeric")
+            spec["_dir"] = d.name
+            spec["_variants"] = _check_variants(spec)
+            spec.setdefault("zones", {
+                orientation: {
+                    key: spec["_variants"][orientation][key] for key in ("x", "y", "scale")
+                }
+                for orientation in ORIENTATIONS
+            })
+            if "motion" in spec:
+                _check_motion(spec["motion"])
+            camera = spec.get("camera")
+            if camera is not None and camera.get("mode") not in CAMERA_MODES:
+                raise ValueError(
+                    f"camera.mode must be one of {', '.join(sorted(CAMERA_MODES))}"
+                )
             duration = float(spec["default_duration"])
             if duration <= 0 and spec["id"] != "captions":
                 raise ValueError("default_duration must be positive")
             for sfx in spec.get("sfx", []):
-                if not (d / sfx["file"]).is_file():
+                if not sfx_file(spec, sfx["file"]).is_file():
                     raise ValueError(f"missing SFX: {sfx['file']}")
+                if not 0 <= float(sfx.get("gain", 0.5)) <= 1.5:
+                    raise ValueError(f"sfx gain out of range: {sfx['file']}")
             for asset in spec.get("assets", []):
                 if not (d / asset).is_file():
                     raise ValueError(f"missing asset: {asset}")
-            spec["_dir"] = d.name
             spec["_has_render"] = (d / "render.js").exists()
+            if not spec["_has_render"]:
+                raise ValueError("render.js is required; the engine has no built-in renderers")
             TEMPLATE_PACKS[spec["id"]] = spec
-            v = spec.get("directive_verb")
-            if v:
-                VERB_TO_TEMPLATE[v] = (spec["id"], False)
+            verb = spec.get("directive_verb")
+            if verb:
+                VERB_TO_TEMPLATE[verb] = (spec["id"], bool(spec.get("directive_review")))
         except Exception as e:
             TEMPLATE_ERRORS[d.name] = str(e)
             print(f"[templates] skipping {d.name}: {e}")
     # Grammar-level verbs not owned by a pack:
-    if "image-pop" in TEMPLATE_PACKS:
-        VERB_TO_TEMPLATE["ميم"] = ("image-pop", True)     # meme → image-pop + review flag
-    VERB_TO_TEMPLATE["مولّد"] = ("__placeholder__", True)  # generated → generic placeholder
+    if "meme-frame" in TEMPLATE_PACKS:
+        VERB_TO_TEMPLATE.setdefault("ميم", ("meme-frame", True))
+    elif "image-pop" in TEMPLATE_PACKS:
+        VERB_TO_TEMPLATE["ميم"] = ("image-pop", True)
+    VERB_TO_TEMPLATE["مولّد"] = ("__placeholder__", True)
     VERB_TO_TEMPLATE["مولد"] = ("__placeholder__", True)
 
 
+def camera_packs() -> set[str]:
+    """Templates that transform the source footage rather than draw over it."""
+    return {tid for tid, spec in TEMPLATE_PACKS.items() if spec.get("camera")}
+
+
 # --------------------------------------- [4] Template foley event resolution
+def sfx_repeat_count(item: Instance, field_name: str) -> int:
+    """How many times a repeating sound fires for this instance.
+
+    A pack points `repeat_field` at whatever it actually repeats over: a list of
+    strokes, a multi-line text field of list items, or a plain number. Reading
+    all three here means a template author never has to add a hidden count field
+    just to make its foley line up with what is on screen.
+    """
+    if not field_name:
+        return 1
+    value = item.fields.get(field_name)
+    if isinstance(value, list):
+        return max(1, len(value))
+    if isinstance(value, str):
+        parts = [part for part in re.split(r"\r?\n|\s*\|\s*", value) if part.strip()]
+        return max(1, len(parts))
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return max(1, min(64, int(value)))
+    return 1
+
+
 def resolve_sfx_events(item: Instance, spec: dict[str, Any]) -> list[dict[str, Any]]:
     """Resolve one template instance into deterministic preview/export events."""
     events: list[dict[str, Any]] = []
     for sound in spec.get("sfx", []):
-        repeated = item.fields.get(sound.get("repeat_field", ""))
-        count = max(1, len(repeated) if isinstance(repeated, list) else 1)
+        count = sfx_repeat_count(item, sound.get("repeat_field", ""))
         if "offset_ratio" in sound:
             base = item.duration * float(sound["offset_ratio"])
         else:
@@ -401,6 +598,7 @@ def resolve_sfx_events(item: Instance, spec: dict[str, Any]) -> list[dict[str, A
                 events.append({
                     "time": item.start + relative,
                     "file": sound["file"],
+                    "path": sfx_file(spec, sound["file"]),
                     "gain": float(sound.get("gain", 0.5)),
                     "index": index,
                 })
@@ -423,6 +621,9 @@ def probe(path: Path) -> MediaInfo:
                 rate = s.get("avg_frame_rate") or s.get("r_frame_rate", "30/1")
                 num, _, den = rate.partition("/")
                 info.fps = round(float(num) / max(float(den or 1), 1), 3)
+                info.profile = str(s.get("profile", "") or "")
+                info.pix_fmt = str(s.get("pix_fmt", "") or "")
+                info.bit_rate = int(float(s.get("bit_rate") or 0))
             if s.get("codec_type") == "audio" and not info.audio_codec:
                 info.audio_codec = s.get("codec_name", "")
     except Exception as exc:
@@ -542,6 +743,15 @@ def _ts_to_sec(h, m, s) -> float:
     return (int(h or 0)) * 3600 + int(m) * 60 + int(s)
 
 
+def normalize_quote(text: str) -> str:
+    """Fold punctuation, diacritics and spacing so quotes match how they sound."""
+    folded = unicodedata.normalize("NFKD", str(text or "")).casefold()
+    folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+    folded = re.sub(r"[\u0640\u064b-\u0652]", "", folded)
+    folded = re.sub(r"[^\w\s\u0600-\u06ff]+", " ", folded)
+    return re.sub(r"\s+", " ", folded).strip()
+
+
 def find_quote_time(quote: str, captions: list[CaptionBlock]) -> Optional[float]:
     words = [w for w in re.findall(r"[\w']+", quote.lower())]
     if not words:
@@ -626,8 +836,21 @@ scan_templates()
 app = FastAPI(title="Editoro", version=APP_VERSION)
 
 
-def group_caption_words(words: list[CaptionWord]) -> list[CaptionBlock]:
-    """Group word timestamps into readable, editable two-line caption blocks."""
+SENTENCE_END = re.compile(r"[.!?\u061f\u2026]$")
+
+
+def group_caption_words(
+    words: list[CaptionWord],
+    mode: str = "chunk",
+    words_per_chunk: int = 7,
+) -> list[CaptionBlock]:
+    """Group word timestamps into readable, editable caption blocks.
+
+    `chunk` keeps captions short enough to read at a glance; `sentence` holds a
+    whole sentence on screen, which suits slower, more written-sounding videos.
+    Both keep the word-level timings, so the active-word highlight still works
+    and a later regroup is never lossy.
+    """
     unique: dict[tuple[float, float, str], CaptionWord] = {}
     for word in words:
         if word.w and word.e > word.s:
@@ -648,17 +871,27 @@ def group_caption_words(words: list[CaptionWord]) -> list[CaptionBlock]:
         ))
         buffer.clear()
 
+    limit = max(1, min(24, int(words_per_chunk)))
     for word in ordered:
         candidate = " ".join([*(item.w for item in buffer), word.w])
-        previous_ended = bool(buffer and re.search(r"[.!?؟…]$", buffer[-1].w))
+        previous_ended = bool(buffer and SENTENCE_END.search(buffer[-1].w))
         gap = word.s - buffer[-1].e if buffer else 0
-        if buffer and (
-            len(buffer) >= 7
-            or len(candidate) > 44
-            or word.e - buffer[0].s > 3.5
-            or gap > 0.65
-            or previous_ended
-        ):
+        if mode == "sentence":
+            # Only a finished sentence, a long silence, or an unreadably long
+            # run breaks the block; that is the whole point of the mode.
+            should_break = buffer and (
+                previous_ended or gap > 1.1 or len(buffer) >= 42
+                or word.e - buffer[0].s > 12.0
+            )
+        else:
+            should_break = buffer and (
+                len(buffer) >= limit
+                or len(candidate) > max(24, limit * 8)
+                or word.e - buffer[0].s > 3.5
+                or gap > 0.65
+                or previous_ended
+            )
+        if should_break:
             flush()
         buffer.append(word)
     flush()
@@ -773,7 +1006,7 @@ def api_diagnostics():
 
 @app.get("/api/templates")
 def api_templates():
-    return {"packs": list(TEMPLATE_PACKS.values())}
+    return {"packs": list(TEMPLATE_PACKS.values()), "shared": shared_assets()}
 
 
 @app.get("/api/projects")
@@ -831,12 +1064,19 @@ def api_state(name: str):
 
 @app.post("/api/projects/{name}/state")
 async def api_save(name: str, req: Request):
+    """Replace the project state.
+
+    The saved state is broadcast to every connected client, so an edit written
+    here - by the MCP server, a script, or another device - appears immediately
+    in an open browser instead of waiting for a reload.
+    """
     require_project(name)
     payload = await req.json()
     payload["name"] = name
     st = ProjectState.model_validate(payload)
-    save_state(st)
-    return {"ok": True}
+    st = save_state(st)
+    await HUB.broadcast({"type": "state", "state": st.model_dump()})
+    return {"ok": True, "state": st.model_dump()}
 
 
 @app.post("/api/projects/{name}/source")
@@ -940,6 +1180,218 @@ async def api_transcript(name: str, file: UploadFile):
     (folder / f"transcript{suffix}").write_text(data, encoding="utf-8")
     st = save_state(st)
     return st.model_dump()
+
+
+def project_words(name: str, st: ProjectState) -> list[CaptionWord]:
+    """Word timings for a project: from the caption blocks, or the Whisper file."""
+    words = [word for block in st.captions for word in block.words]
+    if words:
+        return words
+    generated = project_dir(name) / "transcript.generated.json"
+    if generated.is_file():
+        try:
+            payload = json.loads(generated.read_text(encoding="utf-8"))
+            return [CaptionWord(**item) for item in payload.get("words", [])]
+        except Exception:
+            return []
+    return []
+
+
+@app.post("/api/projects/{name}/captions/regroup")
+async def api_regroup_captions(name: str, req: Request):
+    """Rebuild caption blocks from the stored word timings.
+
+    Regrouping is only possible because word timings survive editing. Text typed
+    over a block clears its words, so those blocks are left exactly as they are
+    rather than being silently rewritten back to what Whisper heard.
+    """
+    require_project(name)
+    body = await req.json()
+    st = load_state(name)
+    mode = body.get("mode", st.caption_style.mode)
+    if mode not in {"chunk", "sentence"}:
+        raise HTTPException(400, "mode must be chunk or sentence")
+    per_chunk = int(body.get("words_per_chunk", st.caption_style.words_per_chunk))
+    words = project_words(name, st)
+    if not words:
+        raise HTTPException(
+            400,
+            "No word timings are available. Generate captions locally or import a "
+            "Whisper JSON transcript first.",
+        )
+    edited = [block for block in st.captions if not block.words]
+    regrouped = group_caption_words(words, mode=mode, words_per_chunk=per_chunk)
+    keep = {block.id: block for block in st.captions}
+    for block in regrouped:
+        previous = keep.get(block.id)
+        if previous is not None:
+            block.follow_global = previous.follow_global
+            block.x, block.y, block.scale = previous.x, previous.y, previous.scale
+    st.captions = sorted(regrouped + edited, key=lambda block: block.start)
+    st.caption_style.mode = mode
+    st.caption_style.words_per_chunk = max(1, min(24, per_chunk))
+    return save_state(st)
+
+
+@app.get("/api/projects/{name}/transcript")
+def api_get_transcript(name: str):
+    """The full transcript, blocks and words, for agents and external tools."""
+    st = load_state(name)
+    return {
+        "project": name,
+        "orientation": st.orientation,
+        "duration": timeline_duration(st),
+        "caption_style": st.caption_style.model_dump(),
+        "blocks": [block.model_dump() for block in st.captions],
+        "text": " ".join(block.text for block in st.captions).strip(),
+        "words": [word.model_dump() for word in project_words(name, st)],
+    }
+
+
+@app.get("/api/projects/{name}/asset-info")
+def api_asset_info(name: str, asset: str):
+    """Pixel dimensions, page count and kind for one project asset.
+
+    An agent placing a highlight or sizing an image needs the real dimensions,
+    not a guess. This is the cheap call that makes the rest of the placement
+    arithmetic exact instead of approximate.
+    """
+    folder = require_project(name)
+    path = (folder / "assets" / asset).resolve()
+    if (folder / "assets").resolve() not in path.parents or not path.is_file():
+        raise HTTPException(404, "asset not found")
+    suffix = path.suffix.lower()
+    info: dict[str, Any] = {
+        "asset": asset, "bytes": path.stat().st_size, "extension": suffix.lstrip("."),
+    }
+    if suffix == ".pdf":
+        import fitz
+        with fitz.open(path) as document:
+            page = document[0]
+            info.update({
+                "kind": "pdf", "pages": document.page_count,
+                "width": round(page.rect.width), "height": round(page.rect.height),
+                "aspect": round(page.rect.width / max(1, page.rect.height), 4),
+            })
+        return info
+    media = probe(path)
+    kind = "video" if suffix in VIDEO_EXTENSIONS else "image"
+    info.update({
+        "kind": kind, "pages": 1,
+        "width": media.width, "height": media.height,
+        "aspect": round(media.width / max(1, media.height), 4),
+        "orientation": "vertical" if media.height > media.width else "horizontal",
+    })
+    if kind == "video":
+        info.update({"duration": media.duration, "fps": media.fps,
+                     "has_audio": bool(media.audio_codec)})
+    return info
+
+
+@app.get("/api/projects/{name}/asset-text")
+def api_asset_text(name: str, asset: str, page: int = 0, query: str = ""):
+    """Text boxes on a page, in the 0..1 coordinates the highlight pack wants.
+
+    PDFs carry their own text geometry, so those boxes are exact. Images have no
+    text layer; rather than guess, this reports that and hands back the page
+    dimensions so the caller can place strokes by eye against a rendered frame.
+    """
+    folder = require_project(name)
+    path = (folder / "assets" / asset).resolve()
+    if (folder / "assets").resolve() not in path.parents or not path.is_file():
+        raise HTTPException(404, "asset not found")
+    if path.suffix.lower() != ".pdf":
+        media = probe(path)
+        return {
+            "asset": asset, "page": 0, "source": "none",
+            "width": media.width, "height": media.height, "lines": [],
+            "note": ("This asset has no text layer. Render a frame with "
+                     "/api/projects/{project}/frame and place strokes from what you see, "
+                     "or supply the page as a PDF for exact coordinates."),
+        }
+    import fitz
+    with fitz.open(path) as document:
+        if not 0 <= page < document.page_count:
+            raise HTTPException(400, "page out of range")
+        target = document[page]
+        width = max(1.0, target.rect.width)
+        height = max(1.0, target.rect.height)
+        lines: list[dict[str, Any]] = []
+        blocks = target.get_text("dict").get("blocks", [])
+        for block in blocks:
+            for line in block.get("lines", []):
+                text = "".join(span.get("text", "") for span in line.get("spans", []))
+                if not text.strip():
+                    continue
+                x0, y0, x1, y1 = line["bbox"]
+                lines.append({
+                    "text": text.strip(),
+                    "x1": round(x0 / width, 5), "x2": round(x1 / width, 5),
+                    "y": round((y0 + y1) / 2 / height, 5),
+                    "h": round((y1 - y0) / height, 5),
+                })
+        if query:
+            needle = query.strip().casefold()
+            matched = [line for line in lines if needle in line["text"].casefold()]
+            if not matched:
+                # Fall back to matching on the words, so a phrase spanning two
+                # rendered lines still resolves to the lines that carry it.
+                tokens = [token for token in needle.split() if len(token) > 2]
+                matched = [
+                    line for line in lines
+                    if tokens and any(token in line["text"].casefold() for token in tokens)
+                ]
+            lines = matched
+        return {
+            "asset": asset, "page": page, "source": "pdf",
+            "width": round(width), "height": round(height),
+            "pages": document.page_count, "query": query, "lines": lines,
+        }
+
+
+@app.get("/api/projects/{name}/find-quote")
+def api_find_quote(name: str, q: str, limit: int = 5):
+    """Locate spoken words on the timeline.
+
+    Anchoring to what was actually said is the whole point of the directive
+    grammar, and it is what an agent needs most: it knows the sentence, not the
+    timecode. Matching is punctuation- and diacritic-insensitive so a quote
+    copied out of a transcript still lands.
+    """
+    st = load_state(name)
+    if not st.captions:
+        raise HTTPException(400, "This project has no captions yet")
+    needle = normalize_quote(q)
+    if not needle:
+        raise HTTPException(400, "Provide some words to search for")
+    matches: list[dict[str, Any]] = []
+    for index, block in enumerate(st.captions):
+        haystack = normalize_quote(block.text)
+        if needle in haystack:
+            matches.append({"start": block.start, "end": block.end,
+                            "text": block.text, "exact": True, "block": block.id})
+            continue
+        # A quote often spans two caption blocks; join a short window and look
+        # again so the caller is not forced to guess the chunking.
+        window = " ".join(
+            normalize_quote(item.text) for item in st.captions[index:index + 4]
+        )
+        if needle in window:
+            matches.append({"start": block.start, "end": st.captions[
+                min(len(st.captions) - 1, index + 3)].end,
+                "text": " ".join(item.text for item in st.captions[index:index + 4]),
+                "exact": False, "block": block.id})
+    if not matches:
+        tokens = [token for token in needle.split() if len(token) > 2]
+        for block in st.captions:
+            haystack = normalize_quote(block.text)
+            hits = sum(1 for token in tokens if token in haystack)
+            if tokens and hits >= max(1, len(tokens) // 2):
+                matches.append({"start": block.start, "end": block.end,
+                                "text": block.text, "exact": False,
+                                "block": block.id, "partial": True})
+    return {"query": q, "matches": matches[:max(1, min(50, limit))],
+            "total": len(matches)}
 
 
 @app.get("/api/projects/{name}/waveform")
@@ -1437,6 +1889,23 @@ def has_nvenc() -> bool:
     return probe_encode.returncode == 0
 
 
+def count_frames(path: Path) -> int:
+    """Exact decoded frame count. Container duration is not a reliable proxy."""
+    for flag, entry in (("-count_packets", "nb_read_packets"),
+                        ("-count_frames", "nb_read_frames")):
+        result = run([
+            FFPROBE, "-v", "error", "-select_streams", "v:0", flag,
+            "-show_entries", f"stream={entry}", "-of", "csv=p=0", str(path),
+        ])
+        try:
+            counted = int((result.stdout or "0").strip().split(",")[0] or 0)
+        except ValueError:
+            counted = 0
+        if counted:
+            return counted
+    return 0
+
+
 def keyframes(src: Path, log) -> list[float]:
     p = run([FFPROBE, "-v", "quiet", "-select_streams", "v", "-show_entries",
              "packet=pts_time,flags", "-of", "csv=p=0", str(src)], log)
@@ -1451,17 +1920,40 @@ def keyframes(src: Path, log) -> list[float]:
     return frames or [0.0]
 
 
-CAMERA_TEMPLATES = {"punch-in", "zoom-out"}
-
-
 def camera_effect_at(st: ProjectState, timeline_time: float) -> Optional[Instance]:
+    cameras = camera_packs()
     active = [
         item for item in st.instances
-        if item.template in CAMERA_TEMPLATES
+        if item.template in cameras
         and isinstance(item.fields.get("rect"), dict)
         and item.start <= timeline_time < item.start + item.duration
     ]
     return min(active, key=lambda item: (item.track, item.start, item.id), default=None)
+
+
+# A clean span shorter than this is folded into its rendered neighbour instead
+# of being stream-copied on its own.
+GAP_ABSORB_SECONDS = 0.30
+GAP_ABSORB_FRAMES = 10
+
+
+def timeline_duration(st: ProjectState) -> float:
+    """Length of the edit, which is the sum of the kept source spans."""
+    kept = sum(cut.src_out - cut.src_in for cut in st.cuts)
+    return round(kept or st.source_info.duration or 0.0, 4)
+
+
+def timeline_to_source(st: ProjectState, timeline_time: float) -> float:
+    """Timeline seconds -> source seconds, walking the kept cuts."""
+    elapsed = 0.0
+    for cut in st.cuts:
+        length = cut.src_out - cut.src_in
+        if timeline_time < elapsed + length:
+            return cut.src_in + (timeline_time - elapsed)
+        elapsed += length
+    if st.cuts:
+        return st.cuts[-1].src_out
+    return max(0.0, min(timeline_time, st.source_info.duration))
 
 
 def timeline_segments(st: ProjectState) -> list[dict]:
@@ -1503,6 +1995,24 @@ def timeline_segments(st: ProjectState) -> list[dict]:
             out.append({"src_in": s["src_in"] + a, "src_out": s["src_in"] + b,
                         "tl": s["tl"] + a, "dirty": dirty,
                         "camera": camera.id if camera else None})
+    # A short clean gap between two overlays is not worth its own FFmpeg process.
+    # Copying two frames saves nothing, and every extra span is another join to
+    # get exactly right; absorbing those gaps into the neighbouring rendered span
+    # turns a densely decorated minute from fifty processes into a handful.
+    minimum_clean = max(GAP_ABSORB_SECONDS, frame * GAP_ABSORB_FRAMES)
+    for index, segment in enumerate(out):
+        if segment["dirty"]:
+            continue
+        if segment["src_out"] - segment["src_in"] >= minimum_clean:
+            continue
+        before = out[index - 1]["dirty"] if index else False
+        after = out[index + 1]["dirty"] if index + 1 < len(out) else False
+        if before or after:
+            segment["dirty"] = True
+            segment["camera"] = (
+                out[index - 1].get("camera") if before else out[index + 1].get("camera")
+            )
+
     # Renderer state can change inside a dirty span, so adjacent overlay/caption
     # intervals do not need separate FFmpeg processes. Camera intervals remain
     # separate because their source transform is expressed by FFmpeg.
@@ -1528,24 +2038,171 @@ def timeline_segments(st: ProjectState) -> list[dict]:
 
 
 def video_encoder(st: ProjectState, nvenc: bool) -> list[str]:
-    """Choose a fast, concat-compatible high-quality encoder."""
+    """A high-quality encoder configured to match the source.
+
+    Smart-lossless export interleaves stream-copied source spans with spans we
+    re-encode. Those two kinds of span end up in one file, so the encoder has to
+    agree with the source on pixel format and profile - otherwise the joins are
+    where playback stutters or a decoder gives up partway through.
+    """
     hevc = st.source_info.codec in {"hevc", "h265"}
+    pix_fmt = st.source_info.pix_fmt if st.source_info.pix_fmt in {
+        "yuv420p", "yuvj420p", "yuv420p10le", "nv12",
+    } else "yuv420p"
+    if pix_fmt in {"yuvj420p", "nv12"}:
+        pix_fmt = "yuv420p"
+    profile = (st.source_info.profile or "").lower()
     if nvenc:
         codec = "hevc_nvenc" if hevc else "h264_nvenc"
-        return [
-            "-c:v", codec, "-preset", "p4", "-tune", "hq",
+        args = [
+            "-c:v", codec, "-preset", "p5", "-tune", "hq",
             "-rc", "constqp", "-qp", "16", "-spatial_aq", "1", "-aq-strength", "8",
-            "-pix_fmt", "yuv420p",
+            "-pix_fmt", pix_fmt,
         ]
+        if not hevc and profile in {"baseline", "main", "high"}:
+            args += ["-profile:v", profile]
+        return args
     codec = "libx265" if hevc else "libx264"
-    return [
-        "-c:v", codec, "-preset", "veryfast", "-crf", "16",
-        "-pix_fmt", "yuv420p",
-    ]
+    args = ["-c:v", codec, "-preset", "faster", "-crf", "16", "-pix_fmt", pix_fmt]
+    if not hevc and profile in {"baseline", "main", "high"}:
+        args += ["-profile:v", profile]
+    return args
+
+
+def bitstream_filter(st: ProjectState) -> list[str]:
+    """Annex-B conversion, needed to put a span into an MPEG-TS join stream."""
+    if st.source_info.codec in {"hevc", "h265"}:
+        return ["-bsf:v", "hevc_mp4toannexb"]
+    return ["-bsf:v", "h264_mp4toannexb"]
+
+
+def segment_frames(seg: dict, fps: float) -> int:
+    """Frames this span must contribute, so the joined video cannot drift."""
+    planned = seg.get("frames")
+    if isinstance(planned, int) and planned > 0:
+        return planned
+    start = float(seg.get("tl", 0.0))
+    end = start + (seg["src_out"] - seg["src_in"])
+    return max(1, int(round(end * fps)) - int(round(start * fps)))
+
+
+def plan_segment_frames(segments: list[dict], fps: float) -> int:
+    """Assign each span an exact frame count and return the total.
+
+    Rounding each span's own length independently lets the errors accumulate:
+    across fifty spans that is a couple of frames of drift against the audio,
+    which is the class of bug you only notice at the end of a finished video.
+    Walking one accumulator makes the counts telescope, so the sum is exactly
+    the length of the edit by construction.
+    """
+    elapsed = 0.0
+    previous_frame = 0
+    for segment in segments:
+        elapsed += segment["src_out"] - segment["src_in"]
+        boundary = int(round(elapsed * fps))
+        segment["frames"] = max(1, boundary - previous_frame)
+        previous_frame = previous_frame + segment["frames"]
+    return previous_frame
+
+
+def _ease_expr(kind: str, k: str) -> str:
+    """FFmpeg-expression easing that matches the JavaScript engine exactly."""
+    if kind == "outCubic":
+        return f"(1-pow(1-{k},3))"
+    if kind == "inCubic":
+        return f"pow({k},3)"
+    if kind == "outQuint":
+        return f"(1-pow(1-{k},5))"
+    if kind == "inOutCubic":
+        return (f"if(lt({k},0.5),4*pow({k},3),1-pow(-2*{k}+2,3)/2)")
+    if kind == "outExpo":
+        return f"(1-pow(2,-10*{k}))"
+    return f"(1-pow(1-{k},3))"
+
+
+def camera_plan(st: ProjectState, camera: Instance, fps: float) -> dict:
+    """Resolve one camera instance into zoom/centre expressions of global time.
+
+    The preview moves the footage with a CSS transform and the export moves it
+    with an FFmpeg filter. Both read the same declarative `camera` block from
+    template.json, so what was approved on the timeline is what gets rendered.
+    """
+    spec = TEMPLATE_PACKS.get(camera.template, {})
+    settings = spec.get("camera", {}) or {}
+    mode = settings.get("mode", "hold")
+    animation = spec.get("animation", {})
+    motion = spec.get("motion", {})
+    entrance = float(motion.get("in", {}).get("ms", animation.get("entrance_ms", 450))) / 1000
+    exit_ms = float(motion.get("out", {}).get("ms", animation.get("exit_ms", 400))) / 1000
+    entrance = max(1 / fps, min(entrance, camera.duration * 0.7))
+    exit_ms = max(1 / fps, min(exit_ms, camera.duration * 0.7))
+    easing = settings.get("easing", "outCubic")
+
+    def normalised(raw, fallback):
+        rect = raw if isinstance(raw, dict) else fallback
+        width = max(0.05, min(1.0, float(rect.get("w", 1.0))))
+        height = max(0.05, min(1.0, float(rect.get("h", 1.0))))
+        x = max(0.0, min(1.0 - width, float(rect.get("x", 0.0))))
+        y = max(0.0, min(1.0 - height, float(rect.get("y", 0.0))))
+        return {"x": x, "y": y, "w": width, "h": height,
+                "cx": x + width / 2, "cy": y + height / 2,
+                "zoom": 1.0 / max(width, height)}
+
+    full = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
+    first = normalised(camera.fields.get("rect"), full)
+    second = normalised(camera.fields.get("rect2"), camera.fields.get("rect") or full)
+
+    start, end = camera.start, camera.start + camera.duration
+    return {
+        "mode": mode, "easing": easing, "entrance": entrance, "exit": exit_ms,
+        "start": start, "end": end, "first": first, "second": second,
+        "duration": max(1 / fps, camera.duration),
+    }
+
+
+def camera_expressions(plan: dict, time_expr: str) -> tuple[str, str, str]:
+    """(zoom, centre-x, centre-y) as FFmpeg expressions over `time_expr`."""
+    mode, easing = plan["mode"], plan["easing"]
+    start, end = plan["start"], plan["end"]
+    first, second = plan["first"], plan["second"]
+    entrance, exit_ms, duration = plan["entrance"], plan["exit"], plan["duration"]
+    local = f"clip({time_expr}-{start:.9f},0,{duration:.9f})"
+
+    if mode == "reveal":
+        k = _ease_expr(easing, f"clip({local}/{entrance:.9f},0,1)")
+        amount = f"(1-{k})"
+        zoom = f"(1+{first['zoom'] - 1:.9f}*{amount})"
+        return zoom, f"{first['cx']:.9f}", f"{first['cy']:.9f}"
+
+    if mode == "impact":
+        # Cuts straight to the tight framing, then releases. No ease in: the
+        # whole point is that the jump is felt on the frame it happens.
+        release = max(1 / 30, duration * 0.62)
+        k = _ease_expr(easing, f"clip({local}/{release:.9f},0,1)")
+        zoom = f"(1+{first['zoom'] - 1:.9f}*(1-{k}))"
+        return zoom, f"{first['cx']:.9f}", f"{first['cy']:.9f}"
+
+    if mode in {"drift", "whip"}:
+        curve = "inOutCubic" if mode == "drift" else "outQuint"
+        k = _ease_expr(curve, f"clip({local}/{duration:.9f},0,1)")
+        zoom = f"({first['zoom']:.9f}+{second['zoom'] - first['zoom']:.9f}*{k})"
+        cx = f"({first['cx']:.9f}+{second['cx'] - first['cx']:.9f}*{k})"
+        cy = f"({first['cy']:.9f}+{second['cy'] - first['cy']:.9f}*{k})"
+        return zoom, cx, cy
+
+    # "hold": ease in, stay, ease back out.
+    in_k = _ease_expr(easing, f"clip({local}/{entrance:.9f},0,1)")
+    out_k = _ease_expr(easing, f"clip(({end:.9f}-{time_expr})/{exit_ms:.9f},0,1)")
+    amount = (
+        f"if(lt({time_expr},{start + entrance:.9f}),{in_k},"
+        f"if(gt({time_expr},{end - exit_ms:.9f}),{out_k},1))"
+    )
+    zoom = f"(1+{first['zoom'] - 1:.9f}*{amount})"
+    return zoom, f"{first['cx']:.9f}", f"{first['cy']:.9f}"
 
 
 def camera_filter_graph(st: ProjectState, seg: dict, fps: float) -> str:
-    """Build the source-video transform shared by zoom-in and zoom-out."""
+    """Build the source-video transform for one segment."""
     camera_id = seg.get("camera")
     camera = next((item for item in st.instances if item.id == camera_id), None)
     if camera is None:
@@ -1554,36 +2211,21 @@ def camera_filter_graph(st: ProjectState, seg: dict, fps: float) -> str:
     if camera is None:
         return "[0:v]setpts=PTS-STARTPTS[base]"
 
-    rect = camera.fields["rect"]
-    width = max(0.05, min(1.0, float(rect.get("w", 1.0))))
-    height = max(0.05, min(1.0, float(rect.get("h", 1.0))))
-    x = max(0.0, min(1.0 - width, float(rect.get("x", 0.0))))
-    y = max(0.0, min(1.0 - height, float(rect.get("y", 0.0))))
-    center_x, center_y = x + width / 2, y + height / 2
-    target = 1.0 / max(width, height)
-    animation = TEMPLATE_PACKS.get(camera.template, {}).get("animation", {})
-    entrance = max(1 / fps, float(animation.get("entrance_ms", 450)) / 1000)
-    exit_duration = max(1 / fps, float(animation.get("exit_ms", 400)) / 1000)
-    start, end = camera.start, camera.start + camera.duration
+    plan = camera_plan(st, camera, fps)
     global_time = f"({seg['tl']:.9f}+on/{fps:.9f})"
-    in_k = f"clip(({global_time}-{start:.9f})/{entrance:.9f},0,1)"
-    out_k = f"clip(({end:.9f}-{global_time})/{exit_duration:.9f},0,1)"
-    ease_in = f"(1-pow(1-{in_k},3))"
-    ease_out = f"(1-pow(1-{out_k},3))"
-    if camera.template == "zoom-out":
-        amount = f"if(lt({global_time},{start + entrance:.9f}),1-{ease_in},0)"
-    else:
-        amount = (
-            f"if(lt({global_time},{start + entrance:.9f}),{ease_in},"
-            f"if(gt({global_time},{end - exit_duration:.9f}),{ease_out},1))"
-        )
-    zoom = f"(1+{target - 1:.9f}*{amount})"
+    zoom, cx, cy = camera_expressions(plan, global_time)
+    width, height = st.source_info.width, st.source_info.height
+    peak = max(plan["first"]["zoom"], plan["second"]["zoom"])
+    # zoompan samples the frame it is handed. Handing it a 2x lanczos upscale
+    # first is what separates a punch-in that looks intentional from one that
+    # looks like a soft crop, and it also halves zoompan's integer-pixel jitter.
+    supersample = ",scale=iw*2:ih*2:flags=lanczos" if peak > 1.12 else ""
     return (
-        "[0:v]setpts=PTS-STARTPTS,"
+        f"[0:v]setpts=PTS-STARTPTS{supersample},"
         f"zoompan=z='{zoom}':"
-        f"x='clip({center_x:.9f}*iw-iw/(2*zoom),0,iw-iw/zoom)':"
-        f"y='clip({center_y:.9f}*ih-ih/(2*zoom),0,ih-ih/zoom)':"
-        f"d=1:s={st.source_info.width}x{st.source_info.height}:fps={fps:.9f}"
+        f"x='clip({cx}*iw-iw/(2*zoom),0,iw-iw/zoom)':"
+        f"y='clip({cy}*ih-ih/(2*zoom),0,ih-ih/zoom)':"
+        f"d=1:s={width}x{height}:fps={fps:.9f}"
         "[base]"
     )
 
@@ -1643,12 +2285,15 @@ class OverlayRenderSession:
         )
         try:
             await self.page.wait_for_function(
-                "window.__exportReady === true",
-                timeout=30000,
+                "window.__exportReady === true || window.__exportError",
+                timeout=60000,
             )
         except Exception as exc:
             detail = " | ".join(self.errors[-5:]) or str(exc)
             raise RuntimeError(f"Export renderer did not become ready: {detail}") from exc
+        setup_error = await self.page.evaluate("window.__exportError || null")
+        if setup_error:
+            raise RuntimeError(f"Export renderer failed to start: {setup_error}")
 
     async def frame_batches(
         self,
@@ -1706,22 +2351,29 @@ async def encode_dirty_segment(
     """Stream transparent PNG frames straight into FFmpeg without disk files."""
     fps = st.source_info.fps or 30
     duration = seg["src_out"] - seg["src_in"]
+    frames = segment_frames(seg, fps)
     source_filter = camera_filter_graph(st, seg, fps)
     scale_filter = ""
     if resolution != "source":
         target_h = int(resolution)
         target_w = int(round(target_h * st.source_info.width / st.source_info.height / 2) * 2)
         scale_filter = f",scale={target_w}:{target_h}:flags=lanczos"
+    # The base is padded with a cloned final frame and the output is bounded by
+    # an exact frame count. Previously this relied on overlay's `shortest`, so a
+    # single rounding disagreement between the decoder and the frame generator
+    # shortened the span and every later cut drifted against the audio.
     command = [
         FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
-        "-ss", str(seg["src_in"]), "-t", str(duration), "-i", str(src),
-        "-thread_queue_size", "32", "-f", "image2pipe",
-        "-framerate", str(fps), "-vcodec", "png", "-i", "pipe:0",
+        "-ss", f"{seg['src_in']:.6f}", "-t", f"{duration + 0.5:.6f}", "-i", str(src),
+        "-thread_queue_size", "64", "-f", "image2pipe",
+        "-framerate", f"{fps:.6f}", "-vcodec", "png", "-i", "pipe:0",
         "-filter_complex",
-        f"{source_filter};[1:v]setpts=PTS-STARTPTS[ov];"
-        f"[base][ov]overlay=0:0:format=auto:shortest=1{scale_filter}[v]",
-        "-map", "[v]", *vcodec, "-r", str(fps), "-an",
-        "-movflags", "+faststart", str(part),
+        f"{source_filter};[base]tpad=stop=-1:stop_mode=clone[padded];"
+        f"[1:v]setpts=PTS-STARTPTS[ov];"
+        f"[padded][ov]overlay=0:0:format=auto:eof_action=pass:shortest=0"
+        f"{scale_filter},fps={fps:.6f}[v]",
+        "-map", "[v]", *vcodec, "-frames:v", str(frames), "-an",
+        *bitstream_filter(st), "-f", "mpegts", str(part),
     ]
     with open(log, "a", encoding="utf-8") as handle:
         handle.write("\n$ " + " ".join(command) + "\n")
@@ -1789,6 +2441,76 @@ async def encode_dirty_segment(
     if process.returncode:
         detail = stderr.strip()[-2000:] or "FFmpeg stopped while receiving overlay frames"
         raise RuntimeError(f"FFmpeg failed ({process.returncode}): {detail}")
+
+
+FRAME_LOCK = asyncio.Lock()
+
+
+async def render_still(name: str, timeline_time: float, width: int = 0) -> bytes:
+    """One composited PNG of the edit at a timeline moment: footage + overlays.
+
+    This is what lets an agent actually look at what it built instead of
+    reasoning about coordinates blind. It runs the same renderer the export
+    uses, so the still is not an approximation of the result - it is a frame of
+    it, camera move included.
+    """
+    st = load_state(name)
+    folder = project_dir(name)
+    if not st.source or not (folder / st.source).is_file():
+        raise HTTPException(400, "Import source footage first")
+    duration = timeline_duration(st)
+    fps = st.source_info.fps or 30
+    timeline_time = max(0.0, min(timeline_time, max(0.0, duration - 1 / fps)))
+    source_time = timeline_to_source(st, timeline_time)
+    async with FRAME_LOCK:
+        with tempfile.TemporaryDirectory(prefix="editoro-frame-") as scratch:
+            work = Path(scratch)
+            base = work / "base.png"
+            camera = camera_effect_at(st, timeline_time)
+            segment = {"src_in": source_time, "src_out": source_time + 1 / fps,
+                       "tl": timeline_time, "camera": camera.id if camera else None}
+            graph = camera_filter_graph(st, segment, fps)
+            command = [
+                FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", f"{source_time:.6f}", "-i", str(folder / st.source),
+                "-filter_complex", graph, "-map", "[base]", "-frames:v", "1", str(base),
+            ]
+            result = run(command)
+            if result.returncode or not base.is_file():
+                raise HTTPException(500, (result.stderr or "could not read that frame")[-400:])
+
+            renderer = OverlayRenderSession(name, st)
+            await renderer.start()
+            try:
+                data_url = await renderer.page.evaluate(
+                    "t => window.__renderFrame(t)", timeline_time)
+            finally:
+                await renderer.close()
+            overlay = work / "overlay.png"
+            overlay.write_bytes(base64.b64decode(data_url.split(",", 1)[1]))
+
+            out = work / "frame.png"
+            scale = f",scale={int(width)}:-2:flags=lanczos" if width else ""
+            result = run([
+                FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(base), "-i", str(overlay),
+                "-filter_complex", f"[0:v][1:v]overlay=0:0:format=auto{scale}[v]",
+                "-map", "[v]", "-frames:v", "1", str(out),
+            ])
+            if result.returncode or not out.is_file():
+                raise HTTPException(500, (result.stderr or "could not compose that frame")[-400:])
+            return out.read_bytes()
+
+
+@app.get("/api/projects/{name}/frame")
+async def api_frame(name: str, t: float = 0, width: int = 1280):
+    require_project(name)
+    png = await render_still(name, t, max(160, min(3840, int(width))))
+    return Response(
+        png, media_type="image/png",
+        headers={"Cache-Control": "no-store",
+                 "Content-Disposition": f'inline; filename="{name}-{t:.3f}.png"'},
+    )
 
 
 EXPORT_CANCEL: dict[str, asyncio.Event] = {}
@@ -1884,7 +2606,11 @@ async def export(name: str, mode: str, resolution: str = "source"):
     d = project_dir(name)
     exp = d / "exports"; exp.mkdir(exist_ok=True)
     log = exp / "export.log"
-    log.write_text(f"Editoro {APP_VERSION} export started {datetime.now().isoformat()}\n", encoding="utf-8")
+    log.write_text(
+        f"Editoro {APP_VERSION} export started {datetime.now().isoformat()}\n"
+        f"mode={mode} resolution={resolution} orientation={st.orientation}\n",
+        encoding="utf-8",
+    )
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     final = exp / f"{name}-{stamp}.mp4"
     src = d / st.source
@@ -1892,7 +2618,7 @@ async def export(name: str, mode: str, resolution: str = "source"):
     nvenc = has_nvenc()
     vcodec = video_encoder(st, nvenc)
     if not nvenc:
-        await progress(name, note="NVENC unavailable — using the fast high-quality CPU encoder")
+        await progress(name, note="NVENC unavailable - using the fast high-quality CPU encoder")
     work = exp / f"work-{stamp}"
     partial = work / "final.mp4"
     renderer: Optional[OverlayRenderSession] = None
@@ -1908,72 +2634,70 @@ async def export(name: str, mode: str, resolution: str = "source"):
         segs = timeline_segments(st)
         if not segs:
             raise ValueError("The timeline is empty")
+        expected_frames = plan_segment_frames(segs, fps)
         kfs = keyframes(src, log)
         parts: list[Path] = []
         work.mkdir()
         copy_compatible = st.source_info.codec in {"h264", "avc1", "hevc", "h265"}
+        annexb = bitstream_filter(st)
+
+        async def encode_plain(seg_in: float, seg_out: float, target: Path) -> None:
+            """Re-encode one untouched span, matched to the source parameters."""
+            span = seg_out - seg_in
+            count = max(1, int(round(span * fps)))
+            command = [
+                FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", f"{seg_in:.6f}", "-t", f"{span + 0.5:.6f}", "-i", str(src),
+            ]
+            filters = [f"fps={fps:.6f}"]
+            if resolution != "source":
+                target_h = int(resolution)
+                target_w = int(round(target_h * st.source_info.width
+                                     / max(1, st.source_info.height) / 2) * 2)
+                filters.append(f"scale={target_w}:{target_h}:flags=lanczos")
+            filters.append("tpad=stop=-1:stop_mode=clone")
+            command += [
+                "-vf", ",".join(filters), *vcodec, "-frames:v", str(count),
+                "-an", *annexb, "-f", "mpegts", str(target),
+            ]
+            await run_cancelable(command, log, cancel, check=True)
+
         for idx, seg in enumerate(segs):
             if cancel.is_set():
                 raise asyncio.CancelledError()
             await progress(name, seg=idx + 1, total=len(segs),
                            status="copy" if not seg["dirty"] and mode == "lossless" else "encode")
-            part = work / f"p{idx:03d}.mp4"
-            duration = seg["src_out"] - seg["src_in"]
+            part = work / f"p{idx:03d}.ts"
             if not seg["dirty"] and mode == "lossless" and copy_compatible:
-                # smart cut: snap start forward to a keyframe; re-encode only the
-                # pre-keyframe slice if the requested cut isn't keyframe-aligned.
-                next_keyframe = min(
-                    (k for k in kfs if k >= seg["src_in"] - 1e-3),
-                    default=None,
-                )
+                # Smart cut: a copied span has to start on a keyframe, so snap
+                # forward to one and re-encode only the short slice in front.
+                next_keyframe = min((k for k in kfs if k >= seg["src_in"] - 1e-3), default=None)
                 if next_keyframe is None or next_keyframe >= seg["src_out"] - 1 / fps:
-                    # A copied span cannot begin accurately without a keyframe.
-                    # Re-encode it once instead of pulling earlier frames in.
-                    await run_cancelable([
-                        FFMPEG, "-y", "-ss", str(seg["src_in"]),
-                        "-t", str(seg["src_out"] - seg["src_in"]), "-i", str(src),
-                        *vcodec, "-an", "-movflags", "+faststart", str(part),
-                    ], log, cancel, check=True)
+                    await encode_plain(seg["src_in"], seg["src_out"], part)
                 elif next_keyframe - seg["src_in"] > 1 / fps:
-                    sl = work / f"p{idx:03d}a.mp4"
-                    slice_end = min(next_keyframe, seg["src_out"])
-                    await run_cancelable([
-                        FFMPEG, "-y", "-ss", str(seg["src_in"]),
-                        "-t", str(slice_end - seg["src_in"]), "-i", str(src),
-                        *vcodec, "-an", "-movflags", "+faststart", str(sl),
-                    ], log, cancel, check=True)
-                    parts.append(sl)
+                    lead = work / f"p{idx:03d}a.ts"
+                    await encode_plain(seg["src_in"], min(next_keyframe, seg["src_out"]), lead)
+                    parts.append(lead)
                     if next_keyframe >= seg["src_out"]:
                         continue
                     seg = {**seg, "src_in": next_keyframe}
                     await run_cancelable([
-                        FFMPEG, "-y", "-ss", str(seg["src_in"]),
-                        "-t", str(seg["src_out"] - seg["src_in"]), "-i", str(src),
-                        "-c:v", "copy", "-an",
-                        "-avoid_negative_ts", "make_zero", str(part),
+                        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                        "-ss", f"{seg['src_in']:.6f}",
+                        "-t", f"{seg['src_out'] - seg['src_in']:.6f}", "-i", str(src),
+                        "-c:v", "copy", "-an", *annexb,
+                        "-avoid_negative_ts", "make_zero", "-f", "mpegts", str(part),
                     ], log, cancel, check=True)
                 else:
                     await run_cancelable([
-                        FFMPEG, "-y", "-ss", str(seg["src_in"]),
-                        "-t", str(seg["src_out"] - seg["src_in"]), "-i", str(src),
-                        "-c:v", "copy", "-an",
-                        "-avoid_negative_ts", "make_zero", str(part),
+                        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                        "-ss", f"{seg['src_in']:.6f}",
+                        "-t", f"{seg['src_out'] - seg['src_in']:.6f}", "-i", str(src),
+                        "-c:v", "copy", "-an", *annexb,
+                        "-avoid_negative_ts", "make_zero", "-f", "mpegts", str(part),
                     ], log, cancel, check=True)
             elif not seg["dirty"]:
-                command = [
-                    FFMPEG, "-y", "-ss", str(seg["src_in"]), "-t", str(duration),
-                    "-i", str(src),
-                ]
-                if resolution != "source":
-                    target_h = int(resolution)
-                    target_w = int(round(target_h * st.source_info.width / st.source_info.height / 2) * 2)
-                    command += ["-vf", f"scale={target_w}:{target_h}:flags=lanczos"]
-                command += [
-                    *vcodec, "-r", str(fps),
-                    "-an", "-movflags", "+faststart",
-                    str(part),
-                ]
-                await run_cancelable(command, log, cancel, check=True)
+                await encode_plain(seg["src_in"], seg["src_out"], part)
             else:
                 if renderer is None:
                     renderer = OverlayRenderSession(name, st)
@@ -1983,30 +2707,57 @@ async def export(name: str, mode: str, resolution: str = "source"):
                     name, idx + 1, len(segs),
                 )
             parts.append(part)
-        # concat
+
+        # Join. The spans are MPEG-TS rather than MP4 precisely because a copied
+        # span and a re-encoded span carry different parameter sets; TS carries
+        # those inline, so `-c copy` joins them instead of producing a file that
+        # plays correctly only until the first join.
+        await progress(name, seg=len(segs), total=len(segs), status="join")
         lst = work / "list.txt"
-        lst.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts), encoding="utf-8")
+        lst.write_text("".join(f"file '{path.as_posix()}'\n" for path in parts), encoding="utf-8")
         pre = work / "video.mp4"
-        concat = await run_cancelable([
-            FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
-            "-c:v", "copy", "-an", "-movflags", "+faststart", str(pre),
-        ], log, cancel)
-        if concat.returncode:
-            await run_cancelable([
-                FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
-                *vcodec, "-an", "-movflags", "+faststart", str(pre),
-            ], log, cancel, check=True)
+        await run_cancelable([
+            FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+            "-fflags", "+genpts", "-f", "concat", "-safe", "0", "-i", str(lst),
+            "-c:v", "copy", "-an", "-avoid_negative_ts", "make_zero",
+            "-movflags", "+faststart", str(pre),
+        ], log, cancel, check=True)
+
         expected_video_duration = sum(
             segment["src_out"] - segment["src_in"] for segment in segs
         )
         joined = probe(pre)
-        if abs(joined.duration - expected_video_duration) > max(.08, 2 / fps):
-            raise RuntimeError(
-                "Video segment timestamps did not join accurately "
-                f"({joined.duration:.3f}s vs {expected_video_duration:.3f}s)"
+        joined_frames = count_frames(pre)
+        # Frames, not seconds, are the thing that has to be right. A container
+        # can round its duration; a missing frame silently shifts every later
+        # cut against the audio, and that is the failure that is hard to see
+        # until the whole video is finished.
+        with open(log, "a", encoding="utf-8") as handle:
+            handle.write(
+                f"\njoined {len(parts)} spans: {joined_frames} frames / {joined.duration:.3f}s "
+                f"(expected {expected_frames} frames / {expected_video_duration:.3f}s)\n"
             )
+        if joined_frames and abs(joined_frames - expected_frames) > 1:
+            # Name the spans that disagree. "The video is 2 frames long" is not
+            # something anyone can act on; "span 31 produced 8 of 6" is.
+            with open(log, "a", encoding="utf-8") as handle:
+                handle.write("per-span frame audit (requested -> produced):\n")
+                for index, (segment, path) in enumerate(zip(segs, parts)):
+                    produced = count_frames(path)
+                    wanted = segment_frames(segment, fps)
+                    flag = "" if produced == wanted else "   <-- MISMATCH"
+                    handle.write(
+                        f"  {index:03d} {path.name} {wanted} -> {produced}{flag}\n"
+                    )
+            raise RuntimeError(
+                "Video spans did not join accurately "
+                f"({joined_frames} frames vs {expected_frames} expected); "
+                "see the per-span frame audit in export.log"
+            )
+
         # Build speech once from source cuts. Encoding audio in every tiny video
         # segment adds AAC priming at every join and causes duration drift.
+        await progress(name, seg=len(segs), total=len(segs), status="audio")
         total_duration = expected_video_duration
         inputs, filters, amix = [str(pre)], [], []
         if st.source_info.audio_codec:
@@ -2017,9 +2768,7 @@ async def export(name: str, mode: str, resolution: str = "source"):
             source_labels = ["[0:a]"]
             if len(cuts) > 1:
                 source_labels = [f"[src{index}]" for index in range(len(cuts))]
-                speech_filters.append(
-                    f"[0:a]asplit={len(cuts)}{''.join(source_labels)}"
-                )
+                speech_filters.append(f"[0:a]asplit={len(cuts)}{''.join(source_labels)}")
             for index, cut in enumerate(cuts):
                 speech_filters.append(
                     f"{source_labels[index if len(cuts) > 1 else 0]}"
@@ -2035,7 +2784,8 @@ async def export(name: str, mode: str, resolution: str = "source"):
                     "aresample=48000[speech]"
                 )
             await run_cancelable([
-                FFMPEG, "-y", "-i", str(src), "-filter_complex", ";".join(speech_filters),
+                FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(src), "-filter_complex", ";".join(speech_filters),
                 "-map", "[speech]", "-c:a", "pcm_s16le", str(speech),
             ], log, cancel, check=True)
             inputs.append(str(speech))
@@ -2043,20 +2793,28 @@ async def export(name: str, mode: str, resolution: str = "source"):
         else:
             filters.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{total_duration}[base]")
             amix = ["[base]"]
+
         for i in st.instances:
             spec = TEMPLATE_PACKS.get(i.template, {})
             for event in resolve_sfx_events(i, spec):
-                f = TEMPLATES_DIR / spec["_dir"] / event["file"]
-                if f.exists():
-                    inputs.append(str(f))
-                    input_index = len(inputs) - 1
-                    delay = int(event["time"] * 1000)
-                    filters.append(
-                        f"[{input_index}:a]adelay={delay}:all=1,"
-                        f"volume={event['gain']}[s{input_index}]"
-                    )
-                    amix.append(f"[s{input_index}]")
-            if i.template == "video-clip" and i.fields.get("asset") and not i.missing:
+                sound = event["path"]
+                if not sound.exists():
+                    continue
+                inputs.append(str(sound))
+                input_index = len(inputs) - 1
+                # Sample-accurate rather than millisecond-rounded: a foley hit
+                # that lands 4 ms late reads as sloppy, and the error was
+                # previously different for every event in the timeline.
+                delay_samples = max(0, int(round(event["time"] * 48000)))
+                filters.append(
+                    f"[{input_index}:a]aresample=48000,"
+                    f"adelay=delays={delay_samples}S:all=1,"
+                    f"volume={event['gain']:.4f}[s{input_index}]"
+                )
+                amix.append(f"[s{input_index}]")
+            if not i.missing and i.fields.get("asset") and any(
+                field.get("type") == "asset:video" for field in spec.get("fields", [])
+            ):
                 af = d / "assets" / i.fields["asset"]
                 try:
                     has_clip_audio = af.exists() and bool(probe(af).audio_codec)
@@ -2065,32 +2823,53 @@ async def export(name: str, mode: str, resolution: str = "source"):
                 if has_clip_audio:
                     inputs.append(str(af))
                     input_index = len(inputs) - 1
-                    delay = int(i.start * 1000)
+                    clip_in = float(i.fields.get("clip_in", 0) or 0)
+                    delay_samples = max(0, int(round(i.start * 48000)))
                     filters.append(
-                        f"[{input_index}:a]atrim=0:{i.duration},asetpts=PTS-STARTPTS,"
-                        f"adelay={delay}:all=1,volume={i.fields.get('volume',0.8)}[s{input_index}]"
+                        f"[{input_index}:a]atrim={clip_in}:{clip_in + i.duration},"
+                        f"asetpts=PTS-STARTPTS,aresample=48000,"
+                        f"adelay=delays={delay_samples}S:all=1,"
+                        f"volume={float(i.fields.get('volume', 0.8)):.4f}[s{input_index}]"
                     )
                     amix.append(f"[s{input_index}]")
+
         if len(amix) == 1:
-            filters.append(f"{amix[0]}atrim=0:{total_duration},aresample=48000[a]")
+            filters.append(f"{amix[0]}atrim=0:{total_duration},aresample=48000[mixed]")
         else:
             filters.append(
                 f"{''.join(amix)}amix=inputs={len(amix)}:duration=first:normalize=0,"
-                f"atrim=0:{total_duration},aresample=48000[a]"
+                f"atrim=0:{total_duration},aresample=48000[mixed]"
             )
+        # Speech plus foley can sum past full scale even when every part was
+        # calibrated. A transparent brickwall costs nothing and is the
+        # difference between a clean master and one that crackles on a phone.
+        filters.append(
+            "[mixed]alimiter=limit=0.97:attack=1.5:release=60:level=disabled,"
+            "aresample=48000:first_pts=0[a]"
+        )
         fc = ";".join(filters)
-        cmd = [FFMPEG, "-y"]
+        cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-y"]
         for x in inputs:
             cmd += ["-i", x]
         cmd += [
             "-filter_complex", fc, "-map", "0:v", "-map", "[a]",
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "256k", "-shortest",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "256k", "-ar", "48000",
             "-movflags", "+faststart", str(partial),
         ]
         await run_cancelable(cmd, log, cancel, check=True)
         verified = probe(partial)
         if not verified.codec or verified.duration <= 0:
             raise RuntimeError("FFmpeg created an invalid output file")
+        final_frames = count_frames(partial)
+        with open(log, "a", encoding="utf-8") as handle:
+            handle.write(
+                f"final: {final_frames} frames / {verified.duration:.3f}s "
+                f"(expected {expected_frames} / {total_duration:.3f}s)\n"
+            )
+        if final_frames and abs(final_frames - expected_frames) > 1:
+            raise RuntimeError(
+                f"Final video lost frames ({final_frames} vs {expected_frames} expected)"
+            )
         os.replace(partial, final)
         shutil.rmtree(work, ignore_errors=True)
         await progress(name, done=True, file=f"exports/{final.name}",
@@ -2118,17 +2897,55 @@ async def export(name: str, mode: str, resolution: str = "source"):
 def run_self_tests() -> None:
     """Fast deterministic checks used by launch-independent verification."""
     _test_parser()
-    assert len(TEMPLATE_PACKS) == 9, sorted(TEMPLATE_PACKS)
+    assert len(TEMPLATE_PACKS) >= 30, sorted(TEMPLATE_PACKS)
     assert not TEMPLATE_ERRORS, TEMPLATE_ERRORS
+    colours: dict[str, str] = {}
     for spec in TEMPLATE_PACKS.values():
         folder = TEMPLATES_DIR / spec["_dir"]
-        assert (folder / "context_template.md").is_file()
         assert (folder / "render.js").is_file(), f"{spec['id']} has no renderer"
         assert spec["_has_render"] is True
+        assert spec.get("description"), f"{spec['id']} has no description for agents"
         for filename in spec.get("assets", []):
             assert (folder / filename).is_file(), (spec["id"], filename)
+        # Both orientations are mandatory: a template that only knows 16:9 would
+        # silently fall back to a 16:9 layout on a vertical cut.
+        for orientation in ORIENTATIONS:
+            variant = spec["_variants"][orientation]
+            assert 0 <= variant["x"] <= 1 and 0 <= variant["y"] <= 1, (spec["id"], orientation)
+        colour = spec["category_color"].upper()
+        assert colour not in colours, (spec["id"], colours.get(colour))
+        colours[colour] = spec["id"]
+        for sound in spec.get("sfx", []):
+            assert sfx_file(spec, sound["file"]).is_file(), (spec["id"], sound["file"])
+        for field in spec["fields"]:
+            assert field.get("description") or field.get("note") or field["type"] == "none", \
+                f"{spec['id']}.{field['name']} has no description for agents"
     assert not TEMPLATE_PACKS["punch-in"].get("sfx")
     assert not TEMPLATE_PACKS["zoom-out"].get("sfx")
+    assert camera_packs() >= {"punch-in", "zoom-out", "ken-burns"}
+
+    # A malformed motion block must fail loudly at scan time rather than render
+    # as something subtly wrong in an export three hours later.
+    for broken in (
+        {"in": {"type": "bounce"}},
+        {"in": {"type": "ease", "from": {"wobble": 1}}},
+        {"shadow": {"layers": 99}},
+        {"blur": {"max": 0}},
+    ):
+        try:
+            _check_motion(broken)
+            raise AssertionError(f"invalid motion accepted: {broken}")
+        except ValueError:
+            pass
+    _check_motion({"in": {"type": "spring", "stiffness": 200, "damping": 18, "ms": 500,
+                          "from": {"opacity": 0, "scale": .6, "y": -40, "rotate": -5}},
+                   "stagger": {"step_ms": 60, "elements": ["card", "text"]},
+                   "shadow": {"layers": 3}, "blur": {"max": 6}})
+    try:
+        _check_variants({"variants": {"horizontal": {"x": 0, "y": 0, "scale": 1}}})
+        raise AssertionError("a template missing its 9:16 variant was accepted")
+    except ValueError:
+        pass
 
     srt = "1\n00:00:00,000 --> 00:00:01,500\nHello world\n\n2\n00:00:01,500 --> 00:00:03,000\nSecond line\n"
     parsed_srt = parse_transcript(srt, "captions.srt")
@@ -2162,6 +2979,47 @@ def run_self_tests() -> None:
     })
     assert [round(event["time"], 2) for event in foley] == [3.2, 3.8, 4.4]
     assert all(event["gain"] == .2 for event in foley)
+
+    # A repeating sound counts lists, text lines and numbers alike, so a pack
+    # never needs a hidden field just to make its foley match what is drawn.
+    counting = Instance(id="c", template="checklist", start=0, duration=4, fields={
+        "items": "first\nsecond\nthird", "strokes": [{}, {}], "from": 4,
+    })
+    assert sfx_repeat_count(counting, "items") == 3
+    assert sfx_repeat_count(counting, "strokes") == 2
+    assert sfx_repeat_count(counting, "from") == 4
+    assert sfx_repeat_count(counting, "missing") == 1
+    assert sfx_repeat_count(counting, "") == 1
+
+    sentence_words = [
+        CaptionWord(w="One", s=0.0, e=0.3), CaptionWord(w="two", s=0.3, e=0.6),
+        CaptionWord(w="three", s=0.6, e=0.9), CaptionWord(w="four.", s=0.9, e=1.2),
+        CaptionWord(w="Next", s=1.3, e=1.6), CaptionWord(w="one.", s=1.6, e=1.9),
+    ]
+    assert len(group_caption_words(sentence_words, mode="sentence")) == 2
+    assert len(group_caption_words(sentence_words, mode="chunk", words_per_chunk=2)) == 3
+
+    # Orientation is derived from the footage unless it is explicitly pinned.
+    portrait = ProjectState(name="p", source_info=MediaInfo(width=1080, height=1920, duration=5))
+    assert portrait.orientation == "vertical"
+    landscape = ProjectState(name="l", source_info=MediaInfo(width=1920, height=1080, duration=5))
+    assert landscape.orientation == "horizontal"
+    pinned = ProjectState(
+        name="v", orientation_mode="vertical",
+        source_info=MediaInfo(width=1920, height=1080, duration=5),
+    )
+    assert pinned.orientation == "vertical"
+    layered = ProjectState(
+        name="k", source_info=MediaInfo(width=1920, height=1080, fps=30, duration=8),
+        instances=[Instance(id="i", template="keyword", start=1, duration=2,
+                            x=.4, y=.2, scale=.8)],
+    )
+    assert layered.instances[0].layouts["horizontal"].x == .4
+
+    # A caption dragged off the global placement keeps its own coordinates.
+    pinned_caption = CaptionBlock(id="c1", start=0, end=1, text="x",
+                                  follow_global=False, x=.3, y=.7)
+    assert pinned_caption.follow_global is False and pinned_caption.y == .7
 
     sample = ProjectState(
         name="selftest", source_info=MediaInfo(duration=10),
@@ -2211,6 +3069,62 @@ def run_self_tests() -> None:
     )
     assert "zoompan" in zoom_out_graph and "1-" in zoom_out_graph
 
+    # Every camera mode must produce a usable graph; a mode that silently fell
+    # back to "no transform" would make the export quietly disagree with the
+    # preview, which is the single worst failure this system can have.
+    for template_id in sorted(camera_packs()):
+        spec = TEMPLATE_PACKS[template_id]
+        camera_instance = Instance(
+            id=f"cam-{template_id}", template=template_id, start=1, duration=2,
+            fields={
+                "rect": {"x": .2, "y": .2, "w": .5, "h": .5},
+                "rect2": {"x": .3, "y": .25, "w": .4, "h": .45},
+            },
+        )
+        camera_state = punch_state.model_copy(update={"instances": [camera_instance]})
+        built = camera_filter_graph(
+            camera_state,
+            {"src_in": 1.0, "src_out": 2.0, "tl": 1.0, "dirty": True,
+             "camera": camera_instance.id},
+            30,
+        )
+        assert "zoompan" in built, (template_id, spec["camera"]["mode"], built)
+        assert "[base]" in built
+
+    drift = camera_plan(
+        punch_state.model_copy(update={"instances": [Instance(
+            id="kb", template="ken-burns", start=0, duration=4,
+            fields={"rect": {"x": .1, "y": .1, "w": .8, "h": .8},
+                    "rect2": {"x": .3, "y": .3, "w": .4, "h": .4}})]}),
+        Instance(id="kb", template="ken-burns", start=0, duration=4,
+                 fields={"rect": {"x": .1, "y": .1, "w": .8, "h": .8},
+                         "rect2": {"x": .3, "y": .3, "w": .4, "h": .4}}),
+        30,
+    )
+    assert drift["mode"] == "drift"
+    assert drift["second"]["zoom"] > drift["first"]["zoom"]
+
+    assert segment_frames({"src_in": 0.0, "src_out": 2.0}, 30) == 60
+    assert segment_frames({"src_in": 1.0, "src_out": 1.0166667}, 60) == 1
+    assert "h264_mp4toannexb" in bitstream_filter(
+        ProjectState(name="b", source_info=MediaInfo(codec="h264")))
+    assert "hevc_mp4toannexb" in bitstream_filter(
+        ProjectState(name="b", source_info=MediaInfo(codec="hevc")))
+    matched = video_encoder(
+        ProjectState(name="e", source_info=MediaInfo(codec="h264", profile="High",
+                                                     pix_fmt="yuv420p")),
+        nvenc=False,
+    )
+    assert "-profile:v" in matched and "high" in matched
+
+    edit = ProjectState(
+        name="tl", source_info=MediaInfo(width=640, height=360, fps=30, duration=12),
+        cuts=[Cut(src_in=0, src_out=4), Cut(src_in=8, src_out=12)],
+    )
+    assert abs(timeline_duration(edit) - 8.0) < 1e-6
+    assert abs(timeline_to_source(edit, 1.0) - 1.0) < 1e-6
+    assert abs(timeline_to_source(edit, 5.0) - 9.0) < 1e-6
+
     async def cancellation_check():
         event = asyncio.Event()
 
@@ -2242,7 +3156,11 @@ def run_self_tests() -> None:
     async def api_checks():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            assert (await client.get("/api/health")).json()["templates"] == 9
+            assert (await client.get("/api/health")).json()["templates"] >= 30
+            catalogue = (await client.get("/api/templates")).json()
+            assert len(catalogue["packs"]) >= 30
+            assert any(name.startswith("art/") for name in catalogue["shared"])
+            assert any(pack.get("camera") for pack in catalogue["packs"])
             assert (await client.get("/api/projects/does-not-exist/state")).status_code == 404
             assert (await client.get("/api/projects/does-not-exist/assets")).status_code == 404
             assert (await client.get("/api/projects/does-not-exist/directives")).status_code == 404
@@ -2301,6 +3219,42 @@ def run_self_tests() -> None:
             )
             assert transcript.status_code == 200 and len(transcript.json()["captions"]) == 2
 
+            words_json = json.dumps({"segments": [{"words": [
+                {"word": "alpha", "start": 0.0, "end": 0.4},
+                {"word": "beta", "start": 0.4, "end": 0.8},
+                {"word": "gamma.", "start": 0.8, "end": 1.2},
+                {"word": "delta", "start": 1.4, "end": 1.8},
+                {"word": "epsilon.", "start": 1.8, "end": 2.2},
+            ]}]})
+            imported = await client.post(
+                f"/api/projects/{test_name}/transcript",
+                files={"file": ("captions.json", words_json.encode("utf-8"), "application/json")},
+            )
+            assert imported.status_code == 200
+            readable = await client.get(f"/api/projects/{test_name}/transcript")
+            assert readable.status_code == 200
+            assert len(readable.json()["words"]) == 5
+            assert "alpha" in readable.json()["text"]
+            regrouped = await client.post(
+                f"/api/projects/{test_name}/captions/regroup",
+                json={"mode": "sentence", "words_per_chunk": 5},
+            )
+            assert regrouped.status_code == 200
+            assert len(regrouped.json()["captions"]) == 2
+            rechunked = await client.post(
+                f"/api/projects/{test_name}/captions/regroup",
+                json={"mode": "chunk", "words_per_chunk": 2},
+            )
+            assert len(rechunked.json()["captions"]) == 3
+
+            missing_asset = await client.get(
+                f"/api/projects/{test_name}/asset-info", params={"asset": "nope.png"})
+            assert missing_asset.status_code == 404
+            escape = await client.get(
+                f"/api/projects/{test_name}/asset-info",
+                params={"asset": "../../server.py"})
+            assert escape.status_code == 404
+
     try:
         asyncio.run(api_checks())
     finally:
@@ -2350,8 +3304,8 @@ def run_export_e2e_tests() -> None:
         source = folder / "source.mp4"
         run([
             FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3",
-            "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000:duration=3",
+            "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=12",
+            "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000:duration=12",
             "-c:v", "libx264", "-preset", "veryfast", "-g", "300",
             "-keyint_min", "300", "-sc_threshold", "0", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-shortest", str(source),
@@ -2365,6 +3319,68 @@ def run_export_e2e_tests() -> None:
         inserted_video = folder / "assets" / "insert.mp4"
         shutil.copy2(source, inserted_video)
         info = probe(source)
+        # One instance of every installed pack. This is the regression net that
+        # matters: a renderer that throws, a missing shared asset or a camera
+        # mode without a graph fails here rather than in somebody's export.
+        placeable = [
+            spec for spec in TEMPLATE_PACKS.values() if spec["id"] != "captions"
+        ]
+        sample_text = {
+            "text": "frame accurate", "term": "latency", "meaning": "the wait before a response",
+            "label": "throughput", "title": "Editoro", "value": "1280", "caption": "test card",
+            "items": "first item\nsecond item\nthird item", "left": "Before", "right": "After",
+            "left_note": "one", "right_note": "two", "author": "Editoro",
+            "code": "def render(frame):\n    return frame", "name": "Editoro",
+            "handle": "@editoro", "subtitle": "a section", "kicker": "watch this",
+            "top": "top text", "bottom": "bottom text", "number": "01", "kind": "SOURCE",
+            "badge": "VS",
+        }
+        instances: list[Instance] = []
+        slot = 0.30
+        for index, spec in enumerate(placeable):
+            fields: dict[str, Any] = {}
+            for field in spec["fields"]:
+                kind = field["type"]
+                if "default" in field:
+                    fields[field["name"]] = copy.deepcopy(field["default"])
+                elif kind in {"text", "textarea"}:
+                    fields[field["name"]] = sample_text.get(field["name"], "editoro")
+                elif kind == "asset:image":
+                    fields[field["name"]] = asset.name
+                elif kind == "asset:video":
+                    fields[field["name"]] = inserted_video.name
+                elif kind == "strokes":
+                    fields[field["name"]] = [{"x1": .18, "y": .42, "x2": .82},
+                                             {"x1": .22, "y": .55, "x2": .70}]
+                elif kind in {"rect", "rect2"}:
+                    fields[field["name"]] = {"x": .22, "y": .20, "w": .50, "h": .55}
+                elif kind == "number":
+                    fields[field["name"]] = float(field.get("default", field.get("min", 1)))
+                elif kind == "select":
+                    fields[field["name"]] = field["options"][0]
+                elif kind == "boolean":
+                    fields[field["name"]] = True
+                elif kind == "color":
+                    fields[field["name"]] = "#FFD166"
+                if kind in {"text", "textarea"} and not fields.get(field["name"]):
+                    fields[field["name"]] = sample_text.get(field["name"], "editoro")
+            variant = spec["_variants"]["horizontal"]
+            instances.append(Instance(
+                id=f"e2e-{spec['id']}",
+                template=spec["id"],
+                # Cameras are put on their own low tracks and never overlap each
+                # other; two camera moves at once is not a supported edit.
+                track=1 + (index % 6),
+                start=round(0.2 + index * slot, 3),
+                duration=slot * 0.8,
+                x=float(variant["x"]), y=float(variant["y"]),
+                scale=float(variant["scale"]) * 0.7,
+                fields=fields,
+            ))
+        cameras = [item for item in instances if item.template in camera_packs()]
+        for order, item in enumerate(cameras):
+            item.track = 1
+            item.start = round(0.2 + (len(placeable) + order) * slot, 3)
         state = ProjectState(
             name=name,
             source=source.name,
@@ -2373,49 +3389,21 @@ def run_export_e2e_tests() -> None:
                 Cut(src_in=0, src_out=1.4),
                 Cut(src_in=1.8, src_out=info.duration),
             ],
-            instances=[
-                Instance(
-                    id="ambient", template="ambient", track=1, start=.1, duration=.4,
-                ),
-                Instance(
-                    id="image", template="image-pop", track=2, start=.2, duration=.6,
-                    x=.72, y=.35, scale=.7, fields={"asset": asset.name},
-                ),
-                Instance(
-                    id="highlight", template="highlight", track=3, start=.4, duration=.8,
-                    x=.32, y=.34, scale=.65,
-                    fields={
-                        "asset": asset.name,
-                        "page": 1,
-                        "strokes": [{"x1": .18, "y": .42, "x2": .82}],
-                    },
-                ),
-                Instance(
-                    id="screen", template="screen", track=4, start=.8, duration=.6,
-                    x=.65, y=.64, scale=.55, fields={"asset": asset.name},
-                ),
-                Instance(
-                    id="punch", template="punch-in", track=5, start=1, duration=.8,
-                    fields={"rect": {"x": .25, "y": .25, "w": .5, "h": .5}},
-                ),
-                Instance(
-                    id="zoom-out", template="zoom-out", track=6, start=2, duration=.5,
-                    fields={"rect": {"x": .2, "y": .2, "w": .6, "h": .6}},
-                ),
-                Instance(
-                    id="video", template="video-clip", track=2, start=1.4, duration=.6,
-                    x=.28, y=.66, scale=.55,
-                    fields={"asset": inserted_video.name, "volume": .25},
-                ),
-                Instance(
-                    id="keyword", template="keyword", track=3, start=2.1, duration=.5,
-                    x=.5, y=.15, scale=.8, fields={"text": "frame accurate"},
-                ),
-            ],
+            instances=instances,
             captions=[
-                CaptionBlock(id="caption", start=.3, end=1.2, text="Editoro export test"),
+                CaptionBlock(
+                    id="caption", start=.3, end=1.2, text="Editoro export test",
+                    words=[
+                        CaptionWord(w="Editoro", s=.3, e=.6),
+                        CaptionWord(w="export", s=.6, e=.9),
+                        CaptionWord(w="test", s=.9, e=1.2),
+                    ],
+                ),
+                CaptionBlock(id="pinned", start=1.4, end=2.2, text="pinned caption",
+                             follow_global=False, x=.30, y=.24),
             ],
         )
+        assert len(state.instances) == len(placeable), "an instance was dropped by validation"
         save_state(state)
         expected_duration = sum(cut.src_out - cut.src_in for cut in state.cuts)
         for mode, resolution, expected_width in (("hq", "720", 1280), ("lossless", "source", 640)):
@@ -2431,7 +3419,14 @@ def run_export_e2e_tests() -> None:
             export_log = (folder / "exports" / "export.log").read_text(errors="replace")
             assert "EXPORT FAILED" not in export_log
             assert "image2pipe" in export_log and "f%06d.png" not in export_log
-        print("synthetic HQ + smart-lossless export tests OK")
+            assert "Template renderer error" not in export_log
+            assert "mpegts" in export_log, "spans must be joined through MPEG-TS"
+        # A still has to come back from the same renderer, or the MCP server and
+        # any agent looking at its own work are running blind.
+        still = asyncio.run(render_still(name, 0.5, width=320))
+        assert still[:8] == b"\x89PNG\r\n\x1a\n" and len(still) > 2000
+        print(f"synthetic HQ + smart-lossless export tests OK "
+              f"({len(state.instances)} template packs, 2 modes, still frame)")
     finally:
         shutil.rmtree(folder, ignore_errors=True)
 

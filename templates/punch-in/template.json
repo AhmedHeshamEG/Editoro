@@ -1,8 +1,57 @@
-{ "id":"punch-in","version":4,"display_name":"زوم · Punch-in","category_color":"#FF6B6B",
-  "directive_verb":"زوم",
-  "fields":[{"name":"rect","label":"Zoom target","type":"rect","default":{"x":0.22,"y":0.16,"w":0.56,"h":0.64},"note":"target rect drawn on preview; drag a new box directly on the preview"}],
-  "zones":{"horizontal":{"x":0.5,"y":0.5,"scale":1.0},"vertical":{"x":0.5,"y":0.5,"scale":1.0}},
-  "animation":{"entrance":"zoom-in","entrance_ms":450,"hold":"held zoom","exit":"zoom-out","exit_ms":400,"easing":"outCubic"},
-  "sfx":[],
-  "assets":[],
-  "default_duration":3.0 }
+{
+  "id": "punch-in",
+  "version": 5,
+  "schema": 2,
+  "display_name": "زوم · Punch-in",
+  "category": "camera",
+  "category_color": "#FF6B6B",
+  "directive_verb": "زوم",
+  "description": "Eases the camera in on a region of the speaker, holds, then eases back out. Draws nothing itself — it moves the footage.",
+  "fields": [
+    {
+      "name": "rect",
+      "label": "Zoom target",
+      "type": "rect",
+      "default": {
+        "x": 0.22,
+        "y": 0.16,
+        "w": 0.56,
+        "h": 0.64
+      },
+      "description": "Target region in 0..1 frame coordinates. Smaller means a tighter punch."
+    }
+  ],
+  "camera": {
+    "mode": "hold",
+    "easing": "outCubic"
+  },
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "ease",
+      "easing": "outCubic",
+      "ms": 460,
+      "from": {}
+    },
+    "out": {
+      "type": "ease",
+      "easing": "outCubic",
+      "ms": 420,
+      "to": {}
+    }
+  },
+  "sfx": [],
+  "assets": [],
+  "default_duration": 3.0
+}

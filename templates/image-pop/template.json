@@ -1,8 +1,115 @@
-{ "id":"image-pop","version":4,"display_name":"صورة · Image pop","category_color":"#4ECDC4",
-  "directive_verb":"صورة",
-  "fields":[{"name":"asset","label":"Image","type":"asset:image","note":"PNG, JPEG, WebP, GIF, or PDF"},{"name":"page","label":"PDF page index","type":"number","control":"integer","min":0,"max":999,"step":1,"default":0,"note":"zero-based; ignored for images"}],
-  "zones":{"horizontal":{"x":0.72,"y":0.35,"scale":1.0},"vertical":{"x":0.5,"y":0.28,"scale":0.9}},
-  "animation":{"entrance":"drop-settle","entrance_ms":420,"hold":"static","exit":"shrink-fade","exit_ms":260,"easing":"outBack"},
-  "sfx":[{"file":"paper-slide.wav","offset":0.03,"gain":0.24}],
-  "assets":["frame.png","paper-texture.png"],
-  "default_duration":4.0 }
+{
+  "id": "image-pop",
+  "version": 5,
+  "schema": 2,
+  "display_name": "صورة · Image pop",
+  "category": "image",
+  "category_color": "#4ECDC4",
+  "directive_verb": "صورة",
+  "description": "A photo dropped onto the desk as a polaroid, optionally captioned in the white margin.",
+  "fields": [
+    {
+      "name": "asset",
+      "label": "Image",
+      "type": "asset:image",
+      "description": "PNG, JPEG, WebP, GIF or a PDF page."
+    },
+    {
+      "name": "page",
+      "label": "PDF page index",
+      "type": "number",
+      "control": "integer",
+      "min": 0,
+      "max": 999,
+      "step": 1,
+      "default": 0,
+      "description": "Zero-based page for PDF assets; ignored for images."
+    },
+    {
+      "name": "caption",
+      "label": "Margin caption",
+      "type": "text",
+      "max_length": 48,
+      "default": "",
+      "description": "Optional handwritten-style caption under the photo."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.735,
+      "y": 0.35,
+      "scale": 1.0,
+      "max_width": 0.42,
+      "max_height": 0.56
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.3,
+      "scale": 0.95,
+      "max_width": 0.84,
+      "max_height": 0.4
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 165,
+      "damping": 15,
+      "ms": 760,
+      "from": {
+        "opacity": 0,
+        "scale": 0.72,
+        "y": -190,
+        "rotate": -9
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 280,
+      "to": {
+        "opacity": 0,
+        "scale": 0.94,
+        "y": 26,
+        "rotate": 3
+      }
+    },
+    "stagger": {
+      "step_ms": 55,
+      "elements": [
+        "frame",
+        "photo",
+        "tape",
+        "caption"
+      ]
+    },
+    "idle": {
+      "amplitude": 0.0022,
+      "hz": 0.11
+    },
+    "blur": {
+      "motion": true,
+      "max": 8
+    },
+    "shadow": {
+      "layers": 3,
+      "elevation": 34,
+      "opacity": 0.5,
+      "lift": true
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/paper-drop.wav",
+      "offset": 0.05,
+      "gain": 0.5
+    },
+    {
+      "file": "_shared/sfx/tape-peel.wav",
+      "offset": 0.16,
+      "gain": 0.22
+    }
+  ],
+  "assets": [],
+  "default_duration": 4.0
+}

@@ -1,0 +1,103 @@
+{
+  "id": "definition",
+  "version": 1,
+  "schema": 2,
+  "display_name": "تعريف · Definition",
+  "category": "text",
+  "category_color": "#7DD3A0",
+  "directive_verb": "تعريف",
+  "description": "A dictionary-style card: the term, then what it means. Use the first time a piece of jargon is spoken.",
+  "fields": [
+    {
+      "name": "term",
+      "label": "Term",
+      "type": "text",
+      "max_length": 40,
+      "default": "",
+      "description": "The word being defined, exactly as it was said."
+    },
+    {
+      "name": "meaning",
+      "label": "Definition",
+      "type": "textarea",
+      "max_length": 200,
+      "default": "",
+      "description": "The plain-language definition. One or two lines."
+    },
+    {
+      "name": "kind",
+      "label": "Part of speech",
+      "type": "text",
+      "max_length": 20,
+      "default": "",
+      "description": "Optional italic hint such as noun or verb."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.74,
+      "scale": 1.0,
+      "max_width": 0.56,
+      "max_lines": 3
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.66,
+      "scale": 0.95,
+      "max_width": 0.88,
+      "max_lines": 4
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 210,
+      "damping": 20,
+      "ms": 620,
+      "from": {
+        "opacity": 0,
+        "scale": 0.9,
+        "y": 60,
+        "rotate": 0
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 250,
+      "to": {
+        "opacity": 0,
+        "scale": 0.93,
+        "y": 16
+      }
+    },
+    "shadow": {
+      "layers": 3,
+      "elevation": 26,
+      "opacity": 0.46,
+      "lift": true
+    },
+    "blur": {
+      "motion": true,
+      "max": 7
+    },
+    "stagger": {
+      "step_ms": 66,
+      "elements": [
+        "card",
+        "term",
+        "meaning"
+      ]
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/soft-click.wav",
+      "offset": 0.03,
+      "gain": 0.42
+    }
+  ],
+  "assets": [],
+  "default_duration": 4.5
+}

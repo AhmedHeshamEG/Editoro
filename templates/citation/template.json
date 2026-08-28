@@ -1,0 +1,79 @@
+{
+  "id": "citation",
+  "version": 1,
+  "schema": 2,
+  "display_name": "مصدر · Source",
+  "category": "text",
+  "category_color": "#A8A29E",
+  "directive_verb": "مصدر",
+  "description": "A small stamped source line in a corner, for citing a study, article or dataset while it is being referenced.",
+  "fields": [
+    {
+      "name": "text",
+      "label": "Source",
+      "type": "text",
+      "max_length": 90,
+      "default": "",
+      "description": "Publication, author and year, or the URL."
+    },
+    {
+      "name": "kind",
+      "label": "Kind",
+      "type": "text",
+      "max_length": 16,
+      "default": "SOURCE",
+      "description": "The small word above the line, e.g. SOURCE or STUDY."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.245,
+      "y": 0.9,
+      "scale": 1.0,
+      "max_width": 0.4
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.9,
+      "scale": 0.95,
+      "max_width": 0.86
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 300,
+      "damping": 17,
+      "ms": 480,
+      "from": {
+        "opacity": 0,
+        "scale": 1.22,
+        "rotate": -3
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 220,
+      "to": {
+        "opacity": 0,
+        "scale": 0.96
+      }
+    },
+    "shadow": {
+      "layers": 2,
+      "elevation": 14,
+      "opacity": 0.4,
+      "lift": false
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/stamp.wav",
+      "offset": 0.0,
+      "gain": 0.34
+    }
+  ],
+  "assets": [],
+  "default_duration": 3.5
+}

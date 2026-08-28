@@ -1,0 +1,96 @@
+{
+  "id": "quote-card",
+  "version": 1,
+  "schema": 2,
+  "display_name": "اقتباس · Quote",
+  "category": "text",
+  "category_color": "#E8A0BF",
+  "directive_verb": "اقتباس",
+  "description": "A pull quote on paper with an oversized quotation mark and an optional attribution line.",
+  "fields": [
+    {
+      "name": "text",
+      "label": "Quote",
+      "type": "textarea",
+      "max_length": 220,
+      "default": "",
+      "description": "The quoted words. Keep it to what fits on screen while it is being read."
+    },
+    {
+      "name": "author",
+      "label": "Attribution",
+      "type": "text",
+      "max_length": 48,
+      "default": "",
+      "description": "Who said it. Shown smaller, under the quote."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0,
+      "max_width": 0.58,
+      "max_lines": 4
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.42,
+      "scale": 0.95,
+      "max_width": 0.86,
+      "max_lines": 6
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 180,
+      "damping": 19,
+      "ms": 700,
+      "from": {
+        "opacity": 0,
+        "scale": 0.86,
+        "y": -34,
+        "rotate": 2
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 250,
+      "to": {
+        "opacity": 0,
+        "scale": 0.93,
+        "y": 16
+      }
+    },
+    "shadow": {
+      "layers": 3,
+      "elevation": 30,
+      "opacity": 0.46,
+      "lift": true
+    },
+    "blur": {
+      "motion": true,
+      "max": 7
+    },
+    "stagger": {
+      "step_ms": 62,
+      "elements": [
+        "card",
+        "mark",
+        "text",
+        "author"
+      ]
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/paper-slide.wav",
+      "offset": 0.0,
+      "gain": 0.4
+    }
+  ],
+  "assets": [],
+  "default_duration": 5.0
+}

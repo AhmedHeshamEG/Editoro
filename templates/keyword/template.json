@@ -1,8 +1,99 @@
-{ "id":"keyword","version":4,"display_name":"نص · Keyword","category_color":"#FFD166",
-  "directive_verb":"نص",
-  "fields":[{"name":"text","label":"Verbatim keyword","type":"text","max_length":64,"default":"","note":"verbatim spoken words only; maximum two short lines"}],
-  "zones":{"horizontal":{"x":0.5,"y":0.14,"scale":1.0},"vertical":{"x":0.5,"y":0.18,"scale":0.85}},
-  "animation":{"entrance":"pop-overshoot","entrance_ms":350,"hold":"static","exit":"shrink-fade","exit_ms":220,"easing":"outBack"},
-  "sfx":[{"file":"tactile-click.wav","offset":0.0,"gain":0.22}],
-  "assets":["paper-texture.png","Rubik-Latin-Variable.woff2","Rubik-Arabic-Variable.woff2"],
-  "default_duration":2.5 }
+{
+  "id": "keyword",
+  "version": 5,
+  "schema": 2,
+  "display_name": "نص · Keyword",
+  "category": "text",
+  "category_color": "#FFD166",
+  "directive_verb": "نص",
+  "description": "A verbatim spoken phrase on a notebook card. Use it to pin the exact words being said; never paraphrase.",
+  "fields": [
+    {
+      "name": "text",
+      "label": "Verbatim keyword",
+      "type": "text",
+      "max_length": 64,
+      "default": "",
+      "description": "The words actually spoken, verbatim. Two short lines maximum."
+    }
+  ],
+  "variants": {
+    "base": {
+      "scale": 1.0,
+      "max_lines": 2
+    },
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.155,
+      "scale": 1.0,
+      "max_width": 0.6,
+      "font": 62
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.185,
+      "scale": 0.92,
+      "max_width": 0.84,
+      "font": 58
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 220,
+      "damping": 17,
+      "ms": 620,
+      "from": {
+        "opacity": 0,
+        "scale": 0.58,
+        "y": -78,
+        "rotate": -7
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 240,
+      "to": {
+        "opacity": 0,
+        "scale": 0.92,
+        "y": 14
+      }
+    },
+    "stagger": {
+      "step_ms": 62,
+      "elements": [
+        "card",
+        "text"
+      ]
+    },
+    "idle": {
+      "amplitude": 0.0028,
+      "hz": 0.13
+    },
+    "blur": {
+      "motion": true,
+      "max": 7
+    },
+    "shadow": {
+      "layers": 3,
+      "elevation": 26,
+      "opacity": 0.46,
+      "lift": true
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/tactile-click.wav",
+      "offset": 0.02,
+      "gain": 0.55
+    },
+    {
+      "file": "_shared/sfx/paper-drop.wav",
+      "offset": 0.0,
+      "gain": 0.28
+    }
+  ],
+  "assets": [],
+  "default_duration": 2.5
+}

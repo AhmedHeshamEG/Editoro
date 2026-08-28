@@ -1,8 +1,56 @@
-{ "id":"ambient","version":3,"display_name":"Ambient","category_color":"#4A5568",
-  "directive_verb":null,
-  "fields":[],
-  "zones":{"horizontal":{"x":0.5,"y":0.5,"scale":1.0},"vertical":{"x":0.5,"y":0.5,"scale":1.0}},
-  "animation":{"entrance":"fade","entrance_ms":800,"hold":"slow seeded drifting soft light, looping, non-distracting","exit":"fade","exit_ms":800,"easing":"linear"},
-  "sfx":[],
-  "assets":["ambient-paper.png"],
-  "default_duration":15.0 }
+{
+  "id": "ambient",
+  "version": 5,
+  "schema": 2,
+  "display_name": "Ambient",
+  "category": "ambient",
+  "category_color": "#4A5568",
+  "directive_verb": null,
+  "description": "A calm full-frame paper layer with slowly drifting light. Non-distracting; use it under long stretches of pure talking.",
+  "fields": [
+    {
+      "name": "intensity",
+      "label": "Intensity",
+      "type": "number",
+      "min": 0.05,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.35,
+      "description": "Overall opacity of the layer. Keep it low; this is a texture, not a background."
+    }
+  ],
+  "full_frame": true,
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "ease",
+      "easing": "outSine",
+      "ms": 900,
+      "from": {
+        "opacity": 0
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inOutSine",
+      "ms": 900,
+      "to": {
+        "opacity": 0
+      }
+    }
+  },
+  "sfx": [],
+  "assets": [],
+  "default_duration": 15.0
+}

@@ -1,0 +1,86 @@
+{
+  "id": "steps",
+  "version": 1,
+  "schema": 2,
+  "display_name": "خطوات · Steps",
+  "category": "text",
+  "category_color": "#38BDF8",
+  "directive_verb": "خطوات",
+  "description": "A numbered sequence that fills in one step at a time, with a connecting line drawn between them. Use for processes described in order.",
+  "fields": [
+    {
+      "name": "items",
+      "label": "Steps",
+      "type": "textarea",
+      "max_length": 320,
+      "default": "",
+      "description": "One step per line, or separated by |. Up to 5 steps."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.7,
+      "scale": 1.0,
+      "max_width": 0.8,
+      "stack": false
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 0.95,
+      "max_width": 0.82,
+      "stack": true
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 230,
+      "damping": 20,
+      "ms": 560,
+      "from": {
+        "opacity": 0,
+        "scale": 0.6,
+        "y": 26
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 240,
+      "to": {
+        "opacity": 0,
+        "scale": 0.9
+      }
+    },
+    "stagger": {
+      "step_ms": 150,
+      "elements": [
+        "line",
+        "step0",
+        "step1",
+        "step2",
+        "step3",
+        "step4"
+      ]
+    },
+    "shadow": {
+      "layers": 2,
+      "elevation": 18,
+      "opacity": 0.42,
+      "lift": false
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/soft-click.wav",
+      "offset": 0.16,
+      "gain": 0.34,
+      "repeat_field": "items",
+      "repeat_spacing": 0.15
+    }
+  ],
+  "assets": [],
+  "default_duration": 6.0
+}

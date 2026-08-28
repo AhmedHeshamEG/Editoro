@@ -1,9 +1,52 @@
-{ "id":"captions","version":3,"display_name":"Captions","category_color":"#F2F2F2",
-  "directive_verb":null,
-  "fields":[],
-  "zones":{"horizontal":{"x":0.5,"y":0.88,"scale":1.0},"vertical":{"x":0.5,"y":0.8,"scale":1.0}},
-  "animation":{"entrance":"none","entrance_ms":0,"hold":"static","exit":"none","exit_ms":0,"easing":"linear"},
-  "sfx":[],
-  "style":{"font":"Rubik","size":42,"y":0.88,"color":"#F2F2F2","bg":"#000000aa"},
-  "assets":["Inter-Latin-Variable.woff2","Rubik-Latin-Variable.woff2","Rubik-Arabic-Variable.woff2","paper-texture.png"],
-  "default_duration":0 }
+{
+  "id": "captions",
+  "version": 5,
+  "schema": 2,
+  "display_name": "Captions",
+  "category": "captions",
+  "category_color": "#F2F2F2",
+  "directive_verb": null,
+  "description": "The caption style. Placement, sentence/chunk mode and the active-word highlight are project settings, not per-instance fields.",
+  "fields": [],
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.86,
+      "scale": 1.0,
+      "max_width": 0.84
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.78,
+      "scale": 1.0,
+      "max_width": 0.9
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "ease",
+      "easing": "outCubic",
+      "ms": 120,
+      "from": {
+        "opacity": 0,
+        "y": 10,
+        "scale": 0.985
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 100,
+      "to": {
+        "opacity": 0
+      }
+    }
+  },
+  "sfx": [],
+  "assets": [
+    "Inter-Latin-Variable.woff2",
+    "Rubik-Latin-Variable.woff2",
+    "Rubik-Arabic-Variable.woff2"
+  ],
+  "default_duration": 0
+}

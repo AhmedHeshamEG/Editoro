@@ -1,66 +1,74 @@
-const templateId = "highlight";
+import {
+  paperCard, roundRectPath, fitContain, highlighterSweep, placeholder,
+} from "/tpl/_shared/kit.js";
 
-function imageFor(instance, assets) {
-  return assets.load(assets.instanceAssetUrl(instance));
+const ID = "highlight";
+const SWEEP_START = 0.14;
+const SWEEP_SPAN = 0.58;
+
+function pageBox(instance, A, viewport) {
+  const u = A.viewportUnit(viewport);
+  const variant = A.variant(ID);
+  const scale = instance.scale * (variant.scale || 1);
+  const image = A.load(A.instanceAssetUrl(instance));
+  const ready = Boolean(image?.complete && image.naturalWidth);
+  const box = fitContain(
+    ready ? image.naturalWidth : 3,
+    ready ? image.naturalHeight : 4,
+    viewport.width * (variant.max_width || 0.46) * scale,
+    viewport.height * (variant.max_height || 0.8) * scale,
+  );
+  return { u, scale, image, ready, box, margin: 16 * u * scale };
 }
 
-function geometry(instance, assets, viewport) {
-  const image = imageFor(instance, assets);
-  const ready = image?.complete && image.naturalWidth;
-  const imageWidth = ready ? image.naturalWidth : 600;
-  const imageHeight = ready ? image.naturalHeight : 800;
-  const unit = assets.viewportUnit(viewport);
-  const width = Math.min(620 * unit, imageWidth * unit) * instance.scale;
-  return {image, ready, unit, w: width, h: width * imageHeight / imageWidth};
-}
+registerTemplate(ID, {
+  draw(ctx, instance, t, A) {
+    const g = pageBox(instance, A, ctx.canvas);
+    const width = g.box.w + g.margin * 2, height = g.box.h + g.margin * 2;
+    const page = A.motion(instance, t, "page");
+    const marks = A.motion(instance, t, "marks");
 
-registerTemplate(templateId, {
-  draw(ctx, instance, t, assets) {
-    const envelope = assets.envelope(instance, t);
-    const shape = geometry(instance, assets, ctx.canvas);
-    ctx.save();
-    ctx.globalAlpha = envelope.phase === "hold" ? 1 : assets.easeOut(envelope.k);
-    ctx.fillStyle = "#faf6ec";
-    ctx.shadowColor = "#0008";
-    ctx.shadowBlur = 18 * shape.unit;
-    ctx.beginPath();
-    ctx.roundRect(-shape.w / 2 - 15 * shape.unit, -shape.h / 2 - 15 * shape.unit,
-      shape.w + 30 * shape.unit, shape.h + 30 * shape.unit, 7 * shape.unit);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    if (shape.ready) ctx.drawImage(shape.image, -shape.w / 2, -shape.h / 2, shape.w, shape.h);
-    const strokes = instance.fields.strokes || [];
-    const progress = Math.min(1, Math.max(0, (t - 0.12) / 0.6));
-    const texture = assets.load(assets.templateAsset(templateId, "stroke.png"));
-    strokes.forEach((stroke, index) => {
-      const amount = Math.min(1, Math.max(0, progress * strokes.length - index));
-      if (amount <= 0) return;
-      const x1 = -shape.w / 2 + stroke.x1 * shape.w;
-      const x2 = -shape.w / 2 + stroke.x2 * shape.w;
-      const y = -shape.h / 2 + stroke.y * shape.h;
-      const width = (x2 - x1) * assets.easeOut(amount);
-      const height = shape.h * 0.065;
-      if (texture?.complete && texture.naturalWidth) {
-        ctx.drawImage(texture, 0, 0, texture.naturalWidth * assets.easeOut(amount), texture.naturalHeight,
-          x1, y - height / 2, width, height);
-      } else {
-        ctx.strokeStyle = `${assets.categoryColor(templateId)}99`;
-        ctx.lineWidth = height;
-        ctx.lineCap = "round";
-        ctx.beginPath();
-        ctx.moveTo(x1, y);
-        ctx.lineTo(x1 + width, y);
-        ctx.stroke();
-      }
+    A.stage(ctx, page, () => {
+      A.shadow(ctx, page.shadowSpec,
+        c => roundRectPath(c, -width / 2, -height / 2, width, height, 5 * g.u));
+      paperCard(ctx, A, { w: width, h: height, radius: 5, seed: instance.id,
+        texture: "paper-white.png" });
+      ctx.save();
+      roundRectPath(ctx, -g.box.w / 2, -g.box.h / 2, g.box.w, g.box.h, 2 * g.u);
+      ctx.clip();
+      if (g.ready) ctx.drawImage(g.image, -g.box.w / 2, -g.box.h / 2, g.box.w, g.box.h);
+      else placeholder(ctx, A, { w: g.box.w, h: g.box.h, label: "PAGE" });
+      ctx.restore();
     });
-    ctx.restore();
+
+    const strokes = Array.isArray(instance.fields.strokes) ? instance.fields.strokes : [];
+    if (!strokes.length) return;
+    // Each stroke starts after the one before it finishes: the marker is one
+    // hand moving down the page, not several strokes appearing at once.
+    const overall = A.ease.outCubic(
+      Math.max(0, Math.min(1, (t - SWEEP_START) / SWEEP_SPAN)));
+    A.stage(ctx, marks, () => {
+      strokes.forEach((stroke, index) => {
+        const progress = Math.max(0, Math.min(1, overall * strokes.length - index));
+        if (progress <= 0) return;
+        const x1 = -g.box.w / 2 + Math.min(stroke.x1, stroke.x2) * g.box.w;
+        const x2 = -g.box.w / 2 + Math.max(stroke.x1, stroke.x2) * g.box.w;
+        const y = -g.box.h / 2 + stroke.y * g.box.h;
+        highlighterSweep(ctx, A, {
+          x: x1, y, w: x2 - x1,
+          h: (stroke.h ? stroke.h * g.box.h : g.box.h * 0.038),
+          progress: A.ease.outQuad(progress), opacity: 0.82,
+        });
+      });
+    });
   },
-  measure(instance, assets, viewport) {
-    const shape = geometry(instance, assets, viewport);
-    return {width: shape.w + 30 * shape.unit, height: shape.h + 30 * shape.unit};
+  /** Bounds of the page itself — the stroke editor draws in these coordinates. */
+  contentMeasure(instance, A, viewport) {
+    const g = pageBox(instance, A, viewport);
+    return { width: g.box.w, height: g.box.h };
   },
-  contentMeasure(instance, assets, viewport) {
-    const shape = geometry(instance, assets, viewport);
-    return {width: shape.w, height: shape.h};
+  measure(instance, A, viewport) {
+    const g = pageBox(instance, A, viewport);
+    return { width: g.box.w + g.margin * 2, height: g.box.h + g.margin * 2 };
   },
 });

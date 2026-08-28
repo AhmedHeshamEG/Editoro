@@ -1,0 +1,97 @@
+{
+  "id": "pip-speaker",
+  "version": 1,
+  "schema": 2,
+  "display_name": "نافذة · PiP speaker",
+  "category": "video",
+  "category_color": "#2DD4BF",
+  "directive_verb": null,
+  "description": "Fills the frame with an image or clip and leaves the speaker showing through a small rounded window in a corner.",
+  "fields": [
+    {
+      "name": "asset",
+      "label": "Full-frame image",
+      "type": "asset:image",
+      "description": "Image that fills the frame behind the speaker window."
+    },
+    {
+      "name": "clip",
+      "label": "Full-frame clip",
+      "type": "asset:video",
+      "description": "Optional video; takes priority over the image."
+    },
+    {
+      "name": "corner",
+      "label": "Speaker corner",
+      "type": "select",
+      "default": "bottom-right",
+      "options": [
+        "bottom-right",
+        "bottom-left",
+        "top-right",
+        "top-left"
+      ],
+      "description": "Which corner the speaker window sits in."
+    },
+    {
+      "name": "size",
+      "label": "Window size",
+      "type": "number",
+      "min": 0.12,
+      "max": 0.45,
+      "step": 0.01,
+      "default": 0.26,
+      "description": "Speaker window width as a fraction of the frame."
+    },
+    {
+      "name": "volume",
+      "label": "Clip volume",
+      "type": "number",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.6,
+      "description": "Volume of the full-frame clip's own audio, 0 to 1."
+    }
+  ],
+  "full_frame": true,
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "ease",
+      "easing": "outCubic",
+      "ms": 420,
+      "from": {
+        "opacity": 0
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 320,
+      "to": {
+        "opacity": 0
+      }
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/latch.wav",
+      "offset": 0.06,
+      "gain": 0.34
+    }
+  ],
+  "assets": [],
+  "default_duration": 6.0
+}

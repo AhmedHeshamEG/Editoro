@@ -1,0 +1,92 @@
+{
+  "id": "equation",
+  "version": 1,
+  "schema": 2,
+  "display_name": "معادلة · Equation",
+  "category": "text",
+  "category_color": "#C4B5FD",
+  "directive_verb": "معادلة",
+  "description": "A formula on a squared-paper card, with an optional caption naming what it computes.",
+  "fields": [
+    {
+      "name": "text",
+      "label": "Equation",
+      "type": "text",
+      "max_length": 90,
+      "default": "",
+      "description": "Written as plain text, e.g. E = mc². Superscripts are typed literally."
+    },
+    {
+      "name": "caption",
+      "label": "Caption",
+      "type": "text",
+      "max_length": 60,
+      "default": "",
+      "description": "What the formula computes. Optional, shown small underneath."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.32,
+      "scale": 1.0,
+      "max_width": 0.52
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.34,
+      "scale": 0.95,
+      "max_width": 0.88
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 205,
+      "damping": 18,
+      "ms": 660,
+      "from": {
+        "opacity": 0,
+        "scale": 0.78,
+        "y": -40,
+        "rotate": -2
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 250,
+      "to": {
+        "opacity": 0,
+        "scale": 0.94
+      }
+    },
+    "stagger": {
+      "step_ms": 74,
+      "elements": [
+        "card",
+        "formula",
+        "caption"
+      ]
+    },
+    "blur": {
+      "motion": true,
+      "max": 6
+    },
+    "shadow": {
+      "layers": 3,
+      "elevation": 26,
+      "opacity": 0.46,
+      "lift": true
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/pencil-tick.wav",
+      "offset": 0.05,
+      "gain": 0.34
+    }
+  ],
+  "assets": [],
+  "default_duration": 4.0
+}

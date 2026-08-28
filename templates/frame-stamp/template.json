@@ -1,0 +1,77 @@
+{
+  "id": "frame-stamp",
+  "version": 1,
+  "schema": 2,
+  "display_name": "لقطة · Snapshot",
+  "category": "camera",
+  "category_color": "#06B6D4",
+  "directive_verb": null,
+  "description": "Marks one moment as a captured shot: a brief flash, corner crop marks and a label. Use it when calling attention to what is on screen right now.",
+  "fields": [
+    {
+      "name": "label",
+      "label": "Label",
+      "type": "text",
+      "max_length": 40,
+      "default": "",
+      "description": "Short caption stamped in the corner. Optional."
+    },
+    {
+      "name": "flash",
+      "label": "Flash",
+      "type": "number",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.5,
+      "description": "Strength of the white flash on the first frames. 0 is off."
+    }
+  ],
+  "full_frame": true,
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "ease",
+      "easing": "outQuart",
+      "ms": 320,
+      "from": {
+        "opacity": 0
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 260,
+      "to": {
+        "opacity": 0
+      }
+    },
+    "stagger": {
+      "step_ms": 90,
+      "elements": [
+        "marks",
+        "label"
+      ]
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/shutter.wav",
+      "offset": 0.0,
+      "gain": 0.46
+    }
+  ],
+  "assets": [],
+  "default_duration": 2.0
+}

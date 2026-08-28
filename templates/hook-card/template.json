@@ -1,0 +1,90 @@
+{
+  "id": "hook-card",
+  "version": 1,
+  "schema": 2,
+  "display_name": "خطّاف · Hook",
+  "category": "structure",
+  "category_color": "#FB7185",
+  "directive_verb": null,
+  "description": "The opening claim, set large across the frame with a marker underline. Use once, at the top of a video.",
+  "fields": [
+    {
+      "name": "text",
+      "label": "Hook",
+      "type": "textarea",
+      "max_length": 120,
+      "default": "",
+      "description": "The promise or question the video answers. Short enough to read at a glance."
+    },
+    {
+      "name": "kicker",
+      "label": "Kicker",
+      "type": "text",
+      "max_length": 32,
+      "default": "",
+      "description": "Small line above the hook."
+    }
+  ],
+  "full_frame": true,
+  "variants": {
+    "horizontal": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.5,
+      "scale": 1.0
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 190,
+      "damping": 19,
+      "ms": 780,
+      "from": {
+        "opacity": 0,
+        "scale": 0.88,
+        "y": 46
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 340,
+      "to": {
+        "opacity": 0,
+        "scale": 0.97
+      }
+    },
+    "stagger": {
+      "step_ms": 110,
+      "elements": [
+        "scrim",
+        "kicker",
+        "text",
+        "underline"
+      ]
+    },
+    "blur": {
+      "motion": true,
+      "max": 7
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/swell.wav",
+      "offset": 0.0,
+      "gain": 0.38
+    },
+    {
+      "file": "_shared/sfx/marker-stroke.wav",
+      "offset": 0.42,
+      "gain": 0.36
+    }
+  ],
+  "assets": [],
+  "default_duration": 3.5
+}

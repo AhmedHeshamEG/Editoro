@@ -1,0 +1,99 @@
+{
+  "id": "checklist",
+  "version": 1,
+  "schema": 2,
+  "display_name": "قائمة · Checklist",
+  "category": "text",
+  "category_color": "#A3E635",
+  "directive_verb": "قائمة",
+  "description": "A list whose items arrive one at a time, each with a tick drawn stroke by stroke. Use when several things are being enumerated out loud.",
+  "fields": [
+    {
+      "name": "title",
+      "label": "Title",
+      "type": "text",
+      "max_length": 40,
+      "default": "",
+      "description": "Optional heading above the list."
+    },
+    {
+      "name": "items",
+      "label": "Items",
+      "type": "textarea",
+      "max_length": 400,
+      "default": "",
+      "description": "One item per line, or separated by |. Up to 6 items."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.74,
+      "y": 0.44,
+      "scale": 1.0,
+      "max_width": 0.42
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.42,
+      "scale": 0.95,
+      "max_width": 0.84
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 200,
+      "damping": 19,
+      "ms": 640,
+      "from": {
+        "opacity": 0,
+        "scale": 0.86,
+        "x": 90,
+        "rotate": 2
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 260,
+      "to": {
+        "opacity": 0,
+        "x": 40
+      }
+    },
+    "stagger": {
+      "step_ms": 130,
+      "elements": [
+        "card",
+        "title",
+        "item0",
+        "item1",
+        "item2",
+        "item3",
+        "item4",
+        "item5"
+      ]
+    },
+    "blur": {
+      "motion": true,
+      "max": 6
+    },
+    "shadow": {
+      "layers": 3,
+      "elevation": 28,
+      "opacity": 0.46,
+      "lift": true
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/tick.wav",
+      "offset": 0.24,
+      "gain": 0.34,
+      "repeat_field": "items",
+      "repeat_spacing": 0.13
+    }
+  ],
+  "assets": [],
+  "default_duration": 5.5
+}

@@ -1,0 +1,98 @@
+{
+  "id": "code-card",
+  "version": 1,
+  "schema": 2,
+  "display_name": "كود · Code",
+  "category": "screen",
+  "category_color": "#94A3B8",
+  "directive_verb": "كود",
+  "description": "A monospaced code block with line numbers and an optional highlighted line. Keep snippets to what is readable on screen.",
+  "fields": [
+    {
+      "name": "code",
+      "label": "Code",
+      "type": "textarea",
+      "max_length": 900,
+      "default": "",
+      "description": "The snippet, one statement per line. Up to 12 lines."
+    },
+    {
+      "name": "title",
+      "label": "File name",
+      "type": "text",
+      "max_length": 40,
+      "default": "",
+      "description": "File name or language shown in the title bar. Optional."
+    },
+    {
+      "name": "focus",
+      "label": "Highlight line",
+      "type": "number",
+      "control": "integer",
+      "min": 0,
+      "max": 12,
+      "step": 1,
+      "default": 0,
+      "description": "1-based line to mark; 0 highlights nothing."
+    }
+  ],
+  "variants": {
+    "horizontal": {
+      "x": 0.68,
+      "y": 0.44,
+      "scale": 1.0,
+      "max_width": 0.48
+    },
+    "vertical": {
+      "x": 0.5,
+      "y": 0.38,
+      "scale": 0.95,
+      "max_width": 0.9
+    }
+  },
+  "motion": {
+    "in": {
+      "type": "spring",
+      "stiffness": 235,
+      "damping": 23,
+      "ms": 540,
+      "from": {
+        "opacity": 0,
+        "scale": 0.955,
+        "y": 30
+      }
+    },
+    "out": {
+      "type": "ease",
+      "easing": "inCubic",
+      "ms": 250,
+      "to": {
+        "opacity": 0,
+        "scale": 0.98
+      }
+    },
+    "stagger": {
+      "step_ms": 46,
+      "elements": [
+        "panel",
+        "code",
+        "focus"
+      ]
+    },
+    "shadow": {
+      "layers": 3,
+      "elevation": 38,
+      "opacity": 0.55,
+      "lift": false
+    }
+  },
+  "sfx": [
+    {
+      "file": "_shared/sfx/ui-settle.wav",
+      "offset": 0.03,
+      "gain": 0.36
+    }
+  ],
+  "assets": [],
+  "default_duration": 5.5
+}
