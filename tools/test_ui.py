@@ -342,22 +342,50 @@ async def run_checks(project: str) -> None:
 
             # Silence removes a block's foley from the mix AND its markers from
             # the SFX track, so that track keeps being a truthful picture of
-            # what the export will contain.
+            # what the export will contain - and `lite`, the default, is the
+            # block without whatever opens it. The two ends have to be measured
+            # from the same block: a control with three states is only worth
+            # having if the middle one is neither of the other two.
             foley = await page.evaluate("""() => {
               const { store: S, sfxEventsForInstance } = window.editoro;
+              const at = (i, mode) => sfxEventsForInstance(
+                { ...i, foley: mode }, S.packs[i.template]).length;
               const inst = S.state.instances.find(
-                i => sfxEventsForInstance(i, S.packs[i.template]).length);
+                i => (S.packs[i.template].sfx || []).some(x => x.lead));
               if (!inst) return null;
-              const before = sfxEventsForInstance(inst, S.packs[inst.template]).length;
-              inst.silent = true;
-              const after = sfxEventsForInstance(inst, S.packs[inst.template]).length;
-              inst.silent = false;
-              return { before, after, template: inst.template };
+              return { off: at(inst, "off"), lite: at(inst, "lite"),
+                       full: at(inst, "full"), template: inst.template };
             }""")
-            assert foley and foley["before"] > 0 and foley["after"] == 0, (
-                f"silencing a block did not remove its foley: {foley}")
-            note(f"silencing a {foley['template']} block removes all "
-                 f"{foley['before']} of its sounds from the mix and the track")
+            assert foley, "no placed block declares an opening sound to drop"
+            assert foley["off"] == 0 and 0 < foley["lite"] < foley["full"], (
+                f"the three foley states are not three things: {foley}")
+            note(f"a {foley['template']} block plays {foley['off']}, {foley['lite']} "
+                 f"then {foley['full']} sounds across the foley cycle")
+
+            # The breathe block's rectangle: it used to be paintable, draggable
+            # and completely ignored, which is the one thing a control must
+            # never be. Its centre is where the breath pulls and its edges are
+            # how far it may go.
+            pull = await page.evaluate("""() => {
+              const { store: S, breatheFraming, framingRect } = window.editoro;
+              const item = { id: "br", template: "breathe", start: 0, duration: 4,
+                             scale: 1, fields: { strength: "strong" } };
+              const wide = { ...item, fields: { strength: "strong",
+                             rect: { x: .5, y: .1, w: .4, h: .5 } } };
+              const tight = { ...item, fields: { strength: "strong",
+                              rect: { x: .01, y: .01, w: .98, h: .98 } } };
+              return { plain: breatheFraming(item, "horizontal"),
+                       wide: breatheFraming(wide, "horizontal"),
+                       tight: breatheFraming(tight, "horizontal"),
+                       draggable: !!framingRect(wide) };
+            }""")
+            assert pull["draggable"], "the breathe rectangle is not a framing rectangle"
+            assert pull["plain"][1] == 0.5 and pull["wide"][1] == 0.7, (
+                f"the breathe rectangle does not move the pull: {pull}")
+            assert pull["tight"][0] < pull["plain"][0] == pull["wide"][0], (
+                f"the breathe rectangle is not a ceiling on the strength: {pull}")
+            note(f"the breathe box pulls to {pull['wide'][1]:.2f} and caps strong "
+                 f"from {pull['plain'][0]:.3f} to {pull['tight'][0]:.3f}")
 
             # The thumbnail. It is the one surface that draws at final size
             # rather than at preview size, and the PNG that gets saved comes out
@@ -366,8 +394,13 @@ async def run_checks(project: str) -> None:
             cover = await page.evaluate("""async () => {
               const { $, drawThumbnail, thumbState } = window.editoro;
               $("#thumbBtn").click();
-              // The base frame is fetched; the arrangement does not wait for it.
-              await new Promise(done => setTimeout(done, 1500));
+              // Opening it fetches the base frame, so the dialog is not up yet;
+              // its size is half of what is being checked here, so wait for it
+              // rather than for a guess at how long a frame grab takes.
+              const dialog = $("#thumbDlg");
+              for (let i = 0; i < 300 && !dialog.open; i++)
+                await new Promise(done => setTimeout(done, 100));
+              await new Promise(done => requestAnimationFrame(done));
               const thumb = thumbState();
               const canvas = document.createElement("canvas");
               canvas.width = 1280; canvas.height = 720;
@@ -379,9 +412,17 @@ async def run_checks(project: str) -> None:
                 if (pixels[i] > 200 && pixels[i + 1] > 200) bright++;
               const layouts = thumb.elements.every(
                 e => e.layouts?.horizontal && e.layouts?.vertical);
+              // How the dialog itself came out. The cover is the one thing in
+              // the editor whose whole job is to be looked at, and it was being
+              // shown in a 380-pixel strip inside a dialog sized for a form.
+              const shown = $("#thumbCanvas").getBoundingClientRect();
+              const box = $("#thumbDlg").getBoundingClientRect();
               $("#thumbDlg").close();
               return { elements: thumb.elements.length, bright, layouts,
-                       kinds: thumb.elements.map(e => e.kind) };
+                       kinds: thumb.elements.map(e => e.kind),
+                       shownW: Math.round(shown.width), shownH: Math.round(shown.height),
+                       onScreen: box.top >= -1 && box.bottom <= innerHeight + 1
+                                 && box.left >= -1 && box.right <= innerWidth + 1 };
             }""")
             assert cover["elements"] >= 2, f"the thumbnail seeded no elements: {cover}"
             assert cover["layouts"], "a thumbnail element is missing one of its two layouts"
@@ -389,8 +430,15 @@ async def run_checks(project: str) -> None:
             # the font never loaded or the element was drawn off-canvas.
             assert cover["bright"] > 2000, (
                 f"the thumbnail headline did not draw: {cover}")
+            # The dialog has to hold the whole cover and stay on the screen.
+            assert cover["onScreen"], f"the cover dialog does not fit the window: {cover}"
+            assert cover["shownW"] >= 600, (
+                f"the cover is shown too small to judge: {cover['shownW']}px wide")
+            assert abs(cover["shownW"] / max(1, cover["shownH"]) - 16 / 9) < .02, (
+                f"the cover preview is not the shape of the cover: {cover}")
             note(f"thumbnail draws {cover['elements']} elements "
-                 f"({', '.join(cover['kinds'])}) at 1280x720, both layouts kept")
+                 f"({', '.join(cover['kinds'])}) at 1280x720, shown "
+                 f"{cover['shownW']}x{cover['shownH']} on screen, both layouts kept")
 
             # The counting ladder. The whole point is that the ticking and the
             # digits are one schedule, so this reads them from opposite ends:

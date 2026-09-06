@@ -136,6 +136,12 @@
   },
   "sfx": [
     {
+      "file": "_shared/sfx/pop.wav",
+      "offset": 0.02,
+      "gain": 0.5,
+      "lead": true
+    },
+    {
       "file": "_shared/sfx/count-wood.wav",
       "follow_value": "number",
       "gain": 0.22

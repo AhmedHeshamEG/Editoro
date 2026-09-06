@@ -219,19 +219,15 @@ It needs that matte, which `set_look(analyze=True)` builds — **check
 behind and quietly composites in front, which is the kind of thing you only
 notice in the finished video.
 
-`tilt` leans a block out of plane — `"left"` or `"right"` turns it, `"lean"`
-tips it away from the viewer. They are tuned presets, not an angle, so every
-template leans the same way; use one when a card should read as an object lying
-on the scene rather than a rectangle stuck to the glass. It combines with
-`depth`, so a tilted card can pass behind the speaker.
-
 ## Sound you can take off
 
-`silent: true` places a block without its template's foley. Reach for it when
-several blocks land inside a few seconds and the edit starts to tick — silencing
-one is a better answer than deleting a block that is doing visual work. The
-silence removes the sound from the mix and the block's markers from the SFX
-track, so what that track shows is what will be heard.
+`foley` is how much of a template's sound to play. `"off"` is silent, `"full"`
+is everything the pack declares, and `"lite"` — the default — is the block
+without whatever opens it: a stat card's ticking count without the pop on its
+first frame. Reach for `"off"` when several blocks land inside a few seconds
+and the edit starts to tick — silencing one is a better answer than deleting a
+block that is doing visual work. Whatever is not played leaves the block's
+markers off the SFX track too, so what that track shows is what will be heard.
 
 ## Breathing, and not stacking on it
 
@@ -240,6 +236,13 @@ clock, so the footage and every graphic move together and no shot is completely
 still. It is a project setting (`off`, `subtle`, `standard`, `strong`), and a
 `breathe` block overrides the strength over a stretch — including asking for
 `off` through a section that should be held still.
+
+A `breathe` block also carries a `rect`, and it is the one thing on that block
+you can point at: the breath pulls towards the middle of the box and is never
+allowed to crop past its edges. Leave it alone and the block behaves as though
+it were not there; move it onto a face and the frame drifts towards the face
+instead of the middle. It is a limit on top of the strength, not a second
+strength, so the two never fight.
 
 A camera block switches breathing off for its own span automatically, so a
 punch-in never rides on a pulse. That is the mechanism, not a licence: still one

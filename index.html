@@ -176,9 +176,29 @@ select{font:inherit;color:var(--tx);background:var(--bg2);border:1px solid var(-
 .toast{background:var(--bg3);border:1px solid var(--line);border-radius:10px;
   padding:10px 16px;box-shadow:0 6px 30px #000a}
 dialog{background:var(--bg2);color:var(--tx);border:1px solid var(--line);
-  border-radius:14px;padding:20px;max-width:420px;width:92%}
+  border-radius:14px;padding:20px;max-width:420px;width:92%;
+  max-height:88vh;overflow:auto}
 dialog::backdrop{background:#000a}
 #transcriptDlg{max-width:520px}
+/* The cover is the one dialog whose subject is a picture, so it gets the room
+   a picture needs. The canvas carries its own aspect ratio in its width and
+   height attributes; letting it size itself inside a max-width and a max-height
+   is what keeps a 16:9 cover and a 9:16 cover both whole and both as big as
+   they can be, instead of one filling the width and the other running off the
+   bottom of the screen. */
+#thumbDlg{max-width:min(1280px,95vw)}
+#thumbCanvas{display:block;margin:0 auto;width:auto;height:auto;
+  max-width:100%;max-height:70vh;align-self:start}
+/* Wide enough for two columns and the cover stops being a strip of picture
+   with a page of controls underneath it: the thing being designed sits still
+   on the left while the controls that change it scroll on the right. Below
+   that width it is one column again, which is the phone. */
+#thumbGrid{display:grid;gap:18px;align-items:start}
+@media (min-width:900px){
+  #thumbGrid{grid-template-columns:minmax(0,1.8fr) minmax(290px,1fr)}
+  #thumbSide{max-height:74vh;overflow:auto;padding-right:4px}
+  #thumbDlg{overflow:hidden}
+}
 #transcriptDlg .dialogNote{color:var(--tx2);margin:0 0 14px}
 #transcriptDlg progress{width:100%;height:10px;margin:8px 0}
 #home{position:fixed;inset:0;background:var(--bg);z-index:50;display:grid;place-items:center}
@@ -412,8 +432,10 @@ dialog::backdrop{background:#000a}
   <p class="dialogNote">A cover for this video, designed once and laid out for both shapes.
     Pick a frame or drop a picture, choose an arrangement, type the words. The arrangement is
     a starting point, not a cage - drag anything, scale it, add more.</p>
-  <canvas id="thumbCanvas" style="width:100%;background:#000;border-radius:10px;
+  <div id="thumbGrid">
+  <canvas id="thumbCanvas" style="background:#000;border-radius:10px;
     touch-action:none;cursor:grab"></canvas>
+  <div id="thumbSide">
   <div class="fieldrow">
     <label>Picture behind it</label>
     <div class="buttonrow">
@@ -451,6 +473,8 @@ dialog::backdrop{background:#000a}
   <button id="thumbSave" class="primary" style="width:100%">Save the image</button>
   <div id="thumbNote" style="color:var(--tx2);min-height:22px;margin-top:10px"></div>
   <button id="thumbClose" style="width:100%;margin-top:8px">Close</button>
+  </div>
+  </div>
 </dialog>
 
 <dialog id="transcriptDlg">
@@ -673,9 +697,30 @@ function breatheLevel(level, orientation) {
   return table[orientation] ?? table.horizontal;
 }
 
+/* Where a breathe block pulls, and how far it is allowed to go.
+
+   The block used to have a strength and nothing else, which left it drawing a
+   selection rectangle in the preview that could be picked up, dragged, and
+   ignored - the block read only its `strength` field. A control that moves and
+   changes nothing is worse than no control, so the rectangle now means what its
+   shape says: the breath pulls towards the middle of the box and never crops
+   past its edges. The strength stays the depth, because that is the number
+   worth having a preset for; the box is a limit on top of it, so a block with
+   the default box behaves exactly as it did before. */
+function breatheFraming(item, orientation) {
+  const depth = breatheLevel(item.fields?.strength || S.state.breathe, orientation);
+  const rect = item.fields?.rect;
+  if (!rect || !(rect.w > 0) || !(rect.h > 0)) return [depth, .5, .5];
+  const w = Math.max(.05, Math.min(1, rect.w)), h = Math.max(.05, Math.min(1, rect.h));
+  // The zoom is uniform, so the tighter of the two edges is the one that binds.
+  const ceiling = (1 / Math.min(w, h) - 1) / 2;
+  return [Math.min(depth, ceiling), rect.x + w / 2, rect.y + h / 2];
+}
+
 /* Stretches that override the project strength. A `breathe` block asks for its
-   own amount; a camera block asks for zero, because a punch-in riding on top
-   of a pulse is the one combination that reads as seasickness. */
+   own amount and its own centre; a camera block asks for zero, because a
+   punch-in riding on top of a pulse is the one combination that reads as
+   seasickness. */
 function breatheSpans() {
   const orientation = S.state?.orientation || "horizontal";
   const spans = [];
@@ -683,27 +728,33 @@ function breatheSpans() {
     if (!(item.duration > 0)) continue;
     if (item.template === "breathe")
       spans.push([item.start, item.start + item.duration,
-        breatheLevel(item.fields?.strength || S.state.breathe, orientation)]);
+        ...breatheFraming(item, orientation)]);
     else if (isCameraEffect(item))
-      spans.push([item.start, item.start + item.duration, 0]);
+      spans.push([item.start, item.start + item.duration, 0, .5, .5]);
   }
   return spans.sort((a, b) => a[0] - b[0]);
 }
 
-function breatheAmplitude(t) {
+/* Amplitude and centre at one instant, blended across the same ramps so the
+   frame never steps sideways at the edge of a block. */
+function breatheStateAt(t) {
   const orientation = S.state?.orientation || "horizontal";
   const base = breatheLevel(S.state?.breathe ?? "off", orientation);
-  let amount = base, previousEnd = -1e9;
+  let amount = base, cx = .5, cy = .5, previousEnd = -1e9;
   for (const span of breatheSpans()) {
     const start = Math.max(span[0], previousEnd), end = span[1];
     if (end - start <= 1e-6) continue;
     previousEnd = end;
     const ramp = Math.max(1e-3, Math.min(BREATHE_RAMP, (end - start) / 3));
-    amount += (span[2] - base)
-      * Math.max(0, Math.min(1, Math.min((t - start) / ramp, (end - t) / ramp)));
+    const k = Math.max(0, Math.min(1, Math.min((t - start) / ramp, (end - t) / ramp)));
+    amount += (span[2] - base) * k;
+    cx += (span[3] - .5) * k;
+    cy += (span[4] - .5) * k;
   }
-  return amount;
+  return { a: amount, cx, cy };
 }
+
+function breatheAmplitude(t) { return breatheStateAt(t).a; }
 
 /* Scaled up only, never down: dipping below 1 would pull the edges of the
    picture into shot. The frame therefore sits at its true size at the bottom
@@ -714,30 +765,11 @@ function breatheScale(t) {
 }
 
 function breatheTransform(t) {
-  const scale = breatheScale(t);
-  return scale <= 1 + 1e-9 ? null : { cx: .5, cy: .5, scale };
+  const { a, cx, cy } = breatheStateAt(t);
+  if (a <= 0) return null;
+  const scale = 1 + a + a * Math.sin(2 * Math.PI * BREATHE_HZ * t);
+  return scale <= 1 + 1e-9 ? null : { cx, cy, scale };
 }
-
-/* ------------------------------------------------------------------- tilt
-
-   A card lying on the scene at a slight angle instead of taped to the glass.
-   Four named presets rather than a rotation control, for the same reason the
-   compositing toggles are toggles: the value that makes this read as depth and
-   not as a mistake is a narrow one, and it has to be the same value in every
-   template or thirty-seven packs end up leaning thirty-seven different ways.
-
-   Canvas has no perspective transform, so the lean is a rotation plus a
-   vertical shear - the near edge grows, the far edge shrinks - and a shadow
-   thrown further from the surface. Those two cues together are what the eye
-   reads as "turned away from me"; either one alone reads as "crooked". */
-const TILT = {
-  off: null,
-  left:  { rotate: -3.4, shear: -.055, sx: 1, sy: .995, lift: 1.5 },
-  right: { rotate:  3.4, shear:  .055, sx: 1, sy: .995, lift: 1.5 },
-  // Tipped away from the viewer rather than turned: no rotation at all, the
-  // top edge a little shorter, and the shadow well clear of the surface.
-  lean:  { rotate: 0, shear: 0, sx: .992, sy: .972, lift: 2.1 },
-};
 
 /* --------------------------------------------------- motion spec resolution */
 const IDENTITY = { opacity: 1, scale: 1, x: 0, y: 0, rotate: 0 };
@@ -869,12 +901,7 @@ function motionAt(inst, t, element) {
   state.seconds = seconds;
   state.duration = duration;
   state.blur = spec.blur;
-  state.tilt = TILT[inst.tilt || "off"] || null;
-  // A tilted card is further from its surface at one edge, so its shadow has
-  // to travel further too. Without this the lean reads as a printing error.
-  state.shadowSpec = state.tilt
-    ? { ...spec.shadow, elevation: spec.shadow.elevation * state.tilt.lift }
-    : spec.shadow;
+  state.shadowSpec = spec.shadow;
   state.element = element || null;
   return state;
 }
@@ -1013,10 +1040,6 @@ function stageMotion(ctx, state, drawFn) {
     ctx.translate(state.dx * u + offsetX, state.dy * u + offsetY);
     ctx.rotate(state.rotate);
     ctx.scale(state.scale, state.scale);
-    if (state.tilt) {
-      ctx.rotate(state.tilt.rotate * Math.PI / 180);
-      ctx.transform(state.tilt.sx, state.tilt.shear, 0, state.tilt.sy, 0, 0);
-    }
     drawFn(ctx, state);
     ctx.restore();
   };
@@ -1128,6 +1151,17 @@ function activeInstances(t) {
    this file knows its name. Adding a new camera template stays a folder drop. */
 function isCameraEffect(item) {
   return Boolean(item && S.packs[item.template]?.camera);
+}
+/* A block whose rectangle on the preview is the thing it acts on, rather than
+   a box drawn round something it painted. Every camera pack is one; so is
+   `breathe`, which draws nothing at all and whose box says where the frame
+   pulls. Asking the pack rather than listing the templates is what stops the
+   next one of these from arriving with a rectangle that cannot be moved. */
+function framingRect(item) {
+  if (!item?.fields?.rect) return null;
+  const declared = (S.packs[item.template]?.fields || [])
+    .some(field => field.name === "rect" && field.type === "rect");
+  return declared ? item.fields.rect : null;
 }
 function packUsesVideo(templateId) {
   return (S.packs[templateId]?.fields || []).some(field => field.type === "asset:video");
@@ -1411,15 +1445,34 @@ function layoutOverlay(force=false){
   if(underlay.height!==backingH)underlay.height=backingH;
   return S.previewLayout;
 }
-function paintOverlay(){S.overlayQueued=false;if(!S.state)return;layoutOverlay();
-  syncOverlayVideos(S.t);
-  const z=cameraTransform(S.t),layout=S.previewLayout;
-  if(z&&layout){
+/* The camera, as two CSS matrices and nothing else.
+
+   Split out of paintOverlay() because it is the cheap half and it wants to run
+   far more often than the expensive half. Everything the overlay canvas draws
+   can only change when a new video frame arrives; the framing is a continuous
+   function of time and can change on every refresh of the screen. Tying them
+   together left a breath - which travels about two per cent over four seconds
+   - stepping thirty times a second on a display running at sixty or a hundred
+   and twenty, holding each position for two to four refreshes and then jumping.
+   That is the wobble: not the wrong numbers, the right numbers arriving in
+   lumps. */
+function applyCameraTransform(t){
+  const layout=S.previewLayout;if(!layout)return "";
+  const z=cameraTransform(t);
+  let transform="";
+  if(z){
     const tx=Math.max(1-z.scale,Math.min(0,.5-z.cx*z.scale))*layout.displayW;
     const ty=Math.max(1-z.scale,Math.min(0,.5-z.cy*z.scale))*layout.displayH;
-    vid.style.transform=`matrix(${z.scale},0,0,${z.scale},${tx},${ty})`;
-  }else vid.style.transform="";
-  lookDraw(vid.style.transform);
+    transform=`matrix(${z.scale},0,0,${z.scale},${tx},${ty})`;
+  }
+  if(vid.style.transform!==transform)vid.style.transform=transform;
+  if(LOOK.active&&LOOK.canvas&&LOOK.canvas.style.transform!==transform)
+    LOOK.canvas.style.transform=transform;
+  return transform;
+}
+function paintOverlay(){S.overlayQueued=false;if(!S.state)return;layoutOverlay();
+  syncOverlayVideos(S.t);
+  lookDraw(applyCameraTransform(S.playing&&!S.planesActive?playbackClock():S.t));
   paintCompositingPlanes(S.t);
   const context=ov.getContext("2d");
   drawFrame(context,ov.width,ov.height,S.t,S.planesActive?"front":"all");
@@ -1481,7 +1534,7 @@ function drawOverlay(){
   requestAnimationFrame(paintOverlay);
 }
 function instanceNormBounds(item){
-  if(isCameraEffect(item)&&item.fields.rect)return item.fields.rect;
+  const framing=framingRect(item);if(framing)return framing;
   if(S.packs[item.template]?.full_frame)return{x:0,y:0,w:1,h:1};
   const measured=REG[item.template]?.measure?.(item,A,{width:ov.width,height:ov.height});
   if(measured?.width&&measured?.height){
@@ -1537,7 +1590,7 @@ function drawSelection(){const b=$("#selbox");
 function clampInstanceScale(value){return Math.min(10,Math.max(.05,value))}
 function applyUniformScale(item,original,factor){
   const safeFactor=Math.max(.05,Number.isFinite(factor)?factor:1);
-  if(isCameraEffect(item)&&original.rect){
+  if(original.rect){
     const rect=original.rect,cx=rect.x+rect.w/2,cy=rect.y+rect.h/2;
     const maxW=Math.max(.05,Math.min(1,2*Math.min(cx,1-cx)));
     const maxH=Math.max(.05,Math.min(1,2*Math.min(cy,1-cy)));
@@ -1622,7 +1675,7 @@ G.addEventListener("pointerdown",e=>{
   const grab=()=>{try{G.setPointerCapture(e.pointerId)}catch(error){}};
   if(hit){S.sel=hit.id;snapshot();const box=instanceNormBounds(hit);
     drag={id:hit.id,dx:p.x-box.x,dy:p.y-box.y,box,
-      rect:isCameraEffect(hit)&&hit.fields.rect?structuredClone(hit.fields.rect):null};
+      rect:framingRect(hit)?structuredClone(hit.fields.rect):null};
     grab();$$(".zoneguide").forEach(z=>z.style.display="block");positionGuides();}
   else{
     // Captions are grabbable straight off the preview; dragging one is also how
@@ -1670,7 +1723,7 @@ G.addEventListener("touchmove",e=>{ // pinch to scale selected
     const i=S.state.instances.find(x=>x.id===S.sel);
     if(!i)return;
     if(!pinch){snapshot();pinch={d,original:{scale:i.scale,
-      rect:isCameraEffect(i)&&i.fields.rect?structuredClone(i.fields.rect):null}}}
+      rect:framingRect(i)?structuredClone(i.fields.rect):null}}}
     applyUniformScale(i,pinch.original,d/pinch.d);drawOverlay();
   }},{passive:false});
 G.addEventListener("touchend",()=>{if(pinch){pinch=null;afterMutate()}});
@@ -1730,6 +1783,19 @@ function followPlayhead(){
   S.scroll=Math.max(0,S.t-(r.width-LABEL)/S.zoom*0.15);
   drawTimeline();
 }
+/* Where playback has actually reached, between decoded frames.
+
+   `vid.currentTime` is the presentation time of the frame on screen, so it
+   holds still for two to four refreshes and then jumps a whole frame. Reading
+   it straight is right for anything that draws that frame and wrong for a
+   movement of the frame itself, so the gap is walked with the wall clock and
+   clamped to one frame: it never runs past the next decode, and a stall parks
+   it instead of letting it drift. */
+function playbackClock(){
+  const raw=src2tl(vid.currentTime),now=performance.now()/1000;
+  if(!S.clock||S.clock.raw!==raw)S.clock={raw,at:now};
+  return raw+Math.max(0,Math.min(frameDuration(),(now-S.clock.at)*(vid.playbackRate||1)));
+}
 function tick(){
   if(!S.playing){S.ticking=false;return}
   S.t=src2tl(vid.currentTime);
@@ -1741,6 +1807,11 @@ function tick(){
   if(frame!==S.lastPlaybackFrame){
     S.lastPlaybackFrame=frame;$("#tc").textContent=fmt(S.t);drawOverlay();followPlayhead();
   }
+  // ...and then the framing again, at whatever rate the screen runs at. Not
+  // while the compositing planes are up: the speaker cutout is drawn into a
+  // canvas from the frame on screen, so moving the footage out from under it
+  // between frames would slide the silhouette off the person.
+  if(!S.planesActive)applyCameraTransform(playbackClock());
   playSFX();
   requestAnimationFrame(tick);
 }
@@ -1786,9 +1857,12 @@ function sfxRepeatCount(item,fieldName){
    the mix and draws no markers. The SFX track is then a truthful picture of
    what the export will contain, which is the only reason to have the track. */
 function sfxEventsForInstance(item,spec){
-  if(item.silent)return[];
+  if(item.foley==="off")return[];
   const events=[];
   for(const sound of spec?.sfx||[]){
+    // A `lead` sound opens the block rather than being part of its body, and
+    // `lite` is the block without it. Mirrors resolve_sfx_events in server.py.
+    if(sound.lead&&item.foley!=="full")continue;
     if(sound.follow_value!==undefined){
       const offset=sound.offset||0;
       valueLadder(item,sound.follow_value||"").forEach((step,index)=>{
@@ -2315,7 +2389,7 @@ function placeInstance(tid){if(!S.state.source){toast("Import source footage bef
     fields,missing:needs,review:false,
     // A template can ship with the frost already on - that is the whole of what
     // the backdrop-blur block is. Everything else starts sharp and in front.
-    backdrop:!!sp.backdrop,depth:"front",silent:false,tilt:"off"};
+    backdrop:!!sp.backdrop,depth:"front",foley:"lite"};
   S.state.instances.push(inst);S.sel=inst.id;
   selectTab("inspector");afterMutate();}
 function renderInspector(){const p=$("#inspPane");
@@ -2399,34 +2473,29 @@ function renderInspector(){const p=$("#inspPane");
     paintDepth();row.append(depth);
     }
     layer.append(row);p.append(layer);
-
-    // Tilt. Four buttons rather than a rotation control, because the angle
-    // that reads as depth is a narrow one and it has to be the same angle in
-    // every template. "Lean" tips the card away from the viewer instead of
-    // turning it, which is the one that survives behind the speaker.
-    const tiltRow=document.createElement("div");tiltRow.className="fieldrow";
-    const tiltLabel=document.createElement("label");
-    tiltLabel.textContent="Tilt";tiltRow.append(tiltLabel);
-    const tiltButtons=document.createElement("div");tiltButtons.className="buttonrow";
-    for(const [value,text] of [["off","Flat"],["left","Left"],["right","Right"],["lean","Lean back"]]){
-      const button=document.createElement("button");button.textContent=text;
-      button.classList.toggle("on",(i.tilt||"off")===value);
-      button.onclick=()=>{snapshot();i.tilt=value;renderInspector();afterMutate()};
-      tiltButtons.append(button);
-    }
-    tiltRow.append(tiltButtons);p.append(tiltRow);
   }
   // Foley. Only offered where the pack actually makes a sound, so a silent
-  // template does not grow a control that does nothing.
-  if((S.packs[i.template]?.sfx||[]).length){
+  // template does not grow a control that does nothing - and offered as three
+  // states only where there is an opening hit to drop, because a third state
+  // that sounds identical to the second is a control that does nothing too.
+  const sounds=S.packs[i.template]?.sfx||[];
+  if(sounds.length){
+    const leads=sounds.filter(x=>x.lead).length,body=sounds.length-leads;
+    const cycle=leads?["off","lite","full"]:["off","lite"];
+    const label={off:"Silenced",
+      lite:leads?`Plays ${body} sound(s), no opener`:`Plays ${body} sound(s)`,
+      full:`Plays all ${sounds.length} sounds`};
     const foley=document.createElement("div");foley.className="fieldrow";
     const foleyLabel=document.createElement("label");
     foleyLabel.textContent="Sound";foley.append(foleyLabel);
     const button=document.createElement("button");
-    const paint=()=>{button.classList.toggle("on",!!i.silent);
-      button.textContent=i.silent?"Silenced":`Plays ${(S.packs[i.template].sfx||[]).length} sound(s)`;};
-    button.onclick=()=>{snapshot();i.silent=!i.silent;paint();afterMutate()};
-    button.title="Silence this block's foley. Its markers leave the SFX track too, so the track keeps showing exactly what you will hear.";
+    const paint=()=>{const now=cycle.includes(i.foley)?i.foley:"lite";
+      i.foley=now;button.classList.toggle("on",now==="off");button.textContent=label[now];};
+    button.onclick=()=>{snapshot();
+      i.foley=cycle[(cycle.indexOf(i.foley)+1)%cycle.length];paint();afterMutate()};
+    button.title=leads
+      ?"Tap to cycle: silent, the block without the hit that opens it, then everything it can play. Whatever is not heard leaves the SFX track too, so the track keeps showing exactly what you will hear."
+      :"Silence this block's foley. Its markers leave the SFX track too, so the track keeps showing exactly what you will hear.";
     paint();foley.append(button);p.append(foley);
   }
   for(const f of sp.fields||[]){
@@ -2528,7 +2597,7 @@ function renderInspector(){const p=$("#inspPane");
   reset.onclick=()=>{snapshot();const zone=packVariant(i.template,S.state.orientation);
     i.x=zone.x??.5;i.y=zone.y??.3;i.scale=zone.scale??1;
     delete i.layouts;
-    if(isCameraEffect(i)){const field=sp.fields?.find(item=>item.name==="rect");
+    if(framingRect(i)){const field=sp.fields?.find(item=>item.name==="rect");
       if(field?.default)i.fields.rect=structuredClone(field.default)}
     afterMutate()};p.append(reset);
   if(i.review){const approve=document.createElement("button");approve.textContent="Mark reviewed";approve.style.cssText="width:100%;margin-top:8px";
@@ -3760,9 +3829,12 @@ function thumbNote(text) { const node = $("#thumbNote"); if (node) node.textCont
 function thumbRender() {
   const canvas = $("#thumbCanvas");
   const [W, H] = THUMB_SIZES[thumbOrientation()];
-  // Drawn at a fraction of final size on screen and at full size only when it
-  // is written out, so dragging stays responsive on a phone.
-  const preview = Math.min(1, 720 / W);
+  // Drawn below final size on screen and at full size only when it is written
+  // out, so dragging stays responsive. The backing size is what the CSS then
+  // fits into the dialog, so it has to be comfortably larger than the space it
+  // will be shown in - 720 across was smaller than the dialog itself, which is
+  // why the cover looked like a stamp of the thing it is.
+  const preview = Math.min(1, 1080 / W, Math.sqrt(1.6e6 / (W * H)));
   if (canvas.width !== Math.round(W * preview)) {
     canvas.width = Math.round(W * preview);
     canvas.height = Math.round(H * preview);
@@ -4306,6 +4378,7 @@ window.editoro = {
   valueLadder,
   captionsAt, activeInstances, $,
   cameraPlan, cameraStateAt, cameraTransform, breatheScale, breatheAmplitude,
+  breatheStateAt, breatheFraming, framingRect,
   valueSteps,
   drawThumbnail, thumbState, sfxEventsForInstance,
   LOOK, lookRefresh, lookDraw, lookSample, lookSettings,

@@ -186,15 +186,28 @@ class Instance(BaseModel):
     # and the edit starts to tick. Silencing is a property of the block for the
     # same reason `backdrop` is: the sound belongs to the thing that made it, so
     # moving the block moves its foley and deleting the block takes the sound
-    # with it. A silent block contributes no events to the mix AND no markers to
-    # the SFX track, so that track always shows exactly what will be heard.
-    silent: bool = False
-    # A small out-of-plane lean, so a card reads as an object lying on the scene
-    # rather than a rectangle stuck to the glass. Named presets rather than a
-    # rotation control: each name carries a tuned rotation, perspective and
-    # shadow offset that stay consistent across every template, which is the
-    # only way 37 packs go on leaning the same way.
-    tilt: Literal["off", "left", "right", "lean"] = "off"
+    # with it. A silenced block contributes no events to the mix AND no markers
+    # to the SFX track, so that track always shows exactly what will be heard.
+    #
+    # Three states rather than two, because "silent or not" was the wrong
+    # question for a block that makes more than one kind of sound. A stat card
+    # opens with a pop and then ticks while the number climbs; the pop is a
+    # different decision from the ticking, and one switch meant the only way to
+    # lose the pop was to lose the count with it.
+    #   off  - nothing at all
+    #   lite - the body of the block, without whatever opens it
+    #   full - everything the pack declares
+    # `lite` is the default because an opening hit is the sound an edit ends up
+    # with too many of: every block that has one fires it in its first frame.
+    foley: Literal["off", "lite", "full"] = "lite"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_silent(cls, data: Any) -> Any:
+        """Projects written before foley had three states carry `silent`."""
+        if isinstance(data, dict) and "foley" not in data and "silent" in data:
+            data = {**data, "foley": "off" if data.get("silent") else "lite"}
+        return data
 
 
 class CaptionWord(BaseModel):
@@ -746,6 +759,8 @@ def scan_templates() -> None:
                     raise ValueError(f"missing SFX: {sfx['file']}")
                 if not 0 <= float(sfx.get("gain", 0.5)) <= 1.5:
                     raise ValueError(f"sfx gain out of range: {sfx['file']}")
+                if "lead" in sfx and not isinstance(sfx["lead"], bool):
+                    raise ValueError(f"sfx lead must be true or false: {sfx['file']}")
                 if "follow_value" in sfx:
                     # A sound can only follow a number that actually steps;
                     # against a smooth ramp there is nothing to tick on.
@@ -760,6 +775,11 @@ def scan_templates() -> None:
                         raise ValueError(
                             f"follow_value '{named}' is not one of motion.stagger.elements"
                         )
+            sounds = spec.get("sfx", [])
+            if sounds and all(s.get("lead") for s in sounds):
+                # `lite` is the default, so a pack whose every sound is a lead
+                # would place silently and read as broken rather than as quiet.
+                raise ValueError("every sfx entry is a lead: the block would be silent by default")
             for asset in spec.get("assets", []):
                 if not (d / asset).is_file():
                     raise ValueError(f"missing asset: {asset}")
@@ -920,15 +940,19 @@ def value_step_times(spec: dict[str, Any], item: Instance, element: str = "") ->
 def resolve_sfx_events(item: Instance, spec: dict[str, Any]) -> list[dict[str, Any]]:
     """Resolve one template instance into deterministic preview/export events.
 
-    A silenced block resolves to nothing at all rather than to muted events.
-    The timeline draws its SFX markers from this same list, so silence removes
-    the markers as well as the sound and the track stays an honest picture of
-    what the export will contain.
+    A silenced block resolves to nothing at all rather than to muted events,
+    and a `lite` one drops the pack's opening hit the same way. The timeline
+    draws its SFX markers from this same list, so what is not heard leaves no
+    marker either and the track stays an honest picture of the export.
     """
-    if item.silent:
+    if item.foley == "off":
         return []
     events: list[dict[str, Any]] = []
     for sound in spec.get("sfx", []):
+        # A `lead` sound is the hit that opens the block rather than part of
+        # its body, and `lite` is the block without it.
+        if sound.get("lead") and item.foley != "full":
+            continue
         if "follow_value" in sound:
             # A sound tied to a counting number: one tick per notch of the
             # ladder, so the ticking decelerates exactly as the digits do.
@@ -4480,48 +4504,83 @@ def breathe_level(level: str, orientation: str) -> float:
     return table.get(orientation, table["horizontal"])
 
 
-def breathe_spans(st: ProjectState) -> list[tuple[float, float, float]]:
+def breathe_framing(st: ProjectState, item: Instance) -> tuple[float, float, float]:
+    """One breathe block's depth and the point it pulls towards.
+
+    Mirrors breatheFraming() in index.html. The block's rectangle is a limit on
+    top of its strength rather than a replacement for it: the breath pulls at
+    the middle of the box and is not allowed to crop past its edges, so a block
+    left at the default box breathes exactly as it did when the box did not
+    exist. The zoom is uniform, so the tighter of the two edges is the one that
+    binds.
+    """
+    depth = breathe_level(str(item.fields.get("strength") or st.breathe), st.orientation)
+    rect = item.fields.get("rect")
+    if not isinstance(rect, dict):
+        return depth, 0.5, 0.5
+    try:
+        width = max(0.05, min(1.0, float(rect.get("w", 1.0))))
+        height = max(0.05, min(1.0, float(rect.get("h", 1.0))))
+        x = float(rect.get("x", 0.0))
+        y = float(rect.get("y", 0.0))
+    except (TypeError, ValueError):
+        return depth, 0.5, 0.5
+    ceiling = (1.0 / min(width, height) - 1.0) / 2.0
+    return min(depth, ceiling), x + width / 2, y + height / 2
+
+
+def breathe_spans(st: ProjectState) -> list[tuple[float, float, float, float, float]]:
     """Stretches where the breathing amplitude is not the project default.
 
     Two things override it, and they use one mechanism because they are the
     same statement about the frame. A `breathe` block says "here, breathe this
-    much". A camera block says "here, I am the move" - and that is an override
-    to zero, because stacking a punch-in on top of a pulse is the one way this
-    effect turns into seasickness.
+    much, towards here". A camera block says "here, I am the move" - and that
+    is an override to zero, because stacking a punch-in on top of a pulse is
+    the one way this effect turns into seasickness.
     """
-    spans: list[tuple[float, float, float]] = []
+    spans: list[tuple[float, float, float, float, float]] = []
     for item in st.instances:
         if item.duration <= 0:
             continue
         if item.template == "breathe":
-            level = str(item.fields.get("strength") or st.breathe)
             spans.append((item.start, item.start + item.duration,
-                          breathe_level(level, st.orientation)))
+                          *breathe_framing(st, item)))
         elif TEMPLATE_PACKS.get(item.template, {}).get("camera"):
-            spans.append((item.start, item.start + item.duration, 0.0))
+            spans.append((item.start, item.start + item.duration, 0.0, 0.5, 0.5))
     return sorted(spans)
 
 
-def breathe_amplitude_expr(st: ProjectState, time_expr: str) -> str:
-    """Breathing half-amplitude at `time_expr`, as an FFmpeg expression.
+def _breathe_expr(st: ProjectState, time_expr: str, index: int, base: float) -> str:
+    """One breathing quantity at `time_expr`, as an FFmpeg expression.
 
-    Piecewise linear: the project default everywhere, plus one trapezoid per
-    override that ramps its difference in and back out again. Overlapping
-    overrides would sum, so they are resolved into disjoint spans first.
+    Piecewise linear: `base` everywhere, plus one trapezoid per override that
+    ramps its difference in and back out again. Overlapping overrides would sum,
+    so they are resolved into disjoint spans first. The amplitude and both
+    centre axes share this, and share the ramps with it, so a block that is
+    both deeper and off-centre arrives and leaves as one movement, not three.
     """
-    base = breathe_level(st.breathe, st.orientation)
     parts = [f"{base:.9f}"]
     previous_end = -1e9
-    for start, end, amount in breathe_spans(st):
-        start = max(start, previous_end)
+    for span in breathe_spans(st):
+        start, end = max(span[0], previous_end), span[1]
         if end - start <= 1e-6:
             continue
         previous_end = end
         ramp = max(1e-3, min(BREATHE_RAMP, (end - start) / 3))
         window = (f"clip(min(({time_expr}-{start:.9f})/{ramp:.9f},"
                   f"({end:.9f}-{time_expr})/{ramp:.9f}),0,1)")
-        parts.append(f"{amount - base:.9f}*{window}")
+        parts.append(f"{span[index] - base:.9f}*{window}")
     return "(" + "+".join(parts) + ")"
+
+
+def breathe_amplitude_expr(st: ProjectState, time_expr: str) -> str:
+    """Breathing half-amplitude at `time_expr`, as an FFmpeg expression."""
+    return _breathe_expr(st, time_expr, 2, breathe_level(st.breathe, st.orientation))
+
+
+def breathe_centre_expr(st: ProjectState, time_expr: str, axis: str) -> str:
+    """Where the breath pulls at `time_expr`, in 0..1 frame coordinates."""
+    return _breathe_expr(st, time_expr, 3 if axis == "x" else 4, 0.5)
 
 
 def breathes(st: ProjectState) -> bool:
@@ -4533,7 +4592,7 @@ def breathes(st: ProjectState) -> bool:
     """
     if breathe_level(st.breathe, st.orientation) > 0:
         return True
-    return any(amount > 0 for _, _, amount in breathe_spans(st))
+    return any(span[2] > 0 for span in breathe_spans(st))
 
 
 def breathe_filter_graph(
@@ -4551,12 +4610,33 @@ def breathe_filter_graph(
     zoom = (f"(1+{amplitude}+{amplitude}*"
             f"sin(2*PI*{BREATHE_HZ:.9f}*{global_time}))")
     width, height = size or (st.source_info.width, st.source_info.height)
+
+    # `perspective`, not `zoompan`, and that swap is the whole of why the
+    # breathing was reported as wobbling. zoompan crops an integer rectangle:
+    # it truncates the crop size and the crop origin separately, so as the zoom
+    # creeps the two round at different moments and the centre of the picture
+    # slides between -1.0 and -0.5 pixels, flipping on nearly every frame. On a
+    # move that travels a long way that is lost inside the movement; on a breath
+    # that travels two per cent over four seconds it *is* the movement, and it
+    # reads as a shiver. Measured on a static 1080p source, the mean
+    # frame-to-frame difference under zoompan alternates across a thirty per
+    # cent band where perspective walks smoothly through the same values -
+    # perspective samples at 1/256 of a pixel, so there is nothing to snap to.
+    #
+    # It costs nothing extra: the warp is a pure centred zoom, its output is its
+    # input size, and the trailing scale is a no-op whenever the frame already
+    # is the size being asked for.
+    half_w, half_h = f"(W/(2*{zoom}))", f"(H/(2*{zoom}))"
+    centre_x = f"clip({breathe_centre_expr(st, global_time, 'x')}*W,{half_w},W-{half_w})"
+    centre_y = f"clip({breathe_centre_expr(st, global_time, 'y')}*H,{half_h},H-{half_h})"
+    left, right = f"({centre_x})-{half_w}", f"({centre_x})+{half_w}"
+    top, bottom = f"({centre_y})-{half_h}", f"({centre_y})+{half_h}"
     return (
-        f"{source}setpts=PTS-STARTPTS,"
-        f"zoompan=z='{zoom}':"
-        f"x='clip(0.5*iw-iw/(2*zoom),0,iw-iw/zoom)':"
-        f"y='clip(0.5*ih-ih/(2*zoom),0,ih-ih/zoom)':"
-        f"d=1:s={width}x{height}:fps={fps:.9f}"
+        f"{source}setpts=PTS-STARTPTS,fps={fps:.9f},"
+        f"perspective=x0='{left}':y0='{top}':x1='{right}':y1='{top}':"
+        f"x2='{left}':y2='{bottom}':x3='{right}':y3='{bottom}':"
+        f"interpolation=cubic:sense=source:eval=frame,"
+        f"scale={width}:{height}"
         f"{out}"
     )
 
@@ -6139,7 +6219,7 @@ def _test_breathe() -> None:
 
     # A camera block is an override to zero, so nothing stacks on a punch-in.
     state.instances = [Instance(id="p", template="punch-in", start=5, duration=3)]
-    assert (5.0, 8.0, 0.0) in breathe_spans(state)
+    assert (5.0, 8.0, 0.0, 0.5, 0.5) in breathe_spans(state)
     # ...and a project with the effect off but a `breathe` block asking for it
     # is still breathing, or the block would silently do nothing.
     quiet = ProjectState(
@@ -6157,8 +6237,38 @@ def _test_breathe() -> None:
     assert expression.count("(") == expression.count(")")
     assert f"{breathe_level('standard', 'horizontal'):.9f}" in expression and "clip(" in expression
 
+    # The block's rectangle is a limit on top of the strength, not a second
+    # strength: the default box is far wider than any strength asks for, so it
+    # changes nothing, and the centre is the middle of whatever box is drawn.
+    pack_default = TEMPLATE_PACKS["breathe"]["fields"][1]["default"]
+    roomy = Instance(id="b", template="breathe", start=0, duration=4,
+                     fields={"strength": "strong", "rect": pack_default})
+    assert breathe_framing(state, roomy)[0] == breathe_level("strong", "horizontal")
+    off_centre = roomy.model_copy(update={"fields": {
+        "strength": "strong", "rect": {"x": .5, "y": .1, "w": .4, "h": .5}}})
+    depth, cx, cy = breathe_framing(state, off_centre)
+    assert (cx, cy) == (0.7, 0.35)
+    # w=.4 caps the zoom at 1/.4, which is far beyond `strong`, so the tighter
+    # edge - h=.5 - is the one that binds, and it does not bind either.
+    assert depth == breathe_level("strong", "horizontal")
+    tight = roomy.model_copy(update={"fields": {"strength": "strong",
+                                                "rect": {"x": .01, "y": .01, "w": .98, "h": .98}}})
+    assert breathe_framing(state, tight)[0] < breathe_level("strong", "horizontal")
+    # A rect that is not a rect is ignored rather than crashing an export.
+    for junk in (None, "middle", {"w": "wide"}):
+        assert breathe_framing(state, roomy.model_copy(
+            update={"fields": {"strength": "strong", "rect": junk}}))[1] == 0.5
+
+    # The centre expression is a real expression, and it is 0.5 flat when
+    # nothing has asked for anything else.
+    centred = breathe_centre_expr(state, "T", "x")
+    assert centred.count("(") == centred.count(")") and "0.500000000" in centred
+
     graph = breathe_filter_graph(state, {"tl": 0.0}, 30, "[0:v]", "[base]")
-    assert "zoompan" in graph and "sin(" in graph
+    # zoompan is what made this wobble; see the note in breathe_filter_graph().
+    assert "zoompan" not in graph
+    assert "perspective=" in graph and "sin(" in graph and "eval=frame" in graph
+    assert graph.count("(") == graph.count(")")
     off = state.model_copy(update={"breathe": "off", "instances": []})
     assert breathe_filter_graph(off, {"tl": 0.0}, 30, "[0:v]", "[base]") \
         == "[0:v]setpts=PTS-STARTPTS[base]", "off must be genuinely off"
@@ -6248,10 +6358,18 @@ def _test_value_ladder() -> None:
     # exactly once: a "counting" sound that made a single click.
     assert not any("count-tick" in e["file"] for e in events)
 
-    # Silence still wins over the ladder.
-    item.silent = True
+    # Silence still wins over the ladder, and `lite` - the default - is the
+    # count without the pop that opens the block.
+    item.foley = "off"
     assert resolve_sfx_events(item, spec) == []
-    item.silent = False
+    item.foley = "full"
+    assert any("pop" in e["file"] for e in resolve_sfx_events(item, spec))
+    item.foley = "lite"
+    assert not any("pop" in e["file"] for e in resolve_sfx_events(item, spec))
+    assert any("count-wood" in e["file"] for e in resolve_sfx_events(item, spec))
+    # A project written before foley had three states still loads.
+    assert Instance(id="s9", template="stat-pop", start=0.0, duration=1.0,
+                    silent=True).foley == "off"
 
     # A short block shortens the climb, and the ticks follow it down rather
     # than running past the end of the block.

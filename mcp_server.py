@@ -199,10 +199,8 @@ def _brief_instance(item: dict[str, Any]) -> dict[str, Any]:
         summary["backdrop"] = True
     if item.get("depth") == "behind":
         summary["depth"] = "behind"
-    if item.get("silent"):
-        summary["silent"] = True
-    if item.get("tilt") and item["tilt"] != "off":
-        summary["tilt"] = item["tilt"]
+    if item.get("foley", "lite") != "lite":
+        summary["foley"] = item["foley"]
     return summary
 
 
@@ -378,14 +376,13 @@ mcp = MCPServer(
         "  * The PiP window shows the project speaker region, not the corner it sits in.\n"
         "    Call set_speaker_region once, then look at a render_frame to confirm it\n"
         "    frames the person rather than a shoulder.\n"
-        "  * `tilt` leans a block out of plane: \"left\" or \"right\" turns it, \"lean\" tips\n"
-        "    it away from the viewer. Tuned presets, not an angle. It combines with\n"
-        "    depth, so a tilted card can pass behind the speaker.\n"
         "\n"
         "Sound, and the frame that never sits still:\n"
-        "  * `silent: true` places a block without its template's foley. Use it when\n"
-        "    several blocks land within a few seconds and the edit starts to tick; it is\n"
-        "    a better answer than removing a block that is doing visual work.\n"
+        "  * `foley` is how much of a template's sound to play: \"off\" is silent,\n"
+        "    \"lite\" (the default) is the block without the hit that opens it, and\n"
+        "    \"full\" is everything the pack declares. Reach for \"off\" when several\n"
+        "    blocks land within a few seconds and the edit starts to tick; it is a\n"
+        "    better answer than removing a block that is doing visual work.\n"
         "  * The project breathes: a very slow scale drift runs under the whole video on\n"
         "    one clock, so the footage and every graphic move together and no shot is\n"
         "    ever completely still. It is a project setting (off/subtle/standard/strong),\n"
@@ -790,16 +787,12 @@ class Block(BaseModel):
                     "passes behind their head. 'behind' needs the subject matte, which is "
                     "built the first time the Look is used; without it the block stays in "
                     "front. Check `speaker_matte` in get_project before relying on it.")] = None
-    silent: Annotated[Optional[bool], Field(
-        description="Place this block without its template's foley. The sound belongs to "
-                    "the block, so silencing it removes the sound from the mix and its "
-                    "markers from the SFX track. Use it when several blocks land close "
-                    "together and the edit starts to tick.")] = None
-    tilt: Annotated[Optional[Literal["off", "left", "right", "lean"]], Field(
-        description="A small out-of-plane lean, so the block reads as an object lying on "
-                    "the scene rather than pasted on the glass. 'left' and 'right' turn "
-                    "it; 'lean' tips it away from the viewer. Tuned presets, not an angle: "
-                    "one value per name across every template. Combines with depth.")] = None
+    foley: Annotated[Optional[Literal["off", "lite", "full"]], Field(
+        description="How much of this template's foley to play. 'off' places the block "
+                    "silently; 'lite' (the default) plays it without the hit that opens "
+                    "it; 'full' plays everything the pack declares. The sound belongs to "
+                    "the block, so what is not played leaves the SFX track too. Reach for "
+                    "'off' when several blocks land close together and the edit ticks.")] = None
 
 
 @mcp.tool()
@@ -906,8 +899,7 @@ async def place_blocks(
             "backdrop": bool(pack.get("backdrop")) if block.backdrop is None
                         else bool(block.backdrop),
             "depth": block.depth or "front",
-            "silent": bool(block.silent),
-            "tilt": block.tilt or "off",
+            "foley": block.foley or "lite",
         })
 
     state.setdefault("instances", []).extend(created)
@@ -947,10 +939,9 @@ class BlockUpdate(BaseModel):
         description="Turn the blur-underneath on or off for this block.")] = None
     depth: Annotated[Optional[Literal["front", "behind"]], Field(
         description="Move this block in front of or behind the speaker.")] = None
-    silent: Annotated[Optional[bool], Field(
-        description="Silence or unsilence this block's foley.")] = None
-    tilt: Annotated[Optional[Literal["off", "left", "right", "lean"]], Field(
-        description="Change this block's lean: off, left, right or lean.")] = None
+    foley: Annotated[Optional[Literal["off", "lite", "full"]], Field(
+        description="Change this block's foley: 'off' silent, 'lite' without the hit "
+                    "that opens it, 'full' everything the template can play.")] = None
     delete: Annotated[bool, Field(description="Remove this block.")] = False
 
 
@@ -1006,10 +997,8 @@ async def update_blocks(
             item["backdrop"] = bool(update.backdrop)
         if update.depth is not None:
             item["depth"] = update.depth
-        if update.silent is not None:
-            item["silent"] = bool(update.silent)
-        if update.tilt is not None:
-            item["tilt"] = update.tilt
+        if update.foley is not None:
+            item["foley"] = update.foley
         changed += 1
     state["instances"] = [item for item in state["instances"] if item["id"] not in removals]
     state = await EDITORO.save(state)

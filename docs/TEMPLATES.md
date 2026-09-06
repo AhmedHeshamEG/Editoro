@@ -195,7 +195,8 @@ your own file in the pack folder:
 "sfx": [
   { "file": "_shared/sfx/paper-drop.wav", "offset": 0.05, "gain": 0.5 },
   { "file": "_shared/sfx/tick.wav", "offset_ratio": 0.2, "gain": 0.3,
-    "repeat_field": "items", "spread_ratio": 0.5 }
+    "repeat_field": "items", "spread_ratio": 0.5 },
+  { "file": "_shared/sfx/pop.wav", "offset": 0.02, "gain": 0.5, "lead": true }
 ]
 ```
 
@@ -212,6 +213,12 @@ your own file in the pack folder:
   `motion.value.steps`; a pack that asks for it without one is rejected at scan
   time, because against a smooth ramp there is nothing to tick on. `stat-pop` is
   the worked example.
+- `lead: true` marks the hit that *opens* the block rather than being part of
+  its body. It is the one sound a block's `foley` setting can drop on its own:
+  `full` plays it, `lite` — the default — does not, and `off` plays nothing.
+  Mark an opening pop or whoosh with it and leave the body of the sound
+  unmarked; a pack whose every sound is a lead is rejected at scan time,
+  because it would place silently and read as broken rather than as quiet.
 - Every sound in `_shared/sfx/` is calibrated to one target, so `gain` is
   comparable across packs. 0.3–0.5 sits under speech; above 0.7 competes with it.
 
@@ -360,8 +367,7 @@ Two more per-block properties, neither of them a pack key:
 
 | Property | Effect |
 |---|---|
-| `silent: true` | The block contributes no foley to the mix and no markers to the SFX track. Silence is per block rather than per pack because the problem it solves is density — three blocks landing in four seconds — not a template being wrong. |
-| `tilt` | `off`, `left`, `right` or `lean`. A tuned rotation, vertical shear and shadow offset applied in `A.stage()`, so a pack gets it for free without knowing it exists. `lean` tips the card away from the viewer instead of turning it. |
+| `foley` | `off`, `lite` or `full`. How much of the pack's sound to play: nothing, the block without whatever opens it, or everything. It is per block rather than per pack because the problem it solves is density — three blocks landing in four seconds — not a template being wrong. Whatever is not played leaves no marker on the SFX track either, so the track stays a picture of the export. `lite` is the default. |
 
 ---
 

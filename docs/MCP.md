@@ -157,8 +157,7 @@ named problems rather than being silently dropped.
 |---|---|
 | `backdrop` | Frost the footage and every lower track while this block is on screen. |
 | `depth` | `front` or `behind` the speaker. `behind` needs the subject matte — check `speaker_matte` in `get_project` first. |
-| `silent` | Place the block without its template's foley. Use it when several blocks land within a few seconds and the edit starts to tick; it is a better answer than deleting a block that is doing visual work. |
-| `tilt` | `off`, `left`, `right` or `lean`. A small out-of-plane lean so the block reads as an object on the scene. Tuned presets, not an angle. Combines with `depth`. |
+| `foley` | `off`, `lite` or `full`. How much of the template's sound to play: nothing, the block without the hit that opens it, or everything the pack declares. `lite` is the default. Reach for `off` when several blocks land within a few seconds and the edit starts to tick; it is a better answer than deleting a block that is doing visual work. |
 
 Two things the timeline does on its own are worth knowing about before you place
 anything. The project **breathes** — a very slow scale drift on one shared clock
