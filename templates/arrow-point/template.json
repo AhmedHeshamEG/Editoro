@@ -2,7 +2,7 @@
   "id": "arrow-point",
   "version": 1,
   "schema": 2,
-  "display_name": "سهم · Arrow",
+  "display_name": "Arrow",
   "category": "annotation",
   "category_color": "#F87171",
   "directive_verb": "سهم",
@@ -84,6 +84,9 @@
         "arrow",
         "label"
       ]
+    },
+    "value": {
+      "ms": 380
     }
   },
   "sfx": [

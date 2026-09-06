@@ -19,7 +19,7 @@
 from __future__ import annotations
 import copy
 import unicodedata
-import asyncio, base64, json, math, mimetypes, os, re, shutil, struct, subprocess, sys, tempfile, threading, time, uuid, webbrowser
+import asyncio, base64, collections, hashlib, json, math, mimetypes, os, re, shutil, struct, subprocess, sys, tempfile, threading, time, uuid, webbrowser
 import importlib.util
 from datetime import datetime
 from pathlib import Path
@@ -51,9 +51,31 @@ VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
 ASSET_EXTENSIONS = VIDEO_EXTENSIONS | {".png", ".jpg", ".jpeg", ".webp", ".gif", ".pdf", ".wav", ".mp3", ".m4a"}
 
 
+# On Windows a child spawned from a console joins that console's process
+# group, so a Ctrl-C or Ctrl-Break delivered to Editoro's window is delivered
+# to every FFmpeg it started as well. An export that dies that way exits with
+# 0xC000013A (3221225786) part-way through writing a span, and the join step
+# then has nothing to assemble. CREATE_NEW_PROCESS_GROUP takes the children out
+# of that group; CREATE_NO_WINDOW stops each one flashing a console of its own.
+# Cancellation still works, because cancellation terminates the process handle
+# directly rather than relying on a console event.
+CHILD_FLAGS = (
+    subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    if sys.platform == "win32" else 0
+)
+
+
+def _append_log(log_file: Optional[Path], line: str) -> None:
+    """One note in the export log, for things that are not a subprocess."""
+    if not log_file:
+        return
+    with open(log_file, "a", encoding="utf-8") as handle:
+        handle.write(f"{line}\n")
+
+
 def run(cmd: list[str], log_file: Optional[Path] = None, check: bool = False) -> subprocess.CompletedProcess:
     """Run a subprocess, optionally appending full command + output to a log."""
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    p = subprocess.run(cmd, capture_output=True, text=True, creationflags=CHILD_FLAGS)
     if log_file:
         with open(log_file, "a", encoding="utf-8") as f:
             f.write("\n$ " + " ".join(cmd) + "\n" + (p.stderr or "") + "\n")
@@ -74,6 +96,7 @@ async def run_cancelable(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        creationflags=CHILD_FLAGS,
     )
     communicate = asyncio.create_task(process.communicate())
     canceled = asyncio.create_task(cancel.wait())
@@ -144,6 +167,34 @@ class Instance(BaseModel):
     missing: bool = False             # asset not yet filled
     review: bool = False              # ⚠️ (meme directives)
     locked: bool = False              # ignored by ripple edits and agent bulk ops
+    # Frosted glass. When true, everything composited below this block - the
+    # footage and any lower-track block - is blurred, and this block and
+    # everything above it stay sharp. It is a property of the block rather than
+    # a separate timeline object so that moving the block moves its blur, and
+    # so the blur can never be left behind on the timeline by accident.
+    backdrop: bool = False
+    # Where this block sits relative to the speaker. "front" is over them, the
+    # way every overlay has always worked. "behind" composites it between the
+    # background and the speaker, using the same matte the look already builds,
+    # so the block passes behind their head instead of across it. This is a
+    # toggle rather than a track order because track order means time-and-stack
+    # everywhere else in the editor, and overloading it here would make two
+    # unrelated things share one control.
+    depth: Literal["front", "behind"] = "front"
+    # Foley, per block. A template's sounds are generated from its pack, which
+    # is right nearly always and wrong when three blocks land in four seconds
+    # and the edit starts to tick. Silencing is a property of the block for the
+    # same reason `backdrop` is: the sound belongs to the thing that made it, so
+    # moving the block moves its foley and deleting the block takes the sound
+    # with it. A silent block contributes no events to the mix AND no markers to
+    # the SFX track, so that track always shows exactly what will be heard.
+    silent: bool = False
+    # A small out-of-plane lean, so a card reads as an object lying on the scene
+    # rather than a rectangle stuck to the glass. Named presets rather than a
+    # rotation control: each name carries a tuned rotation, perspective and
+    # shadow offset that stay consistent across every template, which is the
+    # only way 37 packs go on leaning the same way.
+    tilt: Literal["off", "left", "right", "lean"] = "off"
 
 
 class CaptionWord(BaseModel):
@@ -171,6 +222,11 @@ class CaptionBlock(BaseModel):
     x: Optional[float] = Field(default=None, ge=0, le=1)
     y: Optional[float] = Field(default=None, ge=0, le=1)
     scale: Optional[float] = Field(default=None, ge=0.2, le=4)
+    # The project-wide caption placement is kept per orientation, so a pinned
+    # caption has to be too. Without this, dragging one caption in 16:9 moves
+    # it in 9:16 as well, which is exactly the thing the rest of the editor
+    # goes out of its way to avoid.
+    layouts: dict[Literal["horizontal", "vertical"], Placement] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def ordered(self):
@@ -200,6 +256,47 @@ class CaptionStyle(BaseModel):
     preset: Literal["lower", "center", "upper", "custom"] = "lower"
 
 
+class LookRequest(BaseModel):
+    """What the panel and the agent are allowed to change about the look."""
+    defocus: Optional[float] = Field(default=None, ge=0, le=1)
+    grade: Optional[float] = Field(default=None, ge=0, le=1)
+
+
+class Look(BaseModel):
+    """Project-level defocus and grade. Two numbers; everything else derived."""
+    # Amount of background defocus, 0 = off. The blur radius is a fraction of
+    # the frame's short edge, so one number means the same look whether the
+    # footage is 1080p landscape or 4K vertical.
+    defocus: float = Field(default=0.0, ge=0, le=1)
+    # Strength of the automatic grade, 0 = off. The LUT is written already
+    # interpolated toward identity by this amount, so the preview and the
+    # export read one table instead of running two implementations of the same
+    # intent and hoping they agree.
+    grade: float = Field(default=0.0, ge=0, le=1)
+    # The source revision each artefact was built from. Replacing the footage
+    # changes that revision, which is what makes a stale matte stop being used
+    # rather than being quietly composited over different pixels.
+    matte_revision: str = ""
+    grade_revision: str = ""
+    analysis: dict[str, Any] = Field(default_factory=dict)
+
+
+class Preview(BaseModel):
+    """Which proxy files exist and what they were built from.
+
+    The editor plays a proxy rather than the source. A talking-head master is
+    routinely 4K and several gigabytes, and no browser scrubs that smoothly -
+    but a 960-pixel copy with a short GOP scrubs instantly, and the export
+    never reads it, so nothing about the finished video depends on it.
+    """
+    # source_revision the plain proxy was built from.
+    base_key: str = ""
+    # source_revision plus the look amounts the baked-look proxy was built
+    # from. When this matches, the browser plays a proxy that already has the
+    # look in it and skips the live compositor entirely.
+    look_key: str = ""
+
+
 class Cut(BaseModel):
     """Kept segment of the source video, in source-time coordinates, ordered."""
     src_in: float
@@ -210,6 +307,78 @@ class Cut(BaseModel):
         if self.src_in < 0 or self.src_out <= self.src_in:
             raise ValueError("cut range is invalid")
         return self
+
+
+class SpeakerRegion(BaseModel):
+    """Where the speaker is in the source frame, as fractions of it.
+
+    Set once for the project, the way the caption position is: a talking head
+    does not move between shots, so asking for it per block would be asking the
+    same question over and over. A PiP block can still override it when one
+    shot is framed differently, and does that through the same drag-a-box tool
+    on the preview.
+
+    The default is a tall box through the middle of the frame, which is where a
+    person sitting in front of a camera actually is - not the whole frame, which
+    is what the old PiP effectively used and why it showed a corner of a
+    shoulder instead of a face.
+    """
+    x: float = Field(default=0.30, ge=0, le=1)
+    y: float = Field(default=0.04, ge=0, le=1)
+    w: float = Field(default=0.40, gt=0.02, le=1)
+    h: float = Field(default=0.84, gt=0.02, le=1)
+
+
+class ThumbElement(BaseModel):
+    """One thing on the thumbnail canvas.
+
+    Deliberately a flat list of five kinds rather than the template packs. A
+    template is a thing that animates over footage for a few seconds; a
+    thumbnail element is a thing that sits still forever and has to survive
+    being three centimetres wide in a feed. They want different type weights,
+    different outlines and no motion at all, so sharing the pack machinery
+    would mean every pack growing a second personality.
+    """
+    id: str
+    kind: Literal["headline", "subhead", "cutout", "image", "marker"]
+    text: str = Field(default="", max_length=120)
+    asset: str = ""                   # filename in assets/, for kind="image"
+    marker: Literal["arrow", "circle", "cross", "underline"] = "arrow"
+    color: str = Field(default="", max_length=9)   # "" = layout's tuned colour
+    x: float = Field(default=0.5, ge=-1, le=2)
+    y: float = Field(default=0.5, ge=-1, le=2)
+    scale: float = Field(default=1.0, ge=0.05, le=10)
+    rotate: float = Field(default=0.0, ge=-45, le=45)
+    # The same trick the timeline blocks use: the inactive orientation's
+    # placement is parked here, so designing once and exporting both sizes is
+    # lossless rather than a reset.
+    layouts: dict[Literal["horizontal", "vertical"], Placement] = Field(default_factory=dict)
+
+
+class Thumbnail(BaseModel):
+    """The first-frame / cover design for this project.
+
+    A preset chooses the starting arrangement and then gets out of the way -
+    every element stays movable, scalable and deletable, and more can be added.
+    The preset exists to answer "where does the text go" in one click, not to
+    lock the design.
+    """
+    layout: str = "headline-left"
+    # Where the picture behind it comes from. "frame" grabs `frame_time` off
+    # the timeline; "asset" uses a dropped file; "color" is a flat ground for
+    # when the cutout is the whole picture.
+    base: Literal["frame", "asset", "color"] = "frame"
+    frame_time: float = Field(default=0.0, ge=0)
+    asset: str = ""
+    background: str = Field(default="#141210", max_length=9)
+    # Cut the speaker out of the base frame and composite them back on top of
+    # everything, so headline text can pass behind their shoulder. Needs the
+    # subject matte, same as depth="behind" does.
+    cutout: bool = True
+    elements: list[ThumbElement] = Field(default_factory=list)
+    # Seconds of the finished design held on the front of the exported video.
+    # 0 means the design is only ever written out as an image file.
+    hold: float = Field(default=0.0, ge=0, le=5)
 
 
 class ProjectState(BaseModel):
@@ -229,6 +398,20 @@ class ProjectState(BaseModel):
     directives_review: list[str] = Field(default_factory=list)  # unparseable lines
     ripple: bool = True
     notes: str = Field(default="", max_length=8000)   # free text for agents and humans
+    look: Look = Field(default_factory=Look)  # defocus + grade, per project
+    # Where the speaker stands. Read by any template that shows the footage
+    # inside itself, which today means the PiP window.
+    speaker_region: SpeakerRegion = Field(default_factory=SpeakerRegion)
+    preview: Preview = Field(default_factory=Preview)   # proxy files, editor only
+    # The frame is never completely still. A very slow scale oscillation runs
+    # under the whole project on one clock, so the footage and every overlay
+    # breathe in phase instead of each drifting on its own random seed. It is a
+    # project setting rather than a block because its whole value is that it is
+    # everywhere and unbroken; a `breathe` block overrides the strength over a
+    # stretch, and a hand-placed camera move switches it off for its own span so
+    # two moves never stack. See BREATHE_LEVELS for the tuned numbers.
+    breathe: Literal["off", "subtle", "standard", "strong"] = "standard"
+    thumbnail: Thumbnail = Field(default_factory=Thumbnail)
 
     @field_validator("name")
     @classmethod
@@ -297,6 +480,12 @@ class ProjectState(BaseModel):
             if timeline_duration:
                 block.start = min(block.start, max(0.0, timeline_duration - frame))
                 block.end = min(timeline_duration, max(block.start + frame, block.end))
+            # Same rule as instances: seed the active orientation from the flat
+            # fields for states written before captions had layouts, but never
+            # overwrite one that is already stored.
+            if not block.follow_global and block.x is not None and block.y is not None:
+                block.layouts.setdefault(self.orientation, Placement(
+                    x=block.x, y=block.y, scale=block.scale or 1.0))
         self.instances.sort(key=lambda item: (item.start, item.track, item.id))
         self.captions.sort(key=lambda item: (item.start, item.id))
         return self
@@ -439,6 +628,16 @@ def _check_motion(motion: dict[str, Any]) -> None:
     blur = motion.get("blur")
     if blur is not None and not 1 <= int(blur.get("max", 6)) <= 12:
         raise ValueError("motion.blur.max must be between 1 and 12")
+    value = motion.get("value")
+    if value is not None:
+        if not isinstance(value, dict):
+            raise ValueError("motion.value must be an object")
+        steps = value.get("steps", 0)
+        if not isinstance(steps, (int, float)) or not 0 <= int(steps) <= 64:
+            raise ValueError("motion.value.steps must be between 0 and 64")
+        ratio = value.get("ratio", 1)
+        if not isinstance(ratio, (int, float)) or not 1 <= float(ratio) <= 2:
+            raise ValueError("motion.value.ratio must be between 1 and 2")
 
 
 def _check_variants(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -527,16 +726,44 @@ def scan_templates() -> None:
                     raise ValueError(f"missing SFX: {sfx['file']}")
                 if not 0 <= float(sfx.get("gain", 0.5)) <= 1.5:
                     raise ValueError(f"sfx gain out of range: {sfx['file']}")
+                if "follow_value" in sfx:
+                    # A sound can only follow a number that actually steps;
+                    # against a smooth ramp there is nothing to tick on.
+                    motion_block = spec.get("motion") or {}
+                    if not int((motion_block.get("value") or {}).get("steps", 0)):
+                        raise ValueError(
+                            f"{sfx['file']} follows a value, so motion.value.steps is required"
+                        )
+                    named = str(sfx["follow_value"] or "")
+                    known = (motion_block.get("stagger") or {}).get("elements") or []
+                    if named and named not in known:
+                        raise ValueError(
+                            f"follow_value '{named}' is not one of motion.stagger.elements"
+                        )
             for asset in spec.get("assets", []):
                 if not (d / asset).is_file():
                     raise ValueError(f"missing asset: {asset}")
             spec["_has_render"] = (d / "render.js").exists()
             if not spec["_has_render"]:
                 raise ValueError("render.js is required; the engine has no built-in renderers")
+            # The UI imports render.js as an ES module, and the browser caches
+            # module URLs hard - it will not even revalidate one it already has.
+            # A hand-written "version" in template.json only busts that cache if
+            # somebody remembers to bump it, and forgetting is silent: the edited
+            # file sits on disk while the page keeps running the old one. So the
+            # cache key is the file's own mtime, which cannot be forgotten.
+            spec["_rev"] = str(int((d / "render.js").stat().st_mtime))
             TEMPLATE_PACKS[spec["id"]] = spec
+            review_flag = bool(spec.get("directive_review"))
             verb = spec.get("directive_verb")
             if verb:
-                VERB_TO_TEMPLATE[verb] = (spec["id"], bool(spec.get("directive_review")))
+                VERB_TO_TEMPLATE[verb] = (spec["id"], review_flag)
+            # The palette speaks English, so the directive grammar does too:
+            # every pack answers to its own id and to any alias it declares.
+            # The Arabic verbs above keep working, so directive lists already
+            # written still parse exactly as they did.
+            for alias in [spec["id"], *spec.get("directive_aliases", [])]:
+                VERB_TO_TEMPLATE.setdefault(str(alias).lower(), (spec["id"], review_flag))
         except Exception as e:
             TEMPLATE_ERRORS[d.name] = str(e)
             print(f"[templates] skipping {d.name}: {e}")
@@ -547,6 +774,8 @@ def scan_templates() -> None:
         VERB_TO_TEMPLATE["ميم"] = ("image-pop", True)
     VERB_TO_TEMPLATE["مولّد"] = ("__placeholder__", True)
     VERB_TO_TEMPLATE["مولد"] = ("__placeholder__", True)
+    for alias in ("generate", "placeholder"):
+        VERB_TO_TEMPLATE.setdefault(alias, ("__placeholder__", True))
 
 
 def camera_packs() -> set[str]:
@@ -576,10 +805,88 @@ def sfx_repeat_count(item: Instance, field_name: str) -> int:
     return 1
 
 
+# The counting ladder. A number that climbs has to be *read*, and a mechanical
+# counter does not glide - it advances a notch at a time, quickly at first and
+# then slower as it settles on the figure. `steps` cuts the climb into that many
+# notches and `ratio` is how much longer each gap is than the one before it, so
+# at ratio 1.145 the first notch lasts 50 ms and the last one 170 ms. The
+# positions are a geometric series normalised onto the value window, which makes
+# them exactly invertible: the same two lines give the picture its step times
+# and the foley its tick times, so every tick you hear is a digit you see
+# changing. An easing curve cannot do this job - inverting one puts most of the
+# ticks in the first fifth and then leaves half a second of silence before the
+# final one, because the tail of an ease-out is flat by design.
+DEFAULT_VALUE_MOTION = {
+    "easing": "outQuint", "ms": 0, "min_ms": 900, "delay_ms": 0,
+    "steps": 0, "ratio": 1.0,
+}
+
+
+def value_ramp(spec: dict[str, Any], item: Instance,
+               element: str = "") -> tuple[float, float, dict[str, Any]]:
+    """When a quantity starts climbing and how long it climbs for.
+
+    A mirror of `valueAt()` in index.html, kept here because the audio mix is
+    built in Python while the picture is drawn in the browser. `_test_value_ladder()`
+    and the stat step in tools/test_ui.py assert the two against each other.
+    """
+    motion = spec.get("motion") or {}
+    value = {**DEFAULT_VALUE_MOTION, **(motion.get("value") or {})}
+    stagger = motion.get("stagger") or {}
+    elements = list(stagger.get("elements") or [])
+    index = elements.index(element) if element in elements else 0
+    delay = (index * float(stagger.get("step_ms", 0)) + float(value["delay_ms"])) / 1000
+    entrance = float((motion.get("in") or {}).get("ms", 340)) / 1000
+    wanted = float(value["ms"]) / 1000 or max(entrance, float(value["min_ms"]) / 1000)
+    # Never still climbing when the block starts to leave: a number that never
+    # reaches its value is worse than one that arrives early.
+    room = max(.15, item.duration * .65 - delay)
+    return delay, max(.05, min(wanted, room)), value
+
+
+def value_step_times(spec: dict[str, Any], item: Instance, element: str = "") -> list[float]:
+    """Times, relative to the block, at which a stepped count-up advances a notch."""
+    delay, window, value = value_ramp(spec, item, element)
+    steps = max(0, min(64, int(value.get("steps") or 0)))
+    if steps < 1:
+        return []
+    ratio = float(value.get("ratio") or 1.0)
+    span = ratio ** steps - 1 if ratio > 1.0001 else 0.0
+    # k starts at 1: the times are the moments the number *changes*, and there
+    # are `steps` of those, not `steps + 1`. The last one is the arrival, so the
+    # final tick and the final digit are the same instant.
+    return [delay + window * ((ratio ** k - 1) / span if span else k / steps)
+            for k in range(1, steps + 1)]
+
+
 def resolve_sfx_events(item: Instance, spec: dict[str, Any]) -> list[dict[str, Any]]:
-    """Resolve one template instance into deterministic preview/export events."""
+    """Resolve one template instance into deterministic preview/export events.
+
+    A silenced block resolves to nothing at all rather than to muted events.
+    The timeline draws its SFX markers from this same list, so silence removes
+    the markers as well as the sound and the track stays an honest picture of
+    what the export will contain.
+    """
+    if item.silent:
+        return []
     events: list[dict[str, Any]] = []
     for sound in spec.get("sfx", []):
+        if "follow_value" in sound:
+            # A sound tied to a counting number: one tick per notch of the
+            # ladder, so the ticking decelerates exactly as the digits do.
+            offset = float(sound.get("offset", 0))
+            for index, step in enumerate(value_step_times(
+                    spec, item, str(sound.get("follow_value") or ""))):
+                relative = step + offset
+                if relative <= item.duration:
+                    events.append({
+                        "time": item.start + relative,
+                        "file": sound["file"],
+                        "path": sfx_file(spec, sound["file"]),
+                        "gain": float(sound.get("gain", 0.5)),
+                        "index": index,
+                    })
+            continue
         count = sfx_repeat_count(item, sound.get("repeat_field", ""))
         if "offset_ratio" in sound:
             base = item.duration * float(sound["offset_ratio"])
@@ -664,7 +971,7 @@ def waveform_peaks(name: str) -> list[float]:
         return []
     src = d / st.source
     p = subprocess.run([FFMPEG, "-v", "quiet", "-i", str(src), "-ac", "1", "-ar", "8000",
-                        "-f", "s16le", "-"], capture_output=True)
+                        "-f", "s16le", "-"], capture_output=True, creationflags=CHILD_FLAGS)
     raw = p.stdout
     if p.returncode or not raw:
         cache.write_text("[]", encoding="utf-8")
@@ -726,11 +1033,15 @@ anchor  = timestamp and/or a verbatim "quote" from the transcript.
           Quote forms tolerated:      "..."  «...»  “...”
           If only a quote is given, its timestamp is located in the imported
           word-level transcript (first fuzzy match of the word sequence).
-VERB    = Arabic command verb → template category:
+VERB    = the template to place. Any template id works as a verb — keyword,
+          image-pop, stat-pop, screen, punch-in, video-clip — as does
+          `generate` for a placeholder to fill in later. Verbs are matched
+          case-insensitively, as whole words, and never inside the quote.
+          The original Arabic verbs remain accepted as aliases:
           نص → keyword · صورة → image-pop · ب-رول → video-clip · سكرين → screen
           زوم → punch-in · ميم → image-pop (+review ⚠️) · مولّد → placeholder
 Lines that cannot be parsed are collected into a review list — never dropped.
-For نص, the text field = the words inside the quote (verbatim spoken words).
+For keyword, the text field = the words inside the quote (verbatim spoken words).
 """
 
 TS = r"(?:(\d{1,2}):)?(\d{1,2}):(\d{2})"
@@ -774,13 +1085,23 @@ def parse_directives(text: str, st: ProjectState) -> tuple[list[Instance], list[
     verbs = sorted(VERB_TO_TEMPLATE.keys(), key=len, reverse=True)
     if not verbs:
         return [], [line for line in text.splitlines() if line.strip()]
-    VERB_RE = re.compile("(" + "|".join(map(re.escape, verbs)) + ")")
+    # English verbs are ordinary words, so they only count as a command when
+    # they stand alone: "screen" is a directive, the "screen" inside
+    # "screenshot" is not. Arabic verbs keep matching as bare substrings, which
+    # is how every directive list written so far parses.
+    VERB_RE = re.compile("(" + "|".join(
+        rf"\b{re.escape(v)}\b" if v.isascii() else re.escape(v) for v in verbs) + ")",
+        re.IGNORECASE)
     out, review = [], []
     for raw in text.splitlines():
         line = raw.strip().lstrip("-•*·").strip()
         if not line:
             continue
-        vm = VERB_RE.search(line)
+        # The quote is what the speaker said, not an instruction, so the verb
+        # is looked for everywhere except inside it. Blanking the quoted span
+        # rather than removing it keeps every offset lined up with `line`.
+        masked = QUOTE.sub(lambda m: " " * len(m.group(0)), line)
+        vm = VERB_RE.search(masked)
         tm = TS_ANY.search(line)
         qm = QUOTE.search(line)
         t = None
@@ -790,7 +1111,7 @@ def parse_directives(text: str, st: ProjectState) -> tuple[list[Instance], list[
             t = find_quote_time(qm.group(1), st.captions)
         if vm is None or t is None:
             review.append(raw); continue
-        tid, flag = VERB_TO_TEMPLATE[vm.group(1)]
+        tid, flag = VERB_TO_TEMPLATE[vm.group(1).lower()]
         if tid == "__placeholder__":
             tid = "image-pop" if "image-pop" in TEMPLATE_PACKS else "keyword"
         spec = TEMPLATE_PACKS.get(tid, {})
@@ -811,6 +1132,7 @@ def parse_directives(text: str, st: ProjectState) -> tuple[list[Instance], list[
             id=f"i-{uuid.uuid4().hex[:12]}", template=tid, start=round(t, 3),
             duration=duration, fields=fields,
             missing=needs_asset, review=flag,
+            backdrop=bool(spec.get("backdrop")),
             x=spec.get("zones", {}).get(st.orientation, {}).get("x", 0.5),
             y=spec.get("zones", {}).get(st.orientation, {}).get("y", 0.3),
             scale=spec.get("zones", {}).get(st.orientation, {}).get("scale", 1.0),
@@ -828,6 +1150,20 @@ def _test_parser():
     assert ok[0].template == "keyword" and ok[0].start == 5 and ok[0].fields["text"] == "hello"
     assert ok[1].template == "punch-in" and ok[1].start == 13
     assert ok[2].review is True and ok[2].missing is True
+
+    # English verbs, matched case-insensitively and as whole words.
+    ok, rv = parse_directives(
+        '[0:05] keyword "hello"\n[0:08] Image-Pop a diagram\n[0:11] stat-pop 40', st)
+    assert len(ok) == 3 and not rv, (ok, rv)
+    assert [i.template for i in ok] == ["keyword", "image-pop", "stat-pop"]
+
+    # A verb inside the quote is speech, not a command: this line is a keyword
+    # card, not a screen recording, and "screenshot" must not trigger `screen`.
+    ok, rv = parse_directives('[0:20] keyword "put it on the screen"\n'
+                              '[0:30] image-pop screenshot of the dashboard', st)
+    assert len(ok) == 2 and not rv, (ok, rv)
+    assert [i.template for i in ok] == ["keyword", "image-pop"]
+    assert ok[0].fields["text"] == "put it on the screen"
     print("parser tests OK")
 
 
@@ -983,10 +1319,18 @@ def api_diagnostics():
     renderer = renderer_executable()
     return {
         **api_health(),
-        "nvenc": has_nvenc(),
+        "nvenc": nvenc_available(),
         "whisper": importlib.util.find_spec("faster_whisper") is not None,
         "whisper_models": str(WHISPER_MODELS_DIR),
+        # The Look panel needs a runtime now and a ~400 MB network on first use.
+        # Reporting both separately is the difference between "install the
+        # dependency" and "the first analysis will take a minute longer".
+        "depth_runtime": importlib.util.find_spec("onnxruntime") is not None,
+        "depth_model": depth_model_ready(),
         "cuda_gpu": bool(shutil.which("nvidia-smi")),
+        # Empty unless the machine has a GPU the depth runtime cannot see, which
+        # is the one configuration that costs hours and reports nothing.
+        "depth_warning": depth_provider_warning(),
         "renderer": bool(renderer),
         "renderer_path": str(renderer) if renderer else "",
         "python": sys.version.split()[0],
@@ -1002,6 +1346,40 @@ def api_diagnostics():
             for template_id, spec in sorted(TEMPLATE_PACKS.items())
         },
     }
+
+
+# Frames on their way out of the browser. See EXPORT_FRAME_SINK below.
+EXPORT_FRAMES: dict[str, dict[int, bytes]] = {}
+
+
+@app.post("/api/export/frame/{token}/{seq}")
+async def api_export_frame(token: str, seq: int, request: Request):
+    """One rendered overlay frame, posted back by the headless renderer.
+
+    Returning frames as base64 data URLs through page.evaluate is what made a
+    4K export unusable. Chromium encodes the PNG, expands it by a third into
+    base64, then serialises a whole batch of those into a single CDP JSON
+    message - about 58 MB of string per eight frames at 2160x3840, and the
+    measured cost was seconds per frame, dwarfing the PNG encode itself.
+
+    Posting each frame back as a binary body instead keeps the same PNG and the
+    same FFmpeg input format, and simply stops paying for base64 and for JSON.
+    The page and this server are the same origin, so no CORS, no upgrade
+    handshake, and one ordinary route.
+    """
+    sink = EXPORT_FRAMES.get(token)
+    if sink is None:
+        # Either the export was canceled while a frame was in flight, or this
+        # page is posting to a different Editoro process than the one running
+        # its export. Both are survivable - the renderer falls back to a data
+        # URL - but the second is worth being able to see, because it makes
+        # every export mysteriously slow and nothing else would mention it.
+        print(f"[export] frame {seq} arrived for an unknown session {token[:8]}; "
+              f"{len(EXPORT_FRAMES)} session(s) known here",
+              file=sys.stderr, flush=True)
+        raise HTTPException(410, "that export is no longer running")
+    sink[seq] = await request.body()
+    return {"ok": True}
 
 
 @app.get("/api/templates")
@@ -1126,6 +1504,10 @@ async def api_source(name: str, file: UploadFile):
     if old_source and old_source != dest:
         old_source.unlink(missing_ok=True)
     (d / "waveform.json").unlink(missing_ok=True)
+    # The old proxies describe footage that is no longer here. Remove them
+    # before the browser can ask for one, then start the replacement.
+    shutil.rmtree(preview_dir(name), ignore_errors=True)
+    ensure_preview(name, st)
     return st.model_dump()
 
 
@@ -1227,6 +1609,7 @@ async def api_regroup_captions(name: str, req: Request):
         if previous is not None:
             block.follow_global = previous.follow_global
             block.x, block.y, block.scale = previous.x, previous.y, previous.scale
+            block.layouts = dict(previous.layouts)
     st.captions = sorted(regrouped + edited, key=lambda block: block.start)
     st.caption_style.mode = mode
     st.caption_style.words_per_chunk = max(1, min(24, per_chunk))
@@ -1508,6 +1891,13 @@ def tpl_file(pack: str, path: str):
     f = (TEMPLATES_DIR / pack / path).resolve()
     if TEMPLATES_DIR not in f.parents or not f.is_file():
         return Response(status_code=404)
+    # Scripts get revalidated on every load. render.js already carries an mtime
+    # in its query string, but the shared kit it imports does not, and a cached
+    # copy of that would strand every pack on stale code with nothing on screen
+    # to say so. Fonts and images keep the default caching; only code is cheap
+    # enough to check each time.
+    if f.suffix == ".js":
+        return FileResponse(f, headers={"Cache-Control": "no-cache"})
     return FileResponse(f)
 
 
@@ -1604,10 +1994,14 @@ def _configure_cuda_dlls() -> None:
     """Expose pip-installed NVIDIA DLLs before importing CTranslate2."""
     if os.name != "nt":
         return
-    candidates = [
-        Path(sys.prefix) / "Lib" / "site-packages" / "nvidia" / "cudnn" / "bin",
-        Path(sys.prefix) / "Lib" / "site-packages" / "nvidia" / "cublas" / "bin",
-    ]
+    site = Path(sys.prefix) / "Lib" / "site-packages" / "nvidia"
+    # CTranslate2 needs cuDNN and cuBLAS; ONNX Runtime's CUDA provider also
+    # loads the runtime, cuFFT, cuRAND and the JIT. Missing folders are simply
+    # skipped, so this stays correct on a machine with no GPU wheels at all.
+    candidates = [site / name / "bin" for name in (
+        "cudnn", "cublas", "cuda_runtime", "cufft", "curand",
+        "cuda_nvrtc", "nvjitlink",
+    )]
     additions = [str(path) for path in candidates if path.is_dir()]
     if additions:
         os.environ["PATH"] = os.pathsep.join([
@@ -1875,7 +2269,1876 @@ async def api_cancel_transcription(name: str):
     return _public_transcription(name, job)
 
 
+# ------------------------------------------ [9c] Look - defocus and grade
+# Two effects, one panel, both derived from the footage rather than dialled in
+# by hand. The defocus needs to know how far away every pixel is; the grade
+# needs to know what the footage already looks like. Both answers are computed
+# once per project, written to disk, and then applied identically by FFmpeg on
+# export and by WebGL in the preview - which is the only thing that makes a
+# preview of a look worth looking at.
+DEPTH_MODEL_REPO = "onnx-community/depth-anything-v3-base"
+# Named after the model, not just "depth". Changing which network Editoro uses
+# has to invalidate what is already on disk - the files are called the same
+# thing in every repository, so a shared folder would quietly keep serving the
+# old network under the new name.
+DEPTH_MODEL_DIR = ROOT / ".models" / DEPTH_MODEL_REPO.split("/")[-1]
+DEPTH_MODEL_FILES = {
+    # model.onnx is a 600 KB graph whose weights live beside it in
+    # model.onnx_data; ONNX Runtime resolves that by filename, so the two have
+    # to land in one folder under exactly these names.
+    "model.onnx": f"https://huggingface.co/{DEPTH_MODEL_REPO}/resolve/main/onnx/model.onnx",
+    "model.onnx_data": f"https://huggingface.co/{DEPTH_MODEL_REPO}/resolve/main/onnx/model.onnx_data",
+}
+DEPTH_INPUT_EDGE = 518        # long edge fed to the model; a multiple of 14
+DEPTH_RATE = 24.0             # depth inferences per second of footage, on a GPU
+DEPTH_RATE_CPU = 8.0          # ...and on a CPU, where the same rate costs hours
+DEPTH_SAMPLES = 24            # frames used to calibrate the depth range
+DEPTH_BATCH = 8               # frames per inference; sized for a 6 GB card at fp16
+MATTE_EDGE = 1080             # long edge of the stored matte
+MATTE_VERSION = 2             # bumped when the depth pass changes; older mattes still work
+COLOR_SAMPLES = 16            # frames the grade is measured from
+COLOR_SAMPLE_EDGE = 320
+LUT_SIZE = 33
+GRADE_VERSION = 2             # bumped when the grade maths changes; stale cubes are rewritten
+GRADE_CONTRAST_FLOOR = 0.09   # every grade gets at least this much S-curve
+LOOK_JOBS: dict[str, dict[str, Any]] = {}
+DEPTH_SESSION: list[Any] = []   # one lazily built ONNX session per process
+
+
+def look_dir(project: str) -> Path:
+    return project_dir(project) / "look"
+
+
+def matte_path(project: str) -> Path:
+    return look_dir(project) / "matte.mp4"
+
+
+def cube_path(project: str) -> Path:
+    return look_dir(project) / "grade.cube"
+
+
+def cube_is_current(path: Path) -> bool:
+    """Was this .cube written by the grade maths this build ships?"""
+    if not path.is_file():
+        return False
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for _ in range(4):
+                line = handle.readline()
+                if not line:
+                    break
+                if line.startswith("# version:"):
+                    return int(line.split(":", 1)[1].strip()) == GRADE_VERSION
+    except (OSError, ValueError):
+        return False
+    return False
+
+
+def ensure_cube(st: ProjectState) -> None:
+    """Rewrite the grade table if it predates the current grade maths.
+
+    The measurement is the expensive half and it does not go stale; only the
+    table built from it does. So a build that changes the grade does not cost
+    anyone a re-analysis - the next time the table is read, it is rebuilt from
+    numbers that are already on disk.
+    """
+    path = cube_path(st.name)
+    if st.look.grade <= 0.001 or not st.look.analysis or cube_is_current(path):
+        return
+    numbers = {key: value for key, value in st.look.analysis.items()
+               if isinstance(value, (int, float))}
+    if not numbers:
+        return
+    try:
+        write_cube(path, numbers, st.look.grade)
+    except Exception:
+        pass          # a grade that cannot be rewritten is not worth failing an export over
+
+
+def look_state(st: ProjectState) -> dict[str, bool]:
+    """Which halves of the look are switched on *and* have a usable artefact."""
+    revision = st.source_revision
+    defocus = (
+        st.look.defocus > 0.001
+        and st.look.matte_revision == revision
+        and matte_path(st.name).is_file()
+    )
+    grade = (
+        st.look.grade > 0.001
+        and st.look.grade_revision == revision
+        and cube_path(st.name).is_file()
+    )
+    return {"defocus": defocus, "grade": grade}
+
+
+def look_active(st: ProjectState) -> bool:
+    flags = look_state(st)
+    return flags["defocus"] or flags["grade"]
+
+
+def _filter_path(path: Path) -> str:
+    """A path FFmpeg will accept inside a filter argument.
+
+    Windows drive letters are the problem: a colon separates filter options, so
+    `E:/x.cube` parses as an option named `E`. Escaping it is the documented
+    fix and is harmless everywhere else.
+    """
+    return path.as_posix().replace("\\", "/").replace(":", "\\:")
+
+
+def _smoothstep_lut(low: float, high: float) -> str:
+    """A lutyuv expression putting luma through smoothstep(low, high).
+
+    lutyuv evaluates this once per possible value and then uses the table, so
+    the cubic costs nothing per pixel - unlike geq, which would evaluate it per
+    pixel of every frame.
+    """
+    span = max(1e-3, high - low)
+    return (
+        f"st(0,clip((val-{low * 255:.4f})/{span * 255:.4f},0,1));"
+        "ld(0)*ld(0)*(3-2*ld(0))*255"
+    )
+
+
+def look_graph(
+    st: ProjectState,
+    input_label: str,
+    output_label: str,
+    matte_index: Optional[int],
+    pixel_scale: float = 1.0,
+) -> str:
+    """The defocus + grade chain, from `input_label` to `output_label`.
+
+    It runs *before* the camera move, not after: the matte describes the
+    original framing, and a punch-in should magnify an already-defocused frame
+    the way a lens does, rather than blur a crop with a mask that no longer
+    lines up with it.
+    """
+    flags = look_state(st)
+    parts: list[str] = []
+    label = input_label
+    if flags["defocus"] and matte_index is not None:
+        width = max(2, int(st.source_info.width * pixel_scale))
+        height = max(2, int(st.source_info.height * pixel_scale))
+        near, far = defocus_sigmas(st.look.defocus, width, height)
+        # The matte is stored small and limited-range like any other H.264 file.
+        # Expanding it to full range here is what makes these masks agree with
+        # the browser's, which does the same expansion in hardware when the
+        # matte is uploaded as a texture.
+        parts.append(
+            f"[{matte_index}:v]setpts=PTS-STARTPTS,"
+            f"scale={width}:{height}:flags=bicubic:in_range=tv:out_range=pc,"
+            # Eroding the matte pulls the blur a few pixels off the subject.
+            # Without it the blur reaches across the silhouette and smears the
+            # subject's own edge outward, which reads as a bad cutout; leaving a
+            # hair of sharp background behind instead is nearly invisible.
+            "format=gray,erosion,erosion,erosion,"
+            "tpad=stop=-1:stop_mode=clone,split=2[lknear][lkfar]"
+        )
+        parts.append(f"[lknear]lutyuv=y='{_smoothstep_lut(*DEFOCUS_NEAR_BAND)}'[lkmn]")
+        parts.append(f"[lkfar]lutyuv=y='{_smoothstep_lut(*DEFOCUS_FAR_BAND)}'[lkmf]")
+        # Three depth slices - sharp, softened, thrown away - blended by the
+        # matte, rather than one cutout pasted onto a blurred plate. That is
+        # what gives the wall behind a real falloff instead of a flat card.
+        parts.append(f"{label}setpts=PTS-STARTPTS,format=yuv420p,split=3[lk0][lk1][lk2]")
+        parts.append(f"[lk1]gblur=sigma={near:.3f}:steps=3[lkg1]")
+        parts.append(f"[lk2]gblur=sigma={far:.3f}:steps=3[lkg2]")
+        parts.append("[lkg1][lkmn]alphamerge[lka1]")
+        parts.append("[lkg2][lkmf]alphamerge[lka2]")
+        parts.append("[lk0][lka1]overlay=0:0:format=auto[lko1]")
+        parts.append("[lko1][lka2]overlay=0:0:format=auto[lkblur]")
+        label = "[lkblur]"
+    if flags["grade"]:
+        parts.append(
+            f"{label}lut3d=file='{_filter_path(cube_path(st.name))}':"
+            "interp=tetrahedral[lkgraded]"
+        )
+        label = "[lkgraded]"
+    if not parts:
+        return ""
+    # Whatever the last stage was, hand it on under the name the caller asked
+    # for instead of the internal one.
+    parts[-1] = parts[-1].rsplit("[", 1)[0] + output_label
+    return ";".join(parts)
+
+
+def look_inputs(st: ProjectState, src_in: float, duration: float,
+                need_matte: bool = False) -> list[str]:
+    """The extra `-i` arguments the look needs for one span, or none at all.
+
+    `need_matte` forces the matte in for a span that does not defocus but does
+    put a block behind the speaker, which needs the same silhouette.
+    """
+    if not look_state(st)["defocus"] and not (need_matte and matte_ready(st)):
+        return []
+    args = [
+        "-ss", f"{max(0.0, src_in):.6f}",
+        "-t", f"{duration + 0.5:.6f}",
+        "-i", str(matte_path(st.name)),
+    ]
+    if gpu_look_available(st) and look_state(st)["grade"]:
+        # A still image looped for as long as the span lasts. It is a video
+        # input because that is the only kind of thing a filter graph can hand
+        # to a kernel, not because anything about it moves.
+        ensure_cube(st)
+        args += ["-loop", "1", "-framerate", f"{st.source_info.fps or 30:.6f}",
+                 "-t", f"{duration + 0.5:.6f}", "-i", str(write_lut_image(st))]
+    return args
+
+
+def base_video_graph(
+    st: ProjectState, seg: dict, fps: float, matte_index: Optional[int] = None
+) -> str:
+    """Source pixels to `[base]`: the look first, then the camera move."""
+    ensure_cube(st)
+    if matte_index is not None and gpu_look_available(st):
+        graph = look_graph_gpu(st, "[0:v]", "[looked]", matte_index)
+    else:
+        graph = look_graph(st, "[0:v]", "[looked]", matte_index)
+    if not graph:
+        return camera_filter_graph(st, seg, fps)
+    return graph + ";" + camera_filter_graph(st, seg, fps, "[looked]")
+
+
+# ------------------------------------------------------- depth and matte
+def depth_model_ready() -> bool:
+    return all((DEPTH_MODEL_DIR / name).is_file() for name in DEPTH_MODEL_FILES)
+
+
+def download_depth_model(notify) -> None:
+    """Fetch the depth network on first use, the way Whisper models are fetched.
+
+    It is about 100 MB, so it is not something to ship in the repo or to pull
+    down during a launch that may never open the Look panel.
+    """
+    if depth_model_ready():
+        return
+    import httpx
+
+    DEPTH_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    total_files = len(DEPTH_MODEL_FILES)
+    for index, (name, url) in enumerate(DEPTH_MODEL_FILES.items()):
+        target = DEPTH_MODEL_DIR / name
+        if target.is_file():
+            continue
+        partial = target.with_name(target.name + ".part")
+        notify(status="model", progress=0.02,
+               message=f"Downloading the depth model ({index + 1}/{total_files})…")
+        with httpx.stream("GET", url, follow_redirects=True, timeout=120) as response:
+            response.raise_for_status()
+            total = int(response.headers.get("content-length") or 0)
+            written = 0
+            with open(partial, "wb") as handle:
+                for chunk in response.iter_bytes(1 << 20):
+                    handle.write(chunk)
+                    written += len(chunk)
+                    if total:
+                        notify(
+                            status="model",
+                            progress=0.02 + 0.08 * (index + written / total) / total_files,
+                            message="Downloading the depth model… "
+                                    f"{written >> 20} of {total >> 20} MB",
+                        )
+        # Rename only once every byte is there, so an interrupted download
+        # cannot leave behind a file that looks complete on the next run.
+        os.replace(partial, target)
+
+
+def half_precision_model(notify=None) -> Optional[Path]:
+    """A float16 copy of the depth network, converted once and kept.
+
+    Depth estimation is the one genuinely heavy thing Editoro runs, and the
+    network is exported at float32 because that is what runs everywhere. Every
+    GPU worth using it on has half-precision tensor cores that are roughly
+    twice as fast and need half the memory - and a depth map that feeds an
+    8-bit matte cannot tell the difference between the two. So convert once,
+    cache the result next to the original, and fall back to float32 if any part
+    of that is not available.
+    """
+    target = DEPTH_MODEL_DIR / "model.fp16.onnx"
+    if target.is_file():
+        return target
+    marker = DEPTH_MODEL_DIR / "model.fp16.unavailable"
+    if marker.exists():
+        return None
+    try:
+        import onnx
+        from onnxruntime.transformers.float16 import convert_float_to_float16
+    except Exception:
+        marker.write_text("onnx is not installed\n", encoding="utf-8")
+        return None
+    if notify:
+        notify(status="model", progress=0.08,
+               message="Converting the depth model to half precision (once)…")
+    partial = DEPTH_MODEL_DIR / "model.fp16.part.onnx"
+    data_name = "model.fp16.onnx_data"
+    try:
+        model = onnx.load(str(DEPTH_MODEL_DIR / "model.onnx"))
+        # keep_io_types leaves the inputs and outputs float32, so nothing
+        # upstream of this function has to know the weights changed.
+        model = convert_float_to_float16(model, keep_io_types=True,
+                                         disable_shape_infer=True)
+        (DEPTH_MODEL_DIR / data_name).unlink(missing_ok=True)
+        onnx.save(model, str(partial), save_as_external_data=True,
+                  all_tensors_to_one_file=True, location=data_name)
+        os.replace(partial, target)
+        return target
+    except Exception as error:
+        partial.unlink(missing_ok=True)
+        (DEPTH_MODEL_DIR / data_name).unlink(missing_ok=True)
+        marker.write_text(f"{error}\n", encoding="utf-8")
+        return None
+
+
+def depth_session(notify=None):
+    """One ONNX session per process, on the GPU whenever there is one."""
+    if DEPTH_SESSION:
+        return DEPTH_SESSION[0]
+    _configure_cuda_dlls()
+    import onnxruntime as ort
+
+    options = ort.SessionOptions()
+    options.log_severity_level = 4
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    available = set(ort.get_available_providers())
+    attempts = []
+    if "CUDAExecutionProvider" in available:
+        attempts.append([("CUDAExecutionProvider", {
+            # cuDNN picks its convolution algorithms by trying them; the model
+            # runs the same shape thousands of times, so paying for that search
+            # once is free and the exhaustive search is the fastest option.
+            "cudnn_conv_algo_search": "EXHAUSTIVE",
+            "arena_extend_strategy": "kSameAsRequested",
+        }), "CPUExecutionProvider"])
+    if "DmlExecutionProvider" in available:
+        attempts.append(["DmlExecutionProvider", "CPUExecutionProvider"])
+    attempts.append(["CPUExecutionProvider"])
+    # Half precision is worth having only on a GPU; on the CPU it is slower.
+    graphs = []
+    if any(p != ["CPUExecutionProvider"] for p in attempts[:-1]):
+        half = half_precision_model(notify)
+        if half:
+            graphs.append(half)
+    graphs.append(DEPTH_MODEL_DIR / "model.onnx")
+    last: Optional[Exception] = None
+    for graph in graphs:
+        for providers in attempts:
+            if graph.name.startswith("model.fp16") and providers == ["CPUExecutionProvider"]:
+                continue
+            try:
+                session = ort.InferenceSession(str(graph), options, providers=providers)
+                DEPTH_SESSION.append(session)
+                return session
+            except Exception as error:  # a missing CUDA DLL is not fatal here
+                last = error
+    raise RuntimeError(f"Could not start the depth model: {last}")
+
+
+def depth_device() -> str:
+    session = DEPTH_SESSION[0] if DEPTH_SESSION else None
+    providers = session.get_providers() if session else []
+    return "gpu" if any(p.startswith(("CUDA", "Dml")) for p in providers) else "cpu"
+
+
+def depth_provider_warning() -> str:
+    """Why the depth pass is about to be slow, when it is about to be slow.
+
+    There is one failure that costs hours and looks like nothing: pip installs
+    `onnxruntime` and `onnxruntime-gpu` into the *same* `onnxruntime` package
+    directory, so whichever went in last wins. If the CPU wheel lands second it
+    silently replaces the GPU build - `import onnxruntime` still works, the
+    depth pass still runs, and it runs twenty to fifty times slower on a machine
+    with a perfectly good card sitting idle. Nothing anywhere reports it,
+    because from the inside a CPU-only runtime on a CPU-only machine and a
+    clobbered one look identical.
+
+    So compare the two things that differ: is there a GPU, and can the runtime
+    see it. Returns "" when there is nothing to say.
+    """
+    if importlib.util.find_spec("onnxruntime") is None:
+        return ""
+    if not shutil.which("nvidia-smi"):
+        return ""   # no NVIDIA card; the CPU is genuinely the only option
+    try:
+        import onnxruntime as ort
+        providers = set(ort.get_available_providers())
+    except Exception:
+        return ""
+    if providers & {"CUDAExecutionProvider", "DmlExecutionProvider"}:
+        return ""
+    return (
+        "This machine has an NVIDIA GPU but the installed ONNX Runtime has no "
+        "GPU provider, so depth is running on the CPU and will take roughly "
+        "twenty times longer. The CPU-only 'onnxruntime' package overwrites the "
+        "GPU one. Fix it with:  pip uninstall -y onnxruntime onnxruntime-gpu  "
+        "then  pip install onnxruntime-gpu[cuda,cudnn]==1.22.0"
+    )
+
+
+def depth_rate() -> float:
+    """Inferences per second of footage, chosen for the hardware in the machine.
+
+    The matte is smoothed and then interpolated up to the source frame rate, so
+    this is a quality-versus-time dial rather than a correctness one. On a GPU
+    the full rate costs about as long as the video itself and there is no reason
+    to give anything up. On a CPU the same rate turns a two-minute clip into an
+    afternoon, and a talking head's silhouette simply does not move fast enough
+    to need it - so drop to a third and let the interpolation carry the rest.
+    """
+    return DEPTH_RATE if depth_device() == "gpu" else DEPTH_RATE_CPU
+
+
+def depth_input_size(width: int, height: int) -> tuple[int, int]:
+    """Model input keeping the source aspect, both edges multiples of 14."""
+    def step(value: float) -> int:
+        return max(14, int(round(value / 14)) * 14)
+
+    if width >= height:
+        return DEPTH_INPUT_EDGE, step(DEPTH_INPUT_EDGE * height / max(1, width))
+    return step(DEPTH_INPUT_EDGE * width / max(1, height)), DEPTH_INPUT_EDGE
+
+
+def matte_size(width: int, height: int) -> tuple[int, int]:
+    """Stored matte size: small, even, and never larger than the source."""
+    scale = min(1.0, MATTE_EDGE / max(1, max(width, height)))
+    return (max(2, int(round(width * scale / 2)) * 2),
+            max(2, int(round(height * scale / 2)) * 2))
+
+
+def defocus_sigmas(amount: float, width: int, height: int) -> tuple[float, float]:
+    """Blur radii for the mid and far slices, in pixels.
+
+    Bokeh scales with the frame rather than with pixels, so both radii are a
+    fraction of the short edge; that is what lets one Amount value look the
+    same on 1080p landscape and on 4K vertical.
+    """
+    far = max(1.0, amount * 0.055 * min(width, height))
+    return max(0.6, far * 0.42), far
+
+
+# Bumped whenever the defocus maths changes. Baked preview copies key off it,
+# so a change here rebuilds them instead of leaving the editor showing a look
+# the export no longer makes.
+DEFOCUS_VERSION = 2
+DEFOCUS_NEAR_BAND = (0.14, 0.46)
+DEFOCUS_FAR_BAND = (0.44, 0.82)
+
+
+def _decode_frames(source: Path, filters: str, width: int, height: int, limit: int = 0):
+    """Yield raw RGB frames from FFmpeg without writing anything to disk."""
+    import numpy as np
+
+    command = [FFMPEG, "-hide_banner", "-loglevel", "error", "-i", str(source),
+               "-vf", filters, "-f", "rawvideo", "-pix_fmt", "rgb24"]
+    if limit:
+        command += ["-frames:v", str(limit)]
+    command += ["pipe:1"]
+    size = width * height * 3
+    process = subprocess.Popen(command, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, bufsize=size * 2,
+                               creationflags=CHILD_FLAGS)
+    try:
+        while True:
+            buffer = process.stdout.read(size)
+            if not buffer or len(buffer) < size:
+                break
+            yield np.frombuffer(buffer, np.uint8).reshape(height, width, 3)
+    finally:
+        if process.stdout:
+            process.stdout.close()
+        if process.poll() is None:
+            process.terminate()
+        process.wait()
+
+
+def _infer_depth(session, frames):
+    """Run the network over a stack of RGB frames and return the depth maps."""
+    import numpy as np
+
+    mean = np.array([0.485, 0.456, 0.406], np.float32)
+    std = np.array([0.229, 0.224, 0.225], np.float32)
+    batch = (np.stack(frames).astype(np.float32) / 255.0 - mean) / std
+    # The network takes [batch, view, channel, y, x]: it can reason about
+    # several views of one scene, and a video frame is simply a single view.
+    tensor = np.ascontiguousarray(batch.transpose(0, 3, 1, 2)[:, None])
+    return session.run(["predicted_depth"], {"pixel_values": tensor})[0][:, 0]
+
+
+def build_matte(project: str, st: ProjectState, cancel: threading.Event, notify) -> dict[str, Any]:
+    """Write a depth matte for the whole source: black is near, white is far."""
+    import numpy as np
+
+    source = project_dir(project) / st.source
+    width, height = st.source_info.width, st.source_info.height
+    duration = st.source_info.duration or 0.0
+    if not source.is_file() or not width or not height or duration <= 0:
+        raise RuntimeError("The source footage has to be readable before a matte can be built")
+    download_depth_model(notify)
+    notify(status="depth", progress=0.10, message="Starting the depth model…")
+    session = depth_session(notify)
+    # Now that a session exists we know what it is running on, so the rate and
+    # the estimate can both be honest. Doing this before the first inference
+    # matters: the alternative is telling someone "reading depth…" for an hour.
+    rate = depth_rate()
+    warning = depth_provider_warning()
+    if warning:
+        notify(status="depth", progress=0.10, message=warning)
+    estimate = duration * rate / (31.0 if depth_device() == "gpu" else 0.7)
+    notify(status="depth", progress=0.11,
+           message=f"Reading depth on the {depth_device().upper()}… "
+                   f"this should take about {max(1, round(estimate / 60))} min")
+    input_width, input_height = depth_input_size(width, height)
+    scale = f"scale={input_width}:{input_height}:flags=bilinear"
+
+    # Pass one: calibrate. Normalising every frame on its own makes the blur
+    # pump whenever the deepest thing in shot changes, so the near and far
+    # planes are fixed once, from samples spread across the whole video.
+    notify(status="depth", progress=0.12, message="Measuring the depth of the shot…")
+    sample_rate = max(0.05, DEPTH_SAMPLES / max(1.0, duration))
+    samples = []
+    for frame in _decode_frames(source, f"fps={sample_rate:.6f},{scale}",
+                                input_width, input_height, DEPTH_SAMPLES):
+        if cancel.is_set():
+            raise LookCanceled()
+        samples.append(frame)
+    if not samples:
+        raise RuntimeError("Could not read any frames from the source footage")
+    measured = np.concatenate([
+        _infer_depth(session, samples[start:start + DEPTH_BATCH])
+        for start in range(0, len(samples), DEPTH_BATCH)
+    ])
+    near_plane = float(np.percentile(measured, 2))
+    far_plane = float(np.percentile(measured, 98))
+    if far_plane - near_plane < 1e-3:
+        far_plane = near_plane + 1e-3
+
+    matte_width, matte_height = matte_size(width, height)
+    look_dir(project).mkdir(parents=True, exist_ok=True)
+    target = matte_path(project)
+    partial = target.with_name("matte.part.mp4")
+    fps = st.source_info.fps or 30
+    process = subprocess.Popen([
+        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "rawvideo", "-pix_fmt", "gray",
+        "-s", f"{input_width}x{input_height}", "-r", f"{rate:.6f}", "-i", "pipe:0",
+        # tmix takes the flicker out at the rate the model actually ran, and
+        # framerate then blends that up to the source rate - so the matte moves
+        # continuously instead of stepping twelve times a second.
+        "-vf", (f"tmix=frames=3:weights='1 2 1',framerate=fps={fps:.6f},"
+                f"scale={matte_width}:{matte_height}:flags=bicubic,format=yuv420p"),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-g", "30",
+        "-movflags", "+faststart", "-an", str(partial),
+    ], stdin=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=CHILD_FLAGS)
+    expected = max(1, int(duration * rate))
+    written = 0
+    pending: list[Any] = []
+
+    def flush() -> None:
+        nonlocal written
+        if not pending:
+            return
+        maps = _infer_depth(session, pending)
+        pending.clear()
+        for depth in maps:
+            # 0 is the plane the subject sits on, 255 is as far as this shot
+            # goes. Everything downstream reads the matte that way.
+            gray = np.clip((depth - near_plane) / (far_plane - near_plane), 0, 1)
+            process.stdin.write((gray * 255).astype(np.uint8).tobytes())
+            written += 1
+
+    try:
+        for frame in _decode_frames(source, f"fps={rate:.6f},{scale}",
+                                    input_width, input_height):
+            if cancel.is_set():
+                raise LookCanceled()
+            pending.append(frame)
+            if len(pending) >= DEPTH_BATCH:
+                flush()
+                notify(status="depth",
+                       progress=0.15 + 0.72 * min(1.0, written / expected),
+                       message=f"Reading depth… {written} of about {expected} frames")
+        flush()
+        process.stdin.close()
+        if process.wait():
+            detail = process.stderr.read().decode("utf-8", "replace")[-400:]
+            raise RuntimeError(f"Could not encode the depth matte: {detail}")
+    except BaseException:
+        try:
+            if process.stdin and not process.stdin.closed:
+                process.stdin.close()
+        except OSError:
+            pass
+        if process.poll() is None:
+            process.terminate()
+        process.wait()
+        partial.unlink(missing_ok=True)
+        raise
+    if not written:
+        partial.unlink(missing_ok=True)
+        raise RuntimeError("The depth pass produced no frames")
+    os.replace(partial, target)
+    return {"depth_frames": written, "depth_device": depth_device(),
+            "depth_rate": rate,
+            "depth_near": round(near_plane, 4), "depth_far": round(far_plane, 4),
+            "matte_version": MATTE_VERSION}
+
+
+# --------------------------------------------------------- automatic grade
+def measure_grade(project: str, st: ProjectState) -> dict[str, float]:
+    """Read the footage and decide what it needs. No knobs, no presets.
+
+    Everything here is measured from the pixels: what the neutrals are doing,
+    where the exposure sits, how much contrast and colour are already present.
+    The numbers it returns describe a correction, and `write_cube` bakes them
+    into a table. Nothing is applied at full strength - a grade that fully
+    neutralises a warm room has removed the room.
+    """
+    import numpy as np
+
+    source = project_dir(project) / st.source
+    width, height = st.source_info.width, st.source_info.height
+    duration = st.source_info.duration or 0.0
+    if not source.is_file() or not width or not height:
+        raise RuntimeError("The source footage has to be readable before it can be graded")
+    scale = min(1.0, COLOR_SAMPLE_EDGE / max(1, max(width, height)))
+    sample_width = max(2, int(round(width * scale / 2)) * 2)
+    sample_height = max(2, int(round(height * scale / 2)) * 2)
+    rate = max(0.05, COLOR_SAMPLES / max(1.0, duration))
+    frames = list(_decode_frames(
+        source, f"fps={rate:.6f},scale={sample_width}:{sample_height}:flags=area",
+        sample_width, sample_height, COLOR_SAMPLES))
+    if not frames:
+        raise RuntimeError("Could not read any frames from the source footage")
+    pixels = (np.stack(frames).astype(np.float32) / 255.0).reshape(-1, 3)
+    red, green, blue = pixels[:, 0], pixels[:, 1], pixels[:, 2]
+    luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+    chroma_b = 0.5 - 0.168736 * red - 0.331264 * green + 0.5 * blue
+    chroma_r = 0.5 + 0.5 * red - 0.418688 * green - 0.081312 * blue
+    # Faces are the one thing in a talking-head frame that must not be used as
+    # a neutral reference: average a shot of a person and "grey" comes out
+    # skin-coloured, and correcting toward that turns the speaker green.
+    skin = ((chroma_b > 0.30) & (chroma_b < 0.50)
+            & (chroma_r > 0.52) & (chroma_r < 0.68))
+    usable = (luma > 0.05) & (luma < 0.92) & ~skin
+    if usable.sum() < pixels.shape[0] // 50:
+        usable = (luma > 0.05) & (luma < 0.92)
+    neutral = pixels[usable] if usable.any() else pixels
+    means = neutral.mean(axis=0) + 1e-5
+
+    def damped(gain: float, share: float = 0.88, limit: float = 0.26) -> float:
+        """Move most of the way toward neutral, and never further than `limit`."""
+        return float(min(1 + limit, max(1 - limit, 1 + (gain - 1) * share)))
+
+    gain_r = damped(means[1] / means[0])
+    gain_b = damped(means[1] / means[2])
+
+    low = float(np.percentile(luma, 1))
+    mid = float(np.percentile(luma, 50))
+    high = float(np.percentile(luma, 99))
+    spread = float(np.percentile(luma, 90) - np.percentile(luma, 10))
+    saturation = float(np.mean(pixels.max(axis=1) - pixels.min(axis=1)))
+    # Set the black and white points just outside what the footage actually
+    # uses, so the correction opens the image up without clipping detail that
+    # is really there.
+    black = float(min(0.08, max(0.0, low - 0.004)))
+    white = float(max(black + 0.35, min(1.0, high + 0.01)))
+    lifted = (mid - black) / max(1e-3, white - black)
+    gamma = math.log(max(1e-3, 0.46)) / math.log(max(1e-3, min(0.999, lifted)))
+    gamma = float(min(1.30, max(0.80, gamma)))
+    # A flat picture gets a strong S-curve and a contrasty one gets a light
+    # one - but never none at all. The old floor of zero meant well-exposed
+    # footage came out of the grade looking exactly like it went in, which is
+    # the same thing as the panel not working.
+    contrast = float(min(0.42, max(GRADE_CONTRAST_FLOOR, (0.55 - spread) * 1.30)))
+    boost = 0.19 / max(0.02, saturation)
+    boost = float(min(1.34, max(0.94, 1 + (boost - 1) * 0.80)))
+    # Split-tone: cool the shadows, warm the highlights. Nothing measured
+    # decides this - it is the one piece of taste in the grade, and it is what
+    # separates "corrected" from "graded" to anyone looking at the result.
+    # Scaled by how neutral the footage already is, so a shot that is already
+    # heavily toned does not get a second tone stacked on top of it.
+    tone = float(min(1.0, max(0.25, 1.35 - saturation * 2.4)))
+    return {"gain_r": round(gain_r, 5), "gain_b": round(gain_b, 5),
+            "black": round(black, 5), "white": round(white, 5),
+            "gamma": round(gamma, 5), "contrast": round(contrast, 5),
+            "saturation": round(boost, 5), "tone": round(tone, 5),
+            "measured_mid": round(mid, 4), "measured_spread": round(spread, 4),
+            "measured_saturation": round(saturation, 4)}
+
+
+def grade_lattice(params: dict[str, float], strength: float, size: int = LUT_SIZE):
+    """Apply the measured correction to a colour cube and return the result.
+
+    This is the whole grade, in order: neutralise, set the black and white
+    points, place the midtone, add contrast, colour, then tone. Every stage is
+    monotonic in isolation, and the two that read luma - the highlight rolloff
+    on the white balance and the split-tone - bend the result by well under one
+    8-bit code, so a gradient still comes out of the table as a gradient.
+    """
+    import numpy as np
+
+    # Defaults, so a project analysed by an older build picks up the current
+    # grade without having to sit through the analysis pass again.
+    params = dict(params)
+    params["contrast"] = max(GRADE_CONTRAST_FLOOR, float(params.get("contrast", 0.0)))
+    params.setdefault("tone", 0.6)
+
+    axis = np.linspace(0.0, 1.0, size, dtype=np.float32)
+    # A .cube varies red fastest, so the lattice has to be built in that order.
+    blue_grid, green_grid, red_grid = np.meshgrid(axis, axis, axis, indexing="ij")
+    source = np.stack([red_grid, green_grid, blue_grid], axis=-1).reshape(-1, 3)
+    rgb = source.copy()
+
+    gains = np.array([params["gain_r"], 1.0, params["gain_b"]], np.float32)
+    # White balance belongs in the shadows and midtones. Applied flat, a gain
+    # that corrects a warm room also drags every specular highlight toward
+    # cyan, which is the single most recognisable sign of an automatic grade -
+    # so it rolls off over the top of the range and leaves white white.
+    source_luma = (0.2126 * rgb[:, 0] + 0.7152 * rgb[:, 1] + 0.0722 * rgb[:, 2])[:, None]
+    keep = np.clip((source_luma - 0.78) / 0.22, 0, 1) ** 2
+    rgb = np.clip(rgb * (gains * (1 - keep) + keep), 0, 4)
+
+    black, white = params["black"], params["white"]
+    rgb = np.clip((rgb - black) / max(1e-3, white - black), 0, 4)
+    rgb = np.power(np.clip(rgb, 0, 1), params["gamma"])
+
+    contrast = params["contrast"]
+    if contrast > 0.001:
+        # smoothstep is monotonic, so mixing toward it adds contrast without
+        # ever crushing one end into a flat patch.
+        rgb = rgb * (1 - contrast) + contrast * (rgb * rgb * (3 - 2 * rgb))
+
+    luma = (0.2126 * rgb[:, 0] + 0.7152 * rgb[:, 1] + 0.0722 * rgb[:, 2])[:, None]
+    chroma_b = 0.5 - 0.168736 * rgb[:, 0] - 0.331264 * rgb[:, 1] + 0.5 * rgb[:, 2]
+    chroma_r = 0.5 + 0.5 * rgb[:, 0] - 0.418688 * rgb[:, 1] - 0.081312 * rgb[:, 2]
+    # Skin is the first thing to look wrong when saturation is pushed, and the
+    # cube is a function of colour alone - so the protection can live right
+    # here, in the table, instead of needing a mask.
+    skin = np.exp(-(((chroma_b - 0.40) / 0.10) ** 2 + ((chroma_r - 0.60) / 0.08) ** 2))[:, None]
+    amount = 1 + (params["saturation"] - 1) * (1 - 0.6 * skin)
+    rgb = np.clip(luma + (rgb - luma) * amount, 0, 1.2)
+
+    # Split-tone. The shadow and highlight weights are complementary windows on
+    # luma that both fall away at the midtone, so the tone lands in the corners
+    # of the picture and leaves faces alone.
+    tone = float(params.get("tone", 0.0))
+    if tone > 0.001:
+        shadows = np.clip(1 - luma * 2.0, 0, 1) ** 1.5
+        highlights = np.clip(luma * 2.0 - 1, 0, 1) ** 1.5
+        # Teal in the shadows, a warm straw in the highlights; the magnitudes
+        # are deliberately small, because a split-tone that can be named as a
+        # colour has already gone too far.
+        cool = np.array([-0.030, 0.004, 0.038], np.float32)
+        warm = np.array([0.034, 0.010, -0.026], np.float32)
+        rgb = rgb + tone * (shadows * cool + highlights * warm)
+        # The tone shifts luminance a little; putting it back keeps exposure
+        # where the black/white/gamma stage left it.
+        toned = 0.2126 * rgb[:, 0] + 0.7152 * rgb[:, 1] + 0.0722 * rgb[:, 2]
+        rgb = rgb + (luma[:, 0] - toned)[:, None] * 0.5
+        rgb = np.clip(rgb, 0, 1.2)
+
+    # A soft knee near white keeps a pushed highlight rolling off instead of
+    # arriving at a hard clip.
+    rgb = np.where(rgb > 0.94, 0.94 + (1 - 0.94) * np.tanh((rgb - 0.94) / (1 - 0.94)), rgb)
+    rgb = np.clip(rgb, 0, 1)
+    return np.clip(source + (rgb - source) * grade_strength(strength), 0, 1)
+
+
+def grade_strength(amount: float) -> float:
+    """Slider position to how much of the correction is actually applied.
+
+    The slider is not a linear mix, because a linear one wastes its whole lower
+    half: the first third of a colour correction is where nearly all of the
+    visible change lives, and 50% of a mix that is itself gentle is nothing at
+    all. This curve puts a usable grade in the middle of the travel and keeps
+    the top end available for footage that really needs it.
+    """
+    amount = min(1.0, max(0.0, float(amount)))
+    return float(amount ** 0.62)
+
+
+def write_cube(path: Path, params: dict[str, float], strength: float,
+               size: int = LUT_SIZE) -> None:
+    """Write the grade as a .cube, the one file both FFmpeg and WebGL read."""
+    values = grade_lattice(params, strength, size)
+    lines = [
+        "# Editoro automatic grade",
+        f"# version: {GRADE_VERSION}",
+        f"# measured: {json.dumps(params, sort_keys=True)}",
+        f"# strength: {strength:.4f}",
+        'TITLE "Editoro auto grade"',
+        f"LUT_3D_SIZE {size}",
+        "DOMAIN_MIN 0.0 0.0 0.0",
+        "DOMAIN_MAX 1.0 1.0 1.0",
+    ]
+    lines += [f"{r:.6f} {g:.6f} {b:.6f}" for r, g, b in values]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def read_cube(path: Path) -> dict[str, Any]:
+    """Parse a .cube back into the flat RGB bytes the preview uploads.
+
+    The preview samples the same table FFmpeg does, so a graded frame in the
+    browser and a graded frame in the export are the same arithmetic rather
+    than two things that resemble each other.
+    """
+    size = 0
+    values: list[float] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("TITLE"):
+            continue
+        if line.upper().startswith("LUT_3D_SIZE"):
+            size = int(line.split()[-1])
+            continue
+        if line.upper().startswith("DOMAIN"):
+            continue
+        parts = line.split()
+        if len(parts) == 3:
+            values.extend(float(part) for part in parts)
+    if not size or len(values) != size ** 3 * 3:
+        raise ValueError("that grade file is not a readable .cube")
+    data = bytes(max(0, min(255, int(round(value * 255)))) for value in values)
+    return {"size": size, "data": base64.b64encode(data).decode("ascii")}
+
+
+# --------------------------------------------------------------- the job
+class LookCanceled(Exception):
+    pass
+
+
+def _public_look(project: str, st: Optional[ProjectState] = None) -> dict[str, Any]:
+    """Everything the panel and the agent need to know about the look."""
+    if st is None:
+        st = load_state(project)
+    job = LOOK_JOBS.get(project)
+    revision = st.source_revision
+    payload: dict[str, Any] = {
+        "project": project,
+        "defocus": st.look.defocus,
+        "grade": st.look.grade,
+        "matte_ready": st.look.matte_revision == revision and matte_path(project).is_file(),
+        "grade_ready": st.look.grade_revision == revision and cube_path(project).is_file(),
+        "analysis": st.look.analysis,
+        "model_ready": depth_model_ready(),
+        "status": "idle",
+        "progress": 0,
+    }
+    # A matte built by an older version is still a usable matte, so it keeps
+    # working - but the panel says so, because the difference between the old
+    # depth pass and this one is visible and nothing else would ever prompt a
+    # rebuild.
+    payload["matte_outdated"] = bool(
+        payload["matte_ready"]
+        and int(st.look.analysis.get("matte_version", 1)) < MATTE_VERSION)
+    payload["matte_url"] = (
+        f"/media/{project}/look/matte.mp4?v={st.look.matte_revision}"
+        if payload["matte_ready"] else ""
+    )
+    if job:
+        for key in ("status", "progress", "message", "error", "finished"):
+            if key in job:
+                payload[key] = job[key]
+        payload["running"] = job.get("status") in {"queued", "model", "depth", "color"}
+    else:
+        payload["running"] = False
+    return payload
+
+
+async def _run_look_analysis(project: str, parts: set[str]) -> None:
+    job = LOOK_JOBS[project]
+    loop = asyncio.get_running_loop()
+
+    def notify(**updates) -> None:
+        job.update(updates)
+        payload = {"type": "look_progress", **_public_look(project)}
+        loop.call_soon_threadsafe(lambda: asyncio.create_task(HUB.broadcast(payload)))
+
+    def work() -> dict[str, Any]:
+        st = load_state(project)
+        found: dict[str, Any] = {}
+        if "depth" in parts:
+            found.update(build_matte(project, st, job["cancel"], notify))
+        if "color" in parts:
+            notify(status="color", progress=0.90, message="Measuring the grade…")
+            found.update(measure_grade(project, st))
+        return found
+
+    try:
+        found = await asyncio.to_thread(work)
+        if job["cancel"].is_set():
+            raise LookCanceled()
+        # Reload rather than reuse: the pass takes minutes, and the editor may
+        # have moved half the timeline while it ran.
+        st = load_state(project)
+        if "depth" in parts:
+            st.look.matte_revision = st.source_revision
+            if st.look.defocus <= 0.001:
+                st.look.defocus = 0.6
+        if "color" in parts:
+            st.look.grade_revision = st.source_revision
+            if st.look.grade <= 0.001:
+                st.look.grade = 0.7
+            # The strength is baked into the table, so the table is written
+            # last - once the strength that will actually be used is known.
+            write_cube(cube_path(project), found, st.look.grade)
+        st.look.analysis = {**st.look.analysis, **found}
+        st = save_state(st)
+        ensure_preview(project, st)
+        notify(status="complete", progress=1.0, finished=time.time(),
+               message="The look is ready.")
+        await HUB.broadcast({"type": "state", "project": project,
+                             "state": json.loads(st.model_dump_json())})
+    except LookCanceled:
+        notify(status="canceled", progress=0, message="Canceled.")
+    except Exception as error:
+        notify(status="error", progress=0, error=str(error),
+               message=f"The look pass failed: {error}")
+    finally:
+        job["cancel"].set()
+
+
+@app.get("/api/projects/{name}/look")
+def api_look_status(name: str):
+    require_project(name)
+    return _public_look(name)
+
+
+@app.get("/api/projects/{name}/look/lut")
+def api_look_lut(name: str):
+    require_project(name)
+    ensure_cube(load_state(name))
+    path = cube_path(name)
+    if not path.is_file():
+        raise HTTPException(404, "This project has no grade yet")
+    try:
+        return read_cube(path)
+    except ValueError as error:
+        raise HTTPException(500, str(error))
+
+
+@app.post("/api/projects/{name}/look")
+async def api_set_look(name: str, request: LookRequest):
+    """Change the two amounts. Cheap: nothing is re-analysed here."""
+    require_project(name)
+    st = load_state(name)
+    if request.defocus is not None:
+        st.look.defocus = request.defocus
+    if request.grade is not None:
+        st.look.grade = request.grade
+        # The strength lives inside the table, so changing it rewrites the
+        # table. That is what keeps one file authoritative for both the
+        # preview and the export.
+        if st.look.analysis and cube_path(name).is_file():
+            write_cube(cube_path(name), {
+                key: value for key, value in st.look.analysis.items()
+                if isinstance(value, (int, float))
+            }, st.look.grade)
+    save_state(st)
+    # Debounced: a slider drag lands here on every mouse move, and the live
+    # compositor is already showing the result while this waits.
+    ensure_preview(name, st, delay=1.5)
+    await HUB.broadcast({"type": "state", "project": name,
+                         "state": json.loads(st.model_dump_json())})
+    return _public_look(name, st)
+
+
+@app.post("/api/projects/{name}/look/analyze")
+async def api_analyze_look(name: str, req: Request):
+    require_project(name)
+    # Shape of the request first, state of the project second: a misspelled
+    # part is wrong whether or not there is footage to run it on.
+    body = await req.json() if await req.body() else {}
+    parts = set(body.get("parts") or ["depth", "color"])
+    if not parts <= {"depth", "color"}:
+        raise HTTPException(400, "A look pass is made of 'depth' and 'color'")
+    st = load_state(name)
+    if not st.source:
+        raise HTTPException(409, "Import source footage before building a look")
+    current = LOOK_JOBS.get(name)
+    if current and current.get("status") in {"queued", "model", "depth", "color"}:
+        raise HTTPException(409, "A look pass is already running for this project")
+    if name in EXPORT_CANCEL:
+        raise HTTPException(409, "Wait for the export to finish before building a look")
+    if "depth" in parts and importlib.util.find_spec("onnxruntime") is None:
+        raise HTTPException(
+            503,
+            "The depth model runtime is not installed yet. Close Editoro and run launch.cmd once.",
+        )
+    LOOK_JOBS[name] = {
+        "status": "queued", "progress": 0, "cancel": threading.Event(),
+        "message": "Preparing…", "started": time.time(),
+    }
+    asyncio.create_task(_run_look_analysis(name, parts))
+    return JSONResponse(_public_look(name, st), status_code=202)
+
+
+@app.post("/api/projects/{name}/look/cancel")
+async def api_cancel_look(name: str):
+    require_project(name)
+    job = LOOK_JOBS.get(name)
+    if job and job.get("status") in {"queued", "model", "depth", "color"}:
+        job["cancel"].set()
+        job["status"] = "canceling"
+        job["message"] = "Canceling…"
+        await HUB.broadcast({"type": "look_progress", **_public_look(name)})
+    return _public_look(name)
+
+
+def _test_look() -> None:
+    """The parts of the look that must be right before any footage is touched."""
+    import numpy as np
+
+    # The model input keeps the source aspect and stays on the 14-pixel grid
+    # the network's patches require.
+    for width, height in ((1920, 1080), (1080, 1920), (2160, 3840), (640, 640)):
+        input_width, input_height = depth_input_size(width, height)
+        assert input_width % 14 == 0 and input_height % 14 == 0, (width, height)
+        assert max(input_width, input_height) == DEPTH_INPUT_EDGE
+        assert abs(input_width / input_height - width / height) < 0.06, (width, height)
+        matte_width, matte_height = matte_size(width, height)
+        assert matte_width % 2 == 0 and matte_height % 2 == 0
+        assert max(matte_width, matte_height) <= max(MATTE_EDGE, max(width, height))
+
+    # One Amount has to mean one look: the radius is a share of the short edge,
+    # so a 4K vertical frame gets a proportionally larger blur than 720p does.
+    near_720, far_720 = defocus_sigmas(0.6, 1280, 720)
+    near_4k, far_4k = defocus_sigmas(0.6, 2160, 3840)
+    assert near_720 < far_720 and near_4k < far_4k
+    assert abs(far_4k / far_720 - 2160 / 720) < 0.01
+    assert defocus_sigmas(1.0, 1280, 720)[1] > far_720
+
+    # A grade at zero strength has to be exactly identity - otherwise moving
+    # the slider to 0 would still change the picture.
+    params = {"gain_r": 0.94, "gain_b": 1.05, "black": 0.03, "white": 0.93,
+              "gamma": 1.08, "contrast": 0.12, "saturation": 1.1}
+    neutral = grade_lattice(params, 0.0, 17)
+    axis = np.linspace(0, 1, 17, dtype=np.float32)
+    blue, green, red = np.meshgrid(axis, axis, axis, indexing="ij")
+    lattice = np.stack([red, green, blue], axis=-1).reshape(-1, 3)
+    assert np.abs(neutral - lattice).max() < 1e-6
+
+    graded = grade_lattice(params, 1.0, 17)
+    assert graded.min() >= 0 and graded.max() <= 1
+    assert np.abs(graded - lattice).max() > 0.01, "the grade did nothing at all"
+    # The grade has to be visible. A correction whose average change is under
+    # a percent is one the panel cannot be seen to do anything at all, which
+    # is exactly what the first version of this shipped as.
+    assert np.abs(graded - lattice).mean() > 0.02, "the grade is too subtle to see"
+    # White stays white. The white balance is what would break this: applied
+    # flat, a gain that neutralises a warm room also tints every highlight.
+    assert np.abs(graded[-1] - 1.0).max() < 0.05, "the grade tints white"
+
+    # Effectively monotonic along every axis. The highlight rolloff on the
+    # white balance and the split-tone both read luma, so the table is not
+    # monotonic to the last bit - but a step has to stay well inside one 8-bit
+    # code, or a smooth gradient would come out of it in bands.
+    cube = graded.reshape(17, 17, 17, 3)
+    tolerance = 0.5 / 255
+    assert (np.diff(cube[:, :, :, 2], axis=0) > -tolerance).all(), "blue folds back"
+    assert (np.diff(cube[:, :, :, 1], axis=1) > -tolerance).all(), "green folds back"
+    assert (np.diff(cube[:, :, :, 0], axis=2) > -tolerance).all(), "red folds back"
+
+    # The slider is a curve, not a mix: half way along it does more than half
+    # the correction, because the first part of a grade carries nearly all of
+    # the visible change. It still has to be monotonic and hit both ends.
+    assert grade_strength(0.0) == 0.0 and grade_strength(1.0) == 1.0
+    positions = [grade_strength(x / 20) for x in range(21)]
+    assert all(b >= a for a, b in zip(positions, positions[1:])), "the slider is not monotonic"
+    assert grade_strength(0.5) > 0.55, "the middle of the slider does too little"
+    half = grade_lattice(params, 0.5, 17)
+    assert np.abs(half - (lattice + (graded - lattice) * grade_strength(0.5))).max() < 1e-6
+
+    # The preview reads the same table FFmpeg does, through this round trip.
+    with tempfile.TemporaryDirectory(prefix="editoro-lut-") as scratch:
+        path = Path(scratch) / "grade.cube"
+        write_cube(path, params, 0.8, 17)
+        table = read_cube(path)
+        assert table["size"] == 17
+        decoded = base64.b64decode(table["data"])
+        assert len(decoded) == 17 ** 3 * 3
+        reference = grade_lattice(params, 0.8, 17)
+        error = np.abs(np.frombuffer(decoded, np.uint8).reshape(-1, 3) / 255.0 - reference)
+        assert error.max() < 0.01, error.max()
+
+    # The filter graph. Off has to be genuinely off - the export's fast path
+    # depends on an untouched project still being stream-copyable.
+    name = f"look-selftest-{uuid.uuid4().hex[:8]}"
+    folder = PROJECTS_DIR / name
+    try:
+        (folder / "look").mkdir(parents=True)
+        # Breathing off, because this test is about the look: with it on there
+        # is deliberately no such thing as an untouched frame, which is the
+        # subject of _test_breathe() instead.
+        state = ProjectState(name=name, source="source.mp4", source_revision="r1",
+                             breathe="off")
+        state.source_info = MediaInfo(width=1920, height=1080, fps=30, duration=10)
+        segment = {"src_in": 0.0, "src_out": 1.0, "tl": 0.0, "camera": None}
+        assert look_graph(state, "[0:v]", "[out]", 1) == ""
+        assert look_inputs(state, 0, 1) == []
+        assert not look_active(state)
+        assert base_video_graph(state, segment, 30) == "[0:v]setpts=PTS-STARTPTS[base]"
+
+        # Switched on but with nothing built yet is still off: a stale or
+        # missing artefact must never be composited over the wrong pixels.
+        state.look.defocus = 0.6
+        state.look.grade = 0.7
+        assert not look_active(state)
+        matte_path(name).write_bytes(b"not really a video, but it is a file")
+        write_cube(cube_path(name), params, 0.7, 9)
+        state.look.matte_revision = "r0"
+        state.look.grade_revision = "r0"
+        assert not look_active(state), "a matte from the previous source was used"
+        state.look.matte_revision = "r1"
+        state.look.grade_revision = "r1"
+        assert look_active(state) and look_state(state) == {"defocus": True, "grade": True}
+
+        graph = look_graph(state, "[0:v]", "[looked]", 2)
+        assert graph.startswith("[2:v]setpts"), graph[:40]
+        assert "in_range=tv:out_range=pc" in graph
+        assert graph.count("gblur=") == 2 and graph.count("alphamerge") == 2
+        assert "lut3d=file=" in graph and graph.endswith("[looked]")
+        assert look_inputs(state, 3.5, 2.0)[:2] == ["-ss", "3.500000"]
+        # The camera move reads the defocused frame, not the raw one.
+        assert base_video_graph(state, segment, 30, 2).endswith(
+            "[looked]setpts=PTS-STARTPTS[base]")
+
+        # Either half alone has to produce a valid single-ended chain.
+        state.look.grade = 0.0
+        assert look_graph(state, "[0:v]", "[looked]", 2).endswith(
+            "overlay=0:0:format=auto[looked]")
+        state.look.grade = 0.7
+        state.look.defocus = 0.0
+        only_grade = look_graph(state, "[0:v]", "[looked]", None)
+        assert only_grade.startswith("[0:v]lut3d=") and only_grade.endswith("[looked]")
+        assert look_inputs(state, 0, 1) == []
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    print("look tests OK")
+
+
+# ------------------------------------------ [9e] The look on the GPU
+# The defocus is two Gaussian blurs and a three-way composite. Done by FFmpeg's
+# CPU filters at 4K those blurs are, by a wide margin, the slowest thing in an
+# export - a hundred-pixel sigma is a hundred-pixel convolution over eight
+# megapixels, twice per frame. The same work as an OpenCL kernel is a rounding
+# error on any GPU made this decade.
+#
+# Two things make it cheap rather than merely parallel. The blurs run on a
+# reduced copy chosen so the radius lands at a few pixels - a Gaussian sampled
+# densely at low resolution is both faster and *better* than one sampled
+# sparsely at full resolution, which is what produces the banded, ghosted edges
+# a wide blur otherwise gets. And the composite samples those small slices with
+# normalised coordinates, so the hardware's own bilinear unit does the upscale
+# on the way in and there is no separate scaling pass at all.
+#
+# The grade stays on lut3d. It is a table lookup rather than a convolution, so
+# it is not what an export waits for, and leaving it there keeps one .cube
+# authoritative for the preview and the export both.
+OPENCL_DIR = ROOT / ".opencl"   # generated kernels, rewritten per export
+OPENCL_DEVICE: list[Optional[str]] = []
+BLUR_WORKING_SIGMA = 6.0      # radius, in pixels, the blur is reduced to
+BLUR_TAP_SIGMAS = 2.8         # how far out the kernel is sampled
+
+
+def opencl_device() -> Optional[str]:
+    """The `platform.device` index of a usable OpenCL GPU, or None.
+
+    Machines routinely report more than one OpenCL platform - a real GPU and
+    the integrated one - and FFmpeg refuses to guess between them. So the
+    devices are enumerated, ordered with discrete GPUs first, and each is
+    actually asked to run a kernel before being trusted.
+    """
+    if OPENCL_DEVICE:
+        return OPENCL_DEVICE[0]
+    OPENCL_DEVICE.append(None)
+    listed = run([FFMPEG, "-hide_banner", "-v", "debug",
+                  "-init_hw_device", "opencl=probe", "-f", "lavfi",
+                  "-i", "nullsrc", "-frames:v", "0", "-f", "null", "-"])
+    text = listed.stdout + listed.stderr
+    # Lines look like: "0.0: NVIDIA CUDA / NVIDIA GeForce RTX 2060"
+    found = re.findall(r"^\s*(?:\[[^\]]*\]\s*)?(\d+\.\d+):\s*(.+)$", text, re.M)
+    if not found:
+        return None
+
+    def rank(entry: tuple[str, str]) -> int:
+        name = entry[1].lower()
+        if any(word in name for word in ("nvidia", "cuda", "radeon", "amd")):
+            return 0
+        if "intel" in name and "graphics" in name:
+            return 2
+        return 1
+
+    for index, _name in sorted(found, key=rank):
+        if opencl_device_works(index):
+            OPENCL_DEVICE[0] = index
+            return index
+    return None
+
+
+def opencl_device_works(index: str) -> bool:
+    """Compile and run the real kernel shape on this device, once."""
+    source = OPENCL_DIR / "probe.cl"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(kernel_source(4.0, 10.0, 0.01, (2.0, 2.0)), encoding="utf-8")
+    probe = run([
+        FFMPEG, "-hide_banner", "-loglevel", "error",
+        "-init_hw_device", f"opencl=ocl:{index}", "-filter_hw_device", "ocl",
+        "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=1:duration=1",
+        "-filter_complex",
+        "[0:v]format=rgba,split=4[a][b][c][d];"
+        "[a]hwupload[full];[b]hwupload[m];[c]hwupload[n];[d]hwupload[f];"
+        f"[full][m][n][f]program_opencl=source='{_filter_path(source)}'"
+        ":kernel=look_mix:inputs=4[o];[o]hwdownload,format=rgba",
+        "-frames:v", "1", "-f", "null", "-",
+    ])
+    return probe.returncode == 0
+
+
+def gpu_look_available(st: ProjectState) -> bool:
+    """Is the GPU path usable for this project's look right now?"""
+    if os.environ.get("EDITORO_NO_GPU_LOOK"):
+        return False
+    return look_state(st)["defocus"] and opencl_device() is not None
+
+
+def look_hw_args(st: ProjectState) -> list[str]:
+    """Global FFmpeg arguments the GPU look needs, or none."""
+    if not gpu_look_available(st):
+        return []
+    return ["-init_hw_device", f"opencl=ocl:{opencl_device()}",
+            "-filter_hw_device", "ocl"]
+
+
+def blur_taps(sigma: float) -> list[float]:
+    """A normalised Gaussian, one tap per pixel, truncated where it vanishes."""
+    radius = max(1, int(math.ceil(BLUR_TAP_SIGMAS * sigma)))
+    weights = [math.exp(-(offset * offset) / (2 * sigma * sigma))
+               for offset in range(radius + 1)]
+    total = weights[0] + 2 * sum(weights[1:])
+    return [weight / total for weight in weights]
+
+
+def blur_scale(far_sigma: float) -> int:
+    """How much to shrink the frame by before blurring it.
+
+    Sized so the wider of the two radii comes out near BLUR_WORKING_SIGMA. The
+    narrow slice is then a couple of pixels at the same scale, which is still
+    plenty - detail finer than that is inside its own blur radius anyway.
+    """
+    return max(1, min(32, int(round(far_sigma / BLUR_WORKING_SIGMA))))
+
+
+def _tap_array(name: str, weights: list[float]) -> str:
+    body = ", ".join(f"{weight:.8f}f" for weight in weights)
+    return (f"__constant int {name}_R = {len(weights) - 1};\n"
+            f"__constant float {name}_W[{len(weights)}] = {{{body}}};\n")
+
+
+def kernel_source(near_sigma: float, far_sigma: float, erode: float,
+                  bands_scale: tuple[float, float]) -> str:
+    """The whole look, as one OpenCL translation unit.
+
+    The tap weights are compiled in rather than passed as arguments, because
+    program_opencl has no way to hand a kernel anything but images - and a
+    constant array the compiler can see unrolls better than one it cannot.
+    """
+    near = blur_taps(near_sigma)
+    far = blur_taps(far_sigma)
+    return f"""// Generated by Editoro. Do not edit; it is rewritten per export.
+const sampler_t LIN = CLK_NORMALIZED_COORDS_TRUE | CLK_ADDRESS_CLAMP_TO_EDGE
+                    | CLK_FILTER_LINEAR;
+const sampler_t PT  = CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_CLAMP_TO_EDGE
+                    | CLK_FILTER_NEAREST;
+
+{_tap_array("NEAR", near)}{_tap_array("FAR", far)}
+__constant float ERODE = {erode:.8f}f;
+__constant int LUT_SIZE = {LUT_SIZE};
+__constant float BAND_A = {DEFOCUS_NEAR_BAND[0]:.6f}f;
+__constant float BAND_B = {DEFOCUS_NEAR_BAND[1]:.6f}f;
+__constant float BAND_C = {DEFOCUS_FAR_BAND[0]:.6f}f;
+__constant float BAND_D = {DEFOCUS_FAR_BAND[1]:.6f}f;
+
+static float smoothband(float a, float b, float x) {{
+  float t = clamp((x - a) / max(1e-4f, b - a), 0.f, 1.f);
+  return t * t * (3.f - 2.f * t);
+}}
+
+static float2 centre(int2 p, int2 dim) {{
+  return (convert_float2(p) + 0.5f) / convert_float2(dim);
+}}
+
+/* One axis of a Gaussian. The step is one pixel of the image being read, so
+   the kernel is sampled at every pixel it covers rather than skipping across
+   it - the frame has already been reduced to make that affordable. */
+static float4 axis(__read_only image2d_t src, int2 p, int2 dim, float2 dir,
+                   __constant float *weights, int radius) {{
+  float2 uv = centre(p, dim);
+  float2 step = dir / convert_float2(dim);
+  float4 sum = read_imagef(src, LIN, uv) * weights[0];
+  for (int i = 1; i <= radius; i++) {{
+    float2 d = step * (float)i;
+    sum += (read_imagef(src, LIN, uv + d) + read_imagef(src, LIN, uv - d)) * weights[i];
+  }}
+  return sum;
+}}
+
+#define PASS(name, weights, radius, dir)                                      \\
+__kernel void name(__write_only image2d_t dst, unsigned int index,            \\
+                   __read_only image2d_t src) {{                               \\
+  int2 p = (int2)(get_global_id(0), get_global_id(1));                        \\
+  int2 dim = get_image_dim(dst);                                              \\
+  if (p.x >= dim.x || p.y >= dim.y) return;                                   \\
+  write_imagef(dst, p, axis(src, p, dim, dir, weights, radius));              \\
+}}
+
+/* Weight every pixel by how much background it is, and carry that weight in
+   alpha. Blurring the frame as it stands drags the subject's own bright edge
+   out into the wall behind it, which reads as a halo traced around their hair
+   and shoulders - the one thing that makes a defocus look fake. Blurring
+   colour-times-weight and weight together, then dividing one by the other in
+   the composite, means the background is blurred using only background: the
+   subject contributes nothing to it at all. */
+__kernel void premul(__write_only image2d_t dst, unsigned int index,
+                     __read_only image2d_t video, __read_only image2d_t matte) {{
+  int2 p = (int2)(get_global_id(0), get_global_id(1));
+  int2 dim = get_image_dim(dst);
+  if (p.x >= dim.x || p.y >= dim.y) return;
+  float2 uv = centre(p, dim);
+  float d = read_imagef(matte, LIN, uv).x;
+  d = min(d, read_imagef(matte, LIN, uv + (float2)(ERODE, 0.f)).x);
+  d = min(d, read_imagef(matte, LIN, uv - (float2)(ERODE, 0.f)).x);
+  d = min(d, read_imagef(matte, LIN, uv + (float2)(0.f, ERODE)).x);
+  d = min(d, read_imagef(matte, LIN, uv - (float2)(0.f, ERODE)).x);
+  float w = smoothband(BAND_A, BAND_B, d);
+  float4 c = read_imagef(video, PT, p);
+  write_imagef(dst, p, (float4)(c.xyz * w, w));
+}}
+
+PASS(near_h, NEAR_W, NEAR_R, (float2)(1.f, 0.f))
+PASS(near_v, NEAR_W, NEAR_R, (float2)(0.f, 1.f))
+PASS(far_h,  FAR_W,  FAR_R,  (float2)(1.f, 0.f))
+PASS(far_v,  FAR_W,  FAR_R,  (float2)(0.f, 1.f))
+
+/* Undo the weighting the blur was done under. Where almost no background
+   reached a pixel there is nothing to recover, so it falls back to the sharp
+   frame rather than dividing by nearly zero and inventing a colour. */
+static float4 unweight(float4 blurred, float4 sharp) {{
+  float w = blurred.w;
+  return w > 0.004f ? (float4)(blurred.xyz / w, 1.f) : sharp;
+}}
+
+/* The grade, sampled out of the table strip. The hardware interpolates red
+   and green inside a tile; blue is a lerp between two tiles, done here because
+   they are neighbours in x rather than in a third dimension. */
+static float4 grade(__read_only image2d_t lut, float4 c) {{
+  float n = (float)LUT_SIZE;
+  float3 v = clamp(c.xyz, 0.f, 1.f) * ((n - 1.f) / n) + 0.5f / n;
+  float b = clamp(c.z, 0.f, 1.f) * (n - 1.f);
+  float slice = floor(b);
+  float frac = b - slice;
+  float tile = 1.f / n;
+  float2 base = (float2)(v.x * tile, v.y);
+  float4 lo = read_imagef(lut, LIN, base + (float2)(slice * tile, 0.f));
+  float4 hi = read_imagef(lut, LIN, base + (float2)(min(slice + 1.f, n - 1.f) * tile, 0.f));
+  float4 out = mix(lo, hi, frac);
+  out.w = c.w;
+  return out;
+}}
+
+/* Three depth slices - sharp, softened, thrown away - blended by the matte.
+   `near` and `far` are the reduced blurs; sampling them with normalised
+   coordinates and a linear filter is what upscales them, so nothing in the
+   graph has to scale them back up first. */
+__kernel void look_mix(__write_only image2d_t dst, unsigned int index,
+                       __read_only image2d_t video,
+                       __read_only image2d_t matte,
+                       __read_only image2d_t near,
+                       __read_only image2d_t far) {{
+  int2 p = (int2)(get_global_id(0), get_global_id(1));
+  int2 dim = get_image_dim(dst);
+  if (p.x >= dim.x || p.y >= dim.y) return;
+  float2 uv = centre(p, dim);
+  float4 c = read_imagef(video, PT, p);
+
+  /* The matte as it is, with no erosion. Eroding here would push the blur a
+     few pixels away from the subject and leave a rim of sharp background
+     tracing their outline, which reads as a cutout. The erosion belongs on
+     the weighting instead, where it keeps the subject out of the blur without
+     moving where the blur is shown. */
+  float d = read_imagef(matte, LIN, uv).x;
+
+  float4 result = mix(c, unweight(read_imagef(near, LIN, uv), c),
+                      smoothband(BAND_A, BAND_B, d));
+  result = mix(result, unweight(read_imagef(far, LIN, uv), c),
+               smoothband(BAND_C, BAND_D, d));
+  result.w = 1.f;
+  write_imagef(dst, p, result);
+}}
+
+/* The same thing with the grade folded in. It is a separate kernel rather than
+   a branch because program_opencl fixes the number of inputs at graph time,
+   and a project with no grade should not have to feed it a table. */
+__kernel void look_mix_graded(__write_only image2d_t dst, unsigned int index,
+                              __read_only image2d_t video,
+                              __read_only image2d_t matte,
+                              __read_only image2d_t near,
+                              __read_only image2d_t far,
+                              __read_only image2d_t lut) {{
+  int2 p = (int2)(get_global_id(0), get_global_id(1));
+  int2 dim = get_image_dim(dst);
+  if (p.x >= dim.x || p.y >= dim.y) return;
+  float2 uv = centre(p, dim);
+  float4 c = read_imagef(video, PT, p);
+
+  float d = read_imagef(matte, LIN, uv).x;   // no erosion here; see look_mix
+
+  float4 result = mix(c, unweight(read_imagef(near, LIN, uv), c),
+                      smoothband(BAND_A, BAND_B, d));
+  result = mix(result, unweight(read_imagef(far, LIN, uv), c),
+               smoothband(BAND_C, BAND_D, d));
+  result = grade(lut, result);
+  result.w = 1.f;
+  write_imagef(dst, p, result);
+}}
+"""
+
+
+def write_look_kernel(st: ProjectState, pixel_scale: float = 1.0) -> Path:
+    """Write this project's kernel and return its path.
+
+    `pixel_scale` is how big the frame being processed is next to the master.
+    The preview proxy runs the same look at a fraction of the size, and a blur
+    radius is measured in pixels, so it has to come along for the ride.
+    """
+    width = max(2, int(st.source_info.width * pixel_scale))
+    height = max(2, int(st.source_info.height * pixel_scale))
+    near, far = defocus_sigmas(st.look.defocus, width, height)
+    scale = blur_scale(far)
+    matte_width, _ = matte_size(st.source_info.width, st.source_info.height)
+    path = OPENCL_DIR / f"look-{st.name}-{round(pixel_scale * 1000)}.cl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(kernel_source(
+        max(0.6, near / scale), max(0.8, far / scale),
+        # The erosion is three pixels of the stored matte, restated as a
+        # fraction of the frame so the kernel does not need to know any sizes.
+        3.0 / max(2, matte_width),
+        (float(scale), float(scale)),
+    ), encoding="utf-8")
+    return path
+
+
+def lut_image_path(project: str) -> Path:
+    return look_dir(project) / "grade.png"
+
+
+def write_lut_image(st: ProjectState) -> Path:
+    """The grade table as one wide image, so the kernel can sample it.
+
+    A 33-cube laid out as 33 tiles of 33x33 side by side. OpenCL has 3D images,
+    but FFmpeg can only hand a kernel things that arrived as video frames, and
+    a strip of tiles is what a video frame can carry. The kernel interpolates
+    between two tiles by hand; within a tile the hardware does it.
+    """
+    path = lut_image_path(st.name)
+    cube = cube_path(st.name)
+    if (path.is_file() and cube.is_file()
+            and path.stat().st_mtime >= cube.stat().st_mtime):
+        return path
+    table = read_cube(cube)
+    size = table["size"]
+    data = base64.b64decode(table["data"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Row-major within a tile, tiles laid out along blue. The .cube varies red
+    # fastest, which is already this order.
+    row = bytearray(size * size * 3)
+    strip = bytearray()
+    for y in range(size):
+        for blue in range(size):
+            start = (blue * size * size + y * size) * 3
+            strip += data[start:start + size * 3]
+    partial = path.with_suffix(".part.png")
+    process = subprocess.run(
+        [FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "rawvideo", "-pix_fmt", "rgb24",
+         "-s", f"{size * size}x{size}", "-i", "pipe:0",
+         "-frames:v", "1", str(partial)],
+        input=bytes(strip), capture_output=True, creationflags=CHILD_FLAGS)
+    if process.returncode:
+        raise RuntimeError(process.stderr.decode("utf-8", "replace")[-300:])
+    os.replace(partial, path)
+    return path
+
+
+def look_graph_gpu(st: ProjectState, input_label: str, output_label: str,
+                   matte_index: int, pixel_scale: float = 1.0) -> str:
+    """The defocus on the GPU, from `input_label` to `output_label`."""
+    width = max(2, int(st.source_info.width * pixel_scale))
+    height = max(2, int(st.source_info.height * pixel_scale))
+    _near, far = defocus_sigmas(st.look.defocus, width, height)
+    scale = blur_scale(far)
+    blur_width = max(8, int(round(width / scale / 2)) * 2)
+    blur_height = max(8, int(round(height / scale / 2)) * 2)
+    kernel = _filter_path(write_look_kernel(st, pixel_scale))
+    program = f"program_opencl=source='{kernel}':kernel="
+    parts = [
+        # RGBA rather than the source's yuv420p: a planar format would hand the
+        # kernel the matte's *chroma* plane when it asks for the matte during a
+        # chroma pass, and the blur is a straight per-channel average anyway.
+        f"{input_label}setpts=PTS-STARTPTS,format=rgba,split=2[lkfull][lksmall]",
+        f"[lksmall]scale={blur_width}:{blur_height}:flags=area,hwupload[lkq]",
+        "[lkfull]hwupload[lkbig]",
+        # The matte goes in at the blur's resolution: the kernel samples it
+        # with normalised coordinates, so it never needs to match anything.
+        f"[{matte_index}:v]setpts=PTS-STARTPTS,"
+        f"scale={blur_width}:{blur_height}:flags=bicubic:in_range=tv:out_range=pc,"
+        "format=rgba,tpad=stop=-1:stop_mode=clone,hwupload,split=2[lkm1][lkm2]",
+        # Weight by background-ness before blurring, not after.
+        f"[lkq][lkm1]{program}premul:inputs=2[lkw]",
+        "[lkw]split=2[lkq1][lkq2]",
+        f"[lkq1]{program}near_h[lkna]",
+        f"[lkna]{program}near_v[lknear]",
+        f"[lkq2]{program}far_h[lkfa]",
+        f"[lkfa]{program}far_v[lkfar]",
+    ]
+    if look_state(st)["grade"]:
+        # The grade rides along in the same kernel. Sent down the CPU chain as
+        # lut3d it was, on 4K footage, about a third of what was left of the
+        # export - and it is a table lookup, which is the one thing a GPU is
+        # even better at than a blur.
+        parts.append(f"[{matte_index + 1}:v]format=rgba,hwupload[lklut]")
+        parts.append(
+            f"[lkbig][lkm2][lknear][lkfar][lklut]{program}look_mix_graded:inputs=5[lkgpu]")
+    else:
+        parts.append(f"[lkbig][lkm2][lknear][lkfar]{program}look_mix:inputs=4[lkgpu]")
+    parts.append(f"[lkgpu]hwdownload,format=rgba,format=yuv420p{output_label}")
+    return ";".join(parts)
+
+
+# ------------------------------------------ [9d] Preview proxies
+# The editor does not play the master. A talking-head master is routinely 4K,
+# H.264 with a two-second GOP, and several gigabytes; a browser asked to scrub
+# that spends its whole frame budget decoding. So the source is transcoded once
+# into a small, short-GOP copy that seeks instantly, and - when a look is on -
+# a second copy with the look already burned into it, so playback costs one
+# video decode instead of two plus a shader chain. Neither file is ever read by
+# an export.
+PREVIEW_EDGE = 960            # long edge of a proxy
+PREVIEW_GOP = 12              # frames between keyframes; short enough to scrub
+PREVIEW_JOBS: dict[str, dict[str, Any]] = {}
+
+
+def preview_dir(project: str) -> Path:
+    return project_dir(project) / "preview"
+
+
+def preview_base_path(project: str) -> Path:
+    return preview_dir(project) / "base.mp4"
+
+
+def preview_look_path(project: str) -> Path:
+    return preview_dir(project) / "look.mp4"
+
+
+def preview_base_key(st: ProjectState) -> str:
+    """What the plain proxy depends on: the footage, and nothing else."""
+    return f"{st.source}:{st.source_revision}" if st.source else ""
+
+
+def preview_look_key(st: ProjectState) -> str:
+    """What the baked proxy depends on: the footage and both look amounts.
+
+    The matte revision is in here too, because re-running the depth pass
+    changes the pixels the same way moving the slider does.
+    """
+    flags = look_state(st)
+    if not (flags["defocus"] or flags["grade"]):
+        return ""
+    return ":".join([
+        preview_base_key(st),
+        f"d{st.look.defocus:.4f}" if flags["defocus"] else "d0",
+        f"g{st.look.grade:.4f}" if flags["grade"] else "g0",
+        st.look.matte_revision, str(GRADE_VERSION), str(DEFOCUS_VERSION),
+    ])
+
+
+def preview_size(width: int, height: int) -> tuple[int, int]:
+    scale = min(1.0, PREVIEW_EDGE / max(1, max(width, height)))
+    return (max(2, int(round(width * scale / 2)) * 2),
+            max(2, int(round(height * scale / 2)) * 2))
+
+
+def preview_encoder() -> list[str]:
+    """NVENC when the machine has it, x264 when it does not.
+
+    A proxy is a throwaway file whose only job is to decode fast, so this
+    leans on speed and a short GOP rather than on efficiency.
+    """
+    if nvenc_available():
+        return ["-c:v", "h264_nvenc", "-preset", "p1", "-tune", "ll",
+                "-rc", "vbr", "-cq", "26", "-b:v", "0"]
+    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+            "-tune", "fastdecode"]
+
+
+def _short_key(key: str) -> str:
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
+
+
+def _public_preview(project: str, st: Optional[ProjectState] = None) -> dict[str, Any]:
+    if st is None:
+        st = load_state(project)
+    job = PREVIEW_JOBS.get(project)
+    base_ready = (st.preview.base_key == preview_base_key(st)
+                  and bool(st.source) and preview_base_path(project).is_file())
+    look_key = preview_look_key(st)
+    look_ready = (bool(look_key) and st.preview.look_key == look_key
+                  and preview_look_path(project).is_file())
+    payload: dict[str, Any] = {
+        "project": project,
+        "base_ready": base_ready,
+        "look_ready": look_ready,
+        # What the browser should actually play, in one field, so the client
+        # never has to reason about which files exist.
+        "url": "",
+        "baked": look_ready,
+        "status": "idle",
+        "progress": 0,
+        "running": False,
+    }
+    if look_ready:
+        payload["url"] = f"/media/{project}/preview/look.mp4?v={_short_key(look_key)}"
+    elif base_ready:
+        payload["url"] = f"/media/{project}/preview/base.mp4?v={_short_key(st.preview.base_key)}"
+    elif st.source:
+        payload["url"] = f"/media/{project}/{st.source}?v={st.source_revision}"
+    if job:
+        for key in ("status", "progress", "message", "error"):
+            if key in job:
+                payload[key] = job[key]
+        payload["running"] = job.get("status") in {"queued", "base", "look"}
+    return payload
+
+
+def _run_preview_ffmpeg(args: list[str], target: Path, total_frames: int,
+                        cancel: threading.Event, report) -> None:
+    """Run one proxy transcode, reporting progress and honouring cancel."""
+    partial = target.with_name(target.stem + ".part.mp4")
+    partial.unlink(missing_ok=True)
+    process = subprocess.Popen(
+        [FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+         "-progress", "pipe:1", "-stats_period", "0.4", *args, str(partial)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        creationflags=CHILD_FLAGS)
+    try:
+        for line in process.stdout:
+            if cancel.is_set():
+                raise LookCanceled()
+            if line.startswith("frame=") and total_frames > 0:
+                try:
+                    report(min(1.0, int(line.split("=", 1)[1]) / total_frames))
+                except ValueError:
+                    pass
+        if process.wait():
+            detail = (process.stderr.read() or "")[-400:]
+            raise RuntimeError(f"the proxy could not be built: {detail}")
+    except BaseException:
+        if process.poll() is None:
+            process.terminate()
+        process.wait()
+        partial.unlink(missing_ok=True)
+        raise
+    os.replace(partial, target)
+
+
+def build_preview_base(project: str, st: ProjectState, cancel: threading.Event, report) -> None:
+    source = project_dir(project) / st.source
+    width, height = preview_size(st.source_info.width, st.source_info.height)
+    preview_dir(project).mkdir(parents=True, exist_ok=True)
+    total = int((st.source_info.duration or 0) * (st.source_info.fps or 30))
+    _run_preview_ffmpeg([
+        "-i", str(source),
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-vf", f"scale={width}:{height}:flags=bicubic,format=yuv420p",
+        *preview_encoder(), "-g", str(PREVIEW_GOP), "-bf", "0",
+        "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+        "-movflags", "+faststart",
+    ], preview_base_path(project), total, cancel, report)
+
+
+def build_preview_look(project: str, st: ProjectState, cancel: threading.Event, report) -> None:
+    """The same proxy with the look already in it.
+
+    This is the file that makes playback cheap: the browser decodes one small
+    video and draws it, with no matte to decode alongside it and no shader to
+    run per frame.
+
+    It is built from the plain proxy rather than from the master, and that is
+    the whole reason it is usable. Applying a look to 4K footage runs at about
+    ten frames a second; applying the same look to a 540-pixel copy of it runs
+    faster than real time, which is the difference between waiting a quarter of
+    an hour after moving a slider and waiting under a minute. The blur radius
+    is scaled to match, so the proxy shows the same look the export will make -
+    at the resolution it will be watched at here.
+    """
+    ensure_cube(st)
+    base = preview_base_path(project)
+    if not base.is_file():
+        raise RuntimeError("the plain preview copy has to exist first")
+    width, height = preview_size(st.source_info.width, st.source_info.height)
+    scale = width / max(1, st.source_info.width)
+    total = int((st.source_info.duration or 0) * (st.source_info.fps or 30))
+    flags = look_state(st)
+    inputs = ["-i", str(base)]
+    matte_index = None
+    if flags["defocus"]:
+        inputs += ["-i", str(matte_path(project))]
+        matte_index = 1
+    if matte_index is not None and gpu_look_available(st):
+        if flags["grade"]:
+            # The kernel reads the grade out of an image, so the image has to
+            # be an input - looped for the length of the file, like the export
+            # does it for the length of a segment.
+            inputs += ["-loop", "1", "-framerate", f"{st.source_info.fps or 30:.6f}",
+                       "-i", str(write_lut_image(st))]
+        graph = look_graph_gpu(st, "[0:v]", "[looked]", matte_index, scale)
+    else:
+        graph = look_graph(st, "[0:v]", "[looked]", matte_index, scale)
+    chain = f"{graph};[looked]" if graph else "[0:v]"
+    _run_preview_ffmpeg([
+        *look_hw_args(st), *inputs,
+        "-filter_complex", f"{chain}format=yuv420p[pv]",
+        "-map", "[pv]", "-map", "0:a:0?",
+        *preview_encoder(), "-g", str(PREVIEW_GOP), "-bf", "0",
+        "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+        "-movflags", "+faststart", "-shortest",
+    ], preview_look_path(project), total, cancel, report)
+
+
+async def _run_preview_job(project: str, parts: list[str]) -> None:
+    job = PREVIEW_JOBS[project]
+    loop = asyncio.get_running_loop()
+
+    def notify(**updates) -> None:
+        job.update(updates)
+        payload = {"type": "preview_progress", **_public_preview(project)}
+        loop.call_soon_threadsafe(lambda: asyncio.create_task(HUB.broadcast(payload)))
+
+    def work() -> dict[str, str]:
+        st = load_state(project)
+        done: dict[str, str] = {}
+        if "base" in parts:
+            notify(status="base", progress=0.0, message="Building the preview copy...")
+            build_preview_base(project, st, job["cancel"], lambda fraction: notify(
+                status="base", progress=fraction,
+                message=f"Building the preview copy... {round(fraction * 100)}%"))
+            done["base_key"] = preview_base_key(st)
+        if "look" in parts and preview_look_key(st) and preview_base_path(project).is_file():
+            notify(status="look", progress=0.0, message="Baking the look into the preview...")
+            build_preview_look(project, st, job["cancel"], lambda fraction: notify(
+                status="look", progress=fraction,
+                message=f"Baking the look into the preview... {round(fraction * 100)}%"))
+            done["look_key"] = preview_look_key(st)
+        return done
+
+    try:
+        done = await asyncio.to_thread(work)
+        if job["cancel"].is_set():
+            raise LookCanceled()
+        st = load_state(project)
+        for key, value in done.items():
+            setattr(st.preview, key, value)
+        st = save_state(st)
+        notify(status="complete", progress=1.0, message="")
+        await HUB.broadcast({"type": "state", "project": project,
+                             "state": json.loads(st.model_dump_json())})
+    except LookCanceled:
+        notify(status="canceled", progress=0, message="")
+    except Exception as error:
+        notify(status="error", progress=0, error=str(error),
+               message=f"The preview copy failed: {error}")
+    finally:
+        job["cancel"].set()
+
+
+def preview_wanted(st: ProjectState) -> list[str]:
+    """Which proxies are missing or stale for this project right now."""
+    if not st.source:
+        return []
+    parts = []
+    if (st.preview.base_key != preview_base_key(st)
+            or not preview_base_path(st.name).is_file()):
+        parts.append("base")
+    key = preview_look_key(st)
+    if key and (st.preview.look_key != key or not preview_look_path(st.name).is_file()):
+        parts.append("look")
+    return parts
+
+
+def ensure_preview(project: str, st: Optional[ProjectState] = None,
+                   delay: float = 0.0) -> None:
+    """Start a proxy build if one is needed, replacing any build in flight.
+
+    Dragging a slider changes what the baked proxy should contain on every
+    mouse move, so the build is debounced: a new request cancels the running
+    one and waits out the delay before starting, and the live compositor covers
+    the preview in the meantime.
+    """
+    if st is None:
+        st = load_state(project)
+    parts = preview_wanted(st)
+    if not parts:
+        return
+    running = PREVIEW_JOBS.get(project)
+    if running:
+        if not running["cancel"].is_set() and running.get("parts") == parts:
+            return
+        running["cancel"].set()
+    cancel = threading.Event()
+    PREVIEW_JOBS[project] = {"status": "queued", "progress": 0, "cancel": cancel,
+                             "parts": parts, "message": "Preparing the preview copy..."}
+
+    async def start() -> None:
+        if delay:
+            await asyncio.sleep(delay)
+        if cancel.is_set() or PREVIEW_JOBS.get(project, {}).get("cancel") is not cancel:
+            return
+        await _run_preview_job(project, parts)
+
+    asyncio.create_task(start())
+
+
+@app.get("/api/projects/{name}/preview")
+def api_preview_status(name: str):
+    require_project(name)
+    return _public_preview(name)
+
+
+@app.post("/api/projects/{name}/preview/build")
+async def api_preview_build(name: str):
+    require_project(name)
+    st = load_state(name)
+    if not st.source:
+        raise HTTPException(409, "Import source footage before building a preview copy")
+    ensure_preview(name, st)
+    return JSONResponse(_public_preview(name, st), status_code=202)
+
+
 # ------------------------------------------- [10] Export — smart rendering
+NVENC_CACHE: list[bool] = []
+
+
+def nvenc_available() -> bool:
+    """has_nvenc(), asked once. The probe spawns FFmpeg, so it is not free."""
+    if not NVENC_CACHE:
+        try:
+            NVENC_CACHE.append(has_nvenc())
+        except Exception:
+            NVENC_CACHE.append(False)
+    return NVENC_CACHE[0]
+
+
 def has_nvenc() -> bool:
     listed = run([FFMPEG, "-hide_banner", "-encoders"])
     if "h264_nvenc" not in listed.stdout:
@@ -1969,6 +4232,7 @@ def timeline_segments(st: ProjectState) -> list[dict]:
             [(b.start, b.end) for b in st.captions]
     out = []
     frame = 1 / max(1.0, st.source_info.fps or 30)
+    breathing = breathes(st)
 
     def on_frame(value: float) -> float:
         return math.floor(value / frame + 0.5) * frame
@@ -1990,7 +4254,9 @@ def timeline_segments(st: ProjectState) -> list[dict]:
             if b - a < frame / 2:
                 continue
             mid = s["tl"] + (a + b) / 2
-            dirty = any(x <= mid < y for x, y in spans)
+            # Breathing moves the footage everywhere at once, so with it on
+            # there is no such thing as a segment that can be stream-copied.
+            dirty = breathing or any(x <= mid < y for x, y in spans)
             camera = camera_effect_at(st, mid)
             out.append({"src_in": s["src_in"] + a, "src_out": s["src_in"] + b,
                         "tl": s["tl"] + a, "dirty": dirty,
@@ -2120,6 +4386,117 @@ def _ease_expr(kind: str, k: str) -> str:
     return f"(1-pow(1-{k},3))"
 
 
+# ------------------------------------------------------------ breathing zoom
+# One slow scale oscillation running under the whole project, so no shot is
+# ever completely still. The numbers are small on purpose: at "standard" the
+# frame travels 2.4% over roughly thirteen seconds, which is felt rather than
+# seen. Vertical carries more amplitude because a 9:16 frame is physically
+# smaller in a feed, so the same percentage reads as less movement.
+#
+# The tempo is one constant across all three strengths, and that is the whole
+# design: every overlay's idle drift locks to this same clock, so turning the
+# strength up makes the video breathe deeper, never faster. A second control
+# for speed would let the footage and the graphics fall out of step, which is
+# exactly the thing this replaces.
+BREATHE_HZ = 0.075
+BREATHE_LEVELS: dict[str, dict[str, float]] = {
+    "off": {"horizontal": 0.0, "vertical": 0.0},
+    "subtle": {"horizontal": 0.006, "vertical": 0.009},
+    "standard": {"horizontal": 0.012, "vertical": 0.018},
+    "strong": {"horizontal": 0.022, "vertical": 0.030},
+}
+# How long an override takes to reach its own amplitude. Amplitude is a zoom,
+# so stepping it would be a visible jump in the frame; a third of a second of
+# linear ramp turns every edge into something nobody can point at.
+BREATHE_RAMP = 0.4
+
+
+def breathe_level(level: str, orientation: str) -> float:
+    table = BREATHE_LEVELS.get(level, BREATHE_LEVELS["off"])
+    return table.get(orientation, table["horizontal"])
+
+
+def breathe_spans(st: ProjectState) -> list[tuple[float, float, float]]:
+    """Stretches where the breathing amplitude is not the project default.
+
+    Two things override it, and they use one mechanism because they are the
+    same statement about the frame. A `breathe` block says "here, breathe this
+    much". A camera block says "here, I am the move" - and that is an override
+    to zero, because stacking a punch-in on top of a pulse is the one way this
+    effect turns into seasickness.
+    """
+    spans: list[tuple[float, float, float]] = []
+    for item in st.instances:
+        if item.duration <= 0:
+            continue
+        if item.template == "breathe":
+            level = str(item.fields.get("strength") or st.breathe)
+            spans.append((item.start, item.start + item.duration,
+                          breathe_level(level, st.orientation)))
+        elif TEMPLATE_PACKS.get(item.template, {}).get("camera"):
+            spans.append((item.start, item.start + item.duration, 0.0))
+    return sorted(spans)
+
+
+def breathe_amplitude_expr(st: ProjectState, time_expr: str) -> str:
+    """Breathing half-amplitude at `time_expr`, as an FFmpeg expression.
+
+    Piecewise linear: the project default everywhere, plus one trapezoid per
+    override that ramps its difference in and back out again. Overlapping
+    overrides would sum, so they are resolved into disjoint spans first.
+    """
+    base = breathe_level(st.breathe, st.orientation)
+    parts = [f"{base:.9f}"]
+    previous_end = -1e9
+    for start, end, amount in breathe_spans(st):
+        start = max(start, previous_end)
+        if end - start <= 1e-6:
+            continue
+        previous_end = end
+        ramp = max(1e-3, min(BREATHE_RAMP, (end - start) / 3))
+        window = (f"clip(min(({time_expr}-{start:.9f})/{ramp:.9f},"
+                  f"({end:.9f}-{time_expr})/{ramp:.9f}),0,1)")
+        parts.append(f"{amount - base:.9f}*{window}")
+    return "(" + "+".join(parts) + ")"
+
+
+def breathes(st: ProjectState) -> bool:
+    """Is anything on this timeline actually breathing?
+
+    Asked before a filter is built, so a project with the effect off keeps the
+    stream-copy path it has always had instead of paying for a zoompan that
+    multiplies everything by one.
+    """
+    if breathe_level(st.breathe, st.orientation) > 0:
+        return True
+    return any(amount > 0 for _, _, amount in breathe_spans(st))
+
+
+def breathe_filter_graph(
+    st: ProjectState, seg: dict, fps: float, source: str, out: str,
+    size: Optional[tuple[int, int]] = None,
+) -> str:
+    """The breathing move for a segment that has no camera block of its own."""
+    if not breathes(st):
+        return f"{source}setpts=PTS-STARTPTS{out}"
+    global_time = f"({seg['tl']:.9f}+on/{fps:.9f})"
+    amplitude = breathe_amplitude_expr(st, global_time)
+    # 1 + a + a*sin(...) rather than 1 + a*sin(...): the frame is only ever
+    # scaled up, because scaling below 1 would pull the edges of the picture
+    # into shot.
+    zoom = (f"(1+{amplitude}+{amplitude}*"
+            f"sin(2*PI*{BREATHE_HZ:.9f}*{global_time}))")
+    width, height = size or (st.source_info.width, st.source_info.height)
+    return (
+        f"{source}setpts=PTS-STARTPTS,"
+        f"zoompan=z='{zoom}':"
+        f"x='clip(0.5*iw-iw/(2*zoom),0,iw-iw/zoom)':"
+        f"y='clip(0.5*ih-ih/(2*zoom),0,ih-ih/zoom)':"
+        f"d=1:s={width}x{height}:fps={fps:.9f}"
+        f"{out}"
+    )
+
+
 def camera_plan(st: ProjectState, camera: Instance, fps: float) -> dict:
     """Resolve one camera instance into zoom/centre expressions of global time.
 
@@ -2201,32 +4578,45 @@ def camera_expressions(plan: dict, time_expr: str) -> tuple[str, str, str]:
     return zoom, f"{first['cx']:.9f}", f"{first['cy']:.9f}"
 
 
-def camera_filter_graph(st: ProjectState, seg: dict, fps: float) -> str:
-    """Build the source-video transform for one segment."""
+def camera_filter_graph(
+    st: ProjectState, seg: dict, fps: float, source: str = "[0:v]",
+    out: str = "[base]", size: Optional[tuple[int, int]] = None,
+) -> str:
+    """Build the source-video transform for one segment.
+
+    `source` is the label the transform reads from, so the look can be applied
+    ahead of it and the camera can magnify an already-defocused frame. `out`
+    and `size` exist so the identical move can be applied to the subject matte:
+    a block composited behind the speaker is only behind them if the silhouette
+    it is cut against was zoomed and panned exactly as the footage was.
+    """
     camera_id = seg.get("camera")
     camera = next((item for item in st.instances if item.id == camera_id), None)
     if camera is None:
         midpoint = seg["tl"] + (seg["src_out"] - seg["src_in"]) / 2
         camera = camera_effect_at(st, midpoint)
     if camera is None:
-        return "[0:v]setpts=PTS-STARTPTS[base]"
+        # No hand-placed move here, so the project's breathing is what moves
+        # the frame. It returns the plain setpts when nothing is breathing, so
+        # a project with the effect off builds the graph it always built.
+        return breathe_filter_graph(st, seg, fps, source, out, size)
 
     plan = camera_plan(st, camera, fps)
     global_time = f"({seg['tl']:.9f}+on/{fps:.9f})"
     zoom, cx, cy = camera_expressions(plan, global_time)
-    width, height = st.source_info.width, st.source_info.height
+    width, height = size or (st.source_info.width, st.source_info.height)
     peak = max(plan["first"]["zoom"], plan["second"]["zoom"])
     # zoompan samples the frame it is handed. Handing it a 2x lanczos upscale
     # first is what separates a punch-in that looks intentional from one that
     # looks like a soft crop, and it also halves zoompan's integer-pixel jitter.
     supersample = ",scale=iw*2:ih*2:flags=lanczos" if peak > 1.12 else ""
     return (
-        f"[0:v]setpts=PTS-STARTPTS{supersample},"
+        f"{source}setpts=PTS-STARTPTS{supersample},"
         f"zoompan=z='{zoom}':"
         f"x='clip({cx}*iw-iw/(2*zoom),0,iw-iw/zoom)':"
         f"y='clip({cy}*ih-ih/(2*zoom),0,ih-ih/zoom)':"
         f"d=1:s={width}x{height}:fps={fps:.9f}"
-        "[base]"
+        f"{out}"
     )
 
 
@@ -2235,15 +4625,406 @@ def punch_filter_graph(st: ProjectState, seg: dict, fps: float) -> str:
     return camera_filter_graph(st, seg, fps)
 
 
+# ------------------------------------------------- backdrop blur and depth
+# One number, deliberately. The blur radius is a fraction of the frame's short
+# edge rather than a pixel count, so the same value reads identically on a 720p
+# landscape proxy and a 4K vertical master - the same reason the look's defocus
+# is expressed this way. At 0.040 the background keeps its shapes and colours
+# and loses all its detail, which is what separates "an overlay in front of a
+# room" from "an overlay pasted on a photo".
+BACKDROP_BLUR = 0.040
+# Blurring *raises* a frame's average brightness, because it spreads highlights
+# across their neighbours. Left alone, white text over a blurred bright wall
+# loses the contrast it had over the sharp one. This pulls the blurred plate
+# back down by a tenth, which cancels that. It is a legibility correction, not
+# a mood, which is why it is a constant and not a control.
+BACKDROP_DIM = 0.10
+
+# Fixed order. The renderer packs the slots it was asked for into one strip in
+# this order and the filter graph crops them back out in this order, so the two
+# never need to negotiate anything beyond the list itself.
+SLOT_ORDER = ("below", "mask", "behind", "front")
+
+
+def segment_instances(st: ProjectState, seg: dict) -> list[Instance]:
+    """Every block that is on screen at any point during one segment."""
+    start = seg["tl"]
+    end = start + (seg["src_out"] - seg["src_in"])
+    return [item for item in st.instances
+            if item.start < end and start < item.start + item.duration]
+
+
+def matte_ready(st: ProjectState) -> bool:
+    """Is there a subject matte matching the current footage?
+
+    Distinct from `look_state()["defocus"]`, which also asks whether the user
+    turned the defocus slider up. A block placed behind the speaker needs the
+    silhouette regardless of whether the look is using it.
+    """
+    return (st.look.matte_revision == st.source_revision
+            and matte_path(st.name).is_file())
+
+
+def effective_depth(item: Instance) -> str:
+    """Which side of the speaker this block composites on.
+
+    Nearly always the block's own toggle. A pack may instead declare
+    `depth_from` - a field name plus the values of it that mean "behind" - for
+    templates where the side is not a separate decision but the meaning of a
+    field the editor already set. The stage backdrop is the case that needs it:
+    choosing "behind" as its framing IS the depth, and asking the same question
+    again in the compositing row would be two controls for one intent, which is
+    exactly how a timeline ends up with a block that says one thing and renders
+    another.
+    """
+    rule = TEMPLATE_PACKS.get(item.template, {}).get("depth_from")
+    if isinstance(rule, dict) and rule.get("field"):
+        value = item.fields.get(rule["field"], rule.get("default"))
+        return "behind" if value in (rule.get("behind") or []) else "front"
+    return item.depth
+
+
+def overlay_slots(st: ProjectState, seg: dict) -> list[str]:
+    """Which overlay planes this segment needs, in SLOT_ORDER.
+
+    A segment with no backdrop and nothing behind the speaker returns just
+    ["front"], which is the graph Editoro has always built - one overlay, one
+    composite. The extra planes cost extra pixels through the PNG pipe, so they
+    are only asked for where a block actually uses them.
+    """
+    active = segment_instances(st, seg)
+    slots: list[str] = []
+    if any(item.backdrop for item in active):
+        slots += ["below", "mask"]
+    if matte_ready(st) and any(effective_depth(item) == "behind" for item in active):
+        slots.append("behind")
+    slots.append("front")
+    return slots
+
+
+def overlay_composite_graph(
+    slots: list[str], base: str, overlay: str, out: str,
+    width: int, height: int, matte: Optional[str],
+) -> str:
+    """Composite the packed overlay strip around the footage.
+
+    The order is the whole point:
+
+        footage -> below -> BLUR -> behind -> speaker -> front
+
+    "below" and "front" are the two halves of the stack split at the lowest
+    block that asked for a backdrop; the blur therefore softens the footage and
+    every block underneath that one, and leaves that block and everything above
+    it sharp. "behind" lands after the blur but before the speaker is composited
+    back over the top, which is what puts a graphic behind their head.
+
+    The blur is applied everywhere and then masked back in by the alpha of the
+    "mask" plane, rather than being switched on and off by a timeline enable.
+    That is what lets it fade: the strength is drawn by the template's own
+    motion curve, in the same place every other transition in Editoro lives.
+    """
+    parts: list[str] = []
+    count = len(slots)
+    if count == 1:
+        parts.append(f"{overlay}setpts=PTS-STARTPTS[ovfront]")
+    else:
+        parts.append(f"{overlay}setpts=PTS-STARTPTS,split={count}"
+                     + "".join(f"[strip{i}]" for i in range(count)))
+        for index, slot in enumerate(slots):
+            parts.append(
+                f"[strip{index}]crop={width}:{height}:{index * width}:0[ov{slot}]"
+            )
+    label = base
+    if "below" in slots:
+        parts.append(f"{label}[ovbelow]overlay=0:0:format=auto:eof_action=pass:shortest=0[bdbase]")
+        sigma = BACKDROP_BLUR * min(width, height)
+        parts.append("[bdbase]split=2[bdsharp][bdsoft]")
+        parts.append(
+            f"[bdsoft]gblur=sigma={sigma:.3f}:steps=3,"
+            f"eq=brightness=-{BACKDROP_DIM:.3f}[bddim]"
+        )
+        parts.append("[ovmask]alphaextract[bdmask]")
+        parts.append("[bddim][bdmask]alphamerge[bdcut]")
+        parts.append("[bdsharp][bdcut]overlay=0:0:format=auto[bdout]")
+        label = "[bdout]"
+    if "behind" in slots and matte:
+        # The speaker is lifted off the plate as it stands *now* - after the
+        # blur, not before it. If a backdrop is softening the frame, it softens
+        # the speaker too; they are part of what is underneath it.
+        parts.append(f"{label}split=2[dpplate][dpsubject]")
+        parts.append(f"{matte}format=gray[dpmask]")
+        parts.append("[dpsubject][dpmask]alphamerge[dpcut]")
+        parts.append("[dpplate][ovbehind]overlay=0:0:format=auto:eof_action=pass:shortest=0[dpback]")
+        parts.append("[dpback][dpcut]overlay=0:0:format=auto[dpout]")
+        label = "[dpout]"
+    parts.append(f"{label}[ovfront]overlay=0:0:format=auto:eof_action=pass:shortest=0{out}")
+    return ";".join(parts)
+
+
+def export_dimensions(st: ProjectState, resolution: str) -> tuple[int, int]:
+    """The pixel size one export writes, for a `resolution` the API accepts.
+
+    Both the overlay renderer and the FFmpeg graph need this, and they have to
+    agree exactly: the overlay is composited at the output size now rather than
+    scaled down afterwards, so a disagreement of one pixel is a visible offset
+    rather than a rounding detail.
+    """
+    width, height = st.source_info.width, st.source_info.height
+    if resolution == "source" or not height:
+        return width, height
+    target_h = int(resolution)
+    target_w = int(round(target_h * width / height / 2) * 2)
+    return target_w, target_h
+
+
+# --------------------------------------------------------- scrub proxies
+# The single most expensive thing in an export used to be invisible. Templates
+# that draw footage - the PiP window, every b-roll clip - read it out of a
+# <video> element, and the headless renderer has to put that element on an
+# exact timestamp once per exported frame. Seeking a long-GOP H.264 master
+# means decoding every frame from the preceding keyframe forward, so on a 4K
+# master that one line of JavaScript cost 5.8 seconds per frame, and a
+# two-minute edit spent the better part of an hour inside it.
+#
+# An all-intra copy makes every frame its own keyframe, so the same seek
+# decodes exactly one frame. It is a throwaway file built with NVENC where
+# there is NVENC, at the size the export actually writes and never larger than
+# the source, and it is cached by content so a second export of the same
+# project pays nothing.
+SCRUB_GOP = 1                 # all-intra: the whole point
+EXPORT_RENDER_LANES = 2       # browser pages rasterising at once
+EXPORT_BATCH_TIMEOUT = 20.0   # seconds per frame before a lane is declared stalled
+SCRUB_CACHE_BUDGET = 8 << 30  # bytes of scrub proxies kept per project
+
+
+def _transparent_png(width: int, height: int) -> bytes:
+    """A fully transparent RGBA PNG, written by hand.
+
+    Every row of a blank overlay is identical and every byte of it is zero, so
+    the deflate stream compresses to almost nothing and this is far cheaper
+    than asking the browser for a picture of nothing. Written directly rather
+    than through a library because the only image Editoro ever needs to
+    *create* from scratch is this one.
+    """
+    import zlib
+
+    # One filter byte (0 = None) per row, then width * 4 zero bytes of RGBA.
+    raw = (b"\x00" + b"\x00" * (width * 4)) * height
+
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (struct.pack(">I", len(payload)) + kind + payload
+                + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF))
+
+    return b"".join([
+        b"\x89PNG\r\n\x1a\n",
+        chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)),
+        chunk(b"IDAT", zlib.compress(raw, 6)),
+        chunk(b"IEND", b""),
+    ])
+
+
+def scrub_dir(project: str) -> Path:
+    return project_dir(project) / "scrub"
+
+
+def scrub_encoder() -> list[str]:
+    """Fast, all-intra, visually lossless enough to draw from."""
+    # All-intra costs a lot of bits - a 4K master runs to several gigabytes -
+    # and every one of these frames is drawn at the export resolution or
+    # smaller and then re-encoded by the real encoder afterwards. So this sits
+    # a little below the quality the final file is written at: comfortably
+    # invisible once composited, and roughly half the disk of qp 20.
+    if nvenc_available():
+        return ["-c:v", "h264_nvenc", "-preset", "p1", "-tune", "ull",
+                "-rc", "constqp", "-qp", "23"]
+    return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "21",
+            "-tune", "fastdecode"]
+
+
+def scrub_size(width: int, height: int, target_w: int, target_h: int) -> tuple[int, int]:
+    """The render size, but never an upscale - that would only cost time."""
+    if not width or not height:
+        return target_w, target_h
+    scale = min(1.0, max(target_w / width, target_h / height))
+    return (max(2, int(round(width * scale / 2)) * 2),
+            max(2, int(round(height * scale / 2)) * 2))
+
+
+def build_scrub_proxy(project: str, media: Path, target_w: int, target_h: int,
+                      log_file: Optional[Path] = None,
+                      build: bool = True) -> Optional[Path]:
+    """One all-intra copy of `media`, cached. Returns None if it cannot be made.
+
+    Failure is deliberately soft: a missing scrub copy means the renderer falls
+    back to seeking the original, which is exactly what it did before. Slow is
+    a far better failure than broken.
+    """
+    try:
+        info = probe(media)
+    except Exception:
+        return None
+    width, height = scrub_size(info.width, info.height, target_w, target_h)
+    key = _short_key(
+        f"{media.name}:{media.stat().st_mtime_ns}:{media.stat().st_size}"
+        f":{width}x{height}:{SCRUB_GOP}"
+    )
+    target = scrub_dir(project) / f"{key}.mp4"
+    if target.is_file():
+        return target
+    if not build:
+        # Still frames reuse a proxy an export already left behind, but never
+        # transcode a whole master to answer one frame - that would turn a
+        # preview click into a minutes-long wait.
+        return None
+    scrub_dir(project).mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(f"{key}.part.mp4")
+    command = [
+        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(media),
+        "-vf", f"scale={width}:{height}:flags=bicubic",
+        *scrub_encoder(),
+        "-g", str(SCRUB_GOP), "-bf", "0",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", str(partial),
+    ]
+    result = run(command, log_file)
+    if result.returncode or not partial.is_file():
+        partial.unlink(missing_ok=True)
+        _append_log(log_file, "  scrub proxy failed; the renderer will seek "
+                              "the original instead (slower, still correct)")
+        return None
+    os.replace(partial, target)
+    return target
+
+
+def export_scrub_map(st: ProjectState, width: int, height: int,
+                     log_file: Optional[Path] = None,
+                     build: bool = True) -> dict[str, str]:
+    """{media file name: scrub URL} for every video the renderer will seek.
+
+    Keyed by bare file name rather than by URL on purpose. The page decorates
+    its media URLs with cache-busting signatures that this code would have to
+    reproduce byte for byte to match on, and a near-miss would fail silently by
+    simply never substituting - the export would still be correct and still be
+    slow, which is the hardest kind of bug to notice. A file name is something
+    both sides can agree on without either one knowing how the other builds a
+    URL.
+    """
+    project = st.name
+    wanted: list[tuple[str, Path]] = []
+    if st.source and any(
+        (TEMPLATE_PACKS.get(item.template) or {}).get("source_window")
+        for item in st.instances
+    ):
+        wanted.append((st.source, project_dir(project) / st.source))
+    video_suffixes = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
+    for item in st.instances:
+        for key in ("asset", "clip"):
+            asset = item.fields.get(key)
+            if not isinstance(asset, str) or not asset:
+                continue
+            path = project_dir(project) / "assets" / asset
+            if path.suffix.lower() in video_suffixes and path.is_file():
+                wanted.append((asset, path))
+    mapping: dict[str, str] = {}
+    for name, path in wanted:
+        if name in mapping:
+            continue
+        proxy = build_scrub_proxy(project, path, width, height, log_file, build)
+        if proxy:
+            mapping[name] = f"/media/{project}/scrub/{proxy.name}"
+    if mapping:
+        _append_log(log_file, f"  scrub proxies ready for {len(mapping)} video "
+                              f"source(s) at {width}x{height}")
+        prune_scrub_cache(project, keep={Path(url).name for url in mapping.values()})
+    return mapping
+
+
+def prune_scrub_cache(project: str, keep: set[str],
+                      budget: int = SCRUB_CACHE_BUDGET) -> None:
+    """Keep the scrub folder from growing without limit.
+
+    These are worth caching - rebuilding the set for a busy project took nearly
+    three minutes - but an all-intra copy of a 4K master is measured in
+    gigabytes, and a project exported at three resolutions would keep three of
+    everything forever. So: never touch what this export is about to use, then
+    drop the least recently used of the rest until the folder is under budget.
+    """
+    directory = scrub_dir(project)
+    if not directory.is_dir():
+        return
+    try:
+        others = sorted(
+            (item for item in directory.glob("*.mp4") if item.name not in keep),
+            key=lambda item: item.stat().st_mtime,
+        )
+        total = sum(item.stat().st_size for item in directory.glob("*.mp4"))
+    except OSError:
+        return
+    for item in others:
+        if total <= budget:
+            break
+        try:
+            size = item.stat().st_size
+            item.unlink()
+            total -= size
+        except OSError:
+            continue
+
+
 class OverlayRenderSession:
     """One shared browser page per export, regardless of dirty segment count."""
 
-    def __init__(self, name: str, state: ProjectState):
+    def __init__(self, name: str, state: ProjectState,
+                 width: int = 0, height: int = 0,
+                 scrub: Optional[dict[str, str]] = None):
         self.name = name
         self.state = state
+        # {file name: scrub URL}. See export_scrub_map.
+        self.scrub = scrub or {}
+        # One fully transparent frame, encoded once and handed back for every
+        # blank moment in the timeline. Built lazily because its size depends
+        # on how many planes the segment asked for.
+        self._blank: dict[int, bytes] = {}
+        # Where this page's frames come back to. Frames are posted as binary
+        # bodies rather than returned as base64 through CDP; the token keeps
+        # concurrent exports from writing into each other's pile.
+        self.token = uuid.uuid4().hex
+        self._seq = 0
+        # Set if the browser goes away underneath us. A renderer that dies must
+        # surface as a failed export, never as an export that sits there: the
+        # FFmpeg on the other end of the pipe is blocked reading stdin and will
+        # wait for input that is never coming, forever.
+        self.lost: asyncio.Event = asyncio.Event()
+        # Whether frames come back as binary POSTs. Decided by a probe on the
+        # first page; false means the data-URL path, which is slower and just
+        # as correct.
+        self.binary = True
+        # The size the overlay is rasterised at. Defaults to the source, but an
+        # export writing 720p asks for 720p frames: same picture, a fraction of
+        # the PNG encode, transfer and decode. Templates measure themselves in
+        # fractions of the frame, so nothing about the layout changes.
+        self.width = width or state.source_info.width
+        self.height = height or state.source_info.height
         self.playwright = None
         self.browser = None
         self.page = None
+        self.pages: list[Any] = []
+        # Rasterising is now the slowest thing in an export, and it is one
+        # canvas on one thread. Chromium will happily run several pages at
+        # once, and the machine has cores doing nothing, so the batches are
+        # dealt round-robin across a small pool. Capped rather than scaled to
+        # the core count: each page holds decoders and a full-size canvas, and
+        # past about four they start competing for memory bandwidth instead of
+        # adding throughput.
+        # ...and fewer of them the larger the frame, because each lane holds a
+        # full set of video decoders and two canvases of this size. Four lanes
+        # of 4K is several gigabytes before any of them has drawn anything,
+        # and a renderer that runs out of memory halfway through is a far worse
+        # outcome than one that finishes a little slower.
+        pixels = max(1, self.width * self.height)
+        budget = 2 if pixels <= 1920 * 1080 else 1
+        self.lanes = max(1, min(EXPORT_RENDER_LANES, budget,
+                                (os.cpu_count() or 4) // 2))
         self.errors: list[str] = []
 
     async def start(self) -> None:
@@ -2255,7 +5036,9 @@ class OverlayRenderSession:
                 "The export renderer is not installed. Close Editoro, run launch.cmd once, "
                 "and let setup finish."
             )
+        EXPORT_FRAMES[self.token] = {}
         self.playwright = await async_playwright().start()
+        self.lost = asyncio.Event()
         self.browser = await self.playwright.chromium.launch(
             executable_path=str(executable),
             args=[
@@ -2266,67 +5049,208 @@ class OverlayRenderSession:
                 "--use-angle=d3d11",
             ],
         )
-        self.page = await self.browser.new_page(viewport={
-            "width": self.state.source_info.width,
-            "height": self.state.source_info.height,
+        self.browser.on("disconnected", lambda _: self.lost.set())
+        snapshot = json.dumps(self.state.model_dump(), ensure_ascii=True)
+        scrub = json.dumps(self.scrub, ensure_ascii=True)
+        for _ in range(self.lanes):
+            self.pages.append(await self._open_page(snapshot, scrub))
+        self.page = self.pages[0]   # the one a single still frame uses
+
+    async def _open_page(self, snapshot: str, scrub: str):
+        page = await self.browser.new_page(viewport={
+            "width": self.width,
+            "height": self.height,
         })
-        self.page.on("pageerror", lambda error: self.errors.append(str(error)))
-        self.page.on(
+        page.on("pageerror", lambda error: self.errors.append(str(error)))
+        page.on(
             "console",
             lambda message: self.errors.append(message.text)
             if message.type == "error" else None,
         )
-        snapshot = json.dumps(self.state.model_dump(), ensure_ascii=True)
-        await self.page.add_init_script(
+        await page.add_init_script(
             f"window.__EDITORO_EXPORT_STATE = {snapshot};"
+            f"window.__EDITORO_SCRUB = {scrub};"
         )
-        await self.page.goto(
+        await page.goto(
             f"http://127.0.0.1:{PORT}/?export=1&project={self.name}"
+            f"&w={self.width}&h={self.height}"
         )
         try:
-            await self.page.wait_for_function(
+            await page.wait_for_function(
                 "window.__exportReady === true || window.__exportError",
                 timeout=60000,
             )
         except Exception as exc:
             detail = " | ".join(self.errors[-5:]) or str(exc)
             raise RuntimeError(f"Export renderer did not become ready: {detail}") from exc
-        setup_error = await self.page.evaluate("window.__exportError || null")
+        setup_error = await page.evaluate("window.__exportError || null")
         if setup_error:
             raise RuntimeError(f"Export renderer failed to start: {setup_error}")
+        # Ask once whether frames can come back the fast way. See __exportProbe.
+        if self.binary:
+            try:
+                self.binary = bool(await page.evaluate(
+                    "token => window.__exportProbe(token)", self.token))
+            except Exception:
+                self.binary = False
+            if not self.binary:
+                # The probe's own failure is logged to the page console by the
+                # browser; it is expected, handled, and must not be mistaken
+                # for a template blowing up.
+                self.errors.clear()
+        EXPORT_FRAMES.get(self.token, {}).pop(-1, None)
+        return page
+
+    async def _render_batch(self, times: list[float], slots: list[str],
+                            page=None) -> list[bytes]:
+        first = self._seq
+        self._seq += len(times)
+        results = await (page or self.page).evaluate(
+            "args => window.__renderFrames(args.times, args.slots, "
+            "args.token, args.first)",
+            {"times": times, "slots": slots,
+             "token": self.token if self.binary else None, "first": first},
+        )
+        sink = EXPORT_FRAMES.get(self.token) or {}
+        frames: list[bytes] = []
+        for item in results:
+            # Three shapes, in the order they cost: "" is a moment with nothing
+            # on it, which the page skipped entirely; an int is a frame already
+            # posted back as binary; a data URL is the old path, still handled
+            # so a still frame and a stale page both keep working.
+            if item == "" or item is None:
+                frames.append(self.blank_frame(len(slots)))
+            elif isinstance(item, (int, float)):
+                data = sink.pop(int(item), None)
+                if data is None:
+                    raise RuntimeError(
+                        f"overlay frame {int(item)} never arrived from the renderer")
+                frames.append(data)
+            else:
+                frames.append(base64.b64decode(str(item).split(",", 1)[1]))
+        return frames
+
+    async def _await_batch(self, task: asyncio.Task, size: int) -> list[bytes]:
+        """Wait for one batch, but never forever.
+
+        Two things can leave a rendered batch pending for the rest of time, and
+        both of them used to strand the export rather than end it: the browser
+        dying (its pending evaluate is simply never settled), and a page that is
+        alive but wedged. Downstream, FFmpeg is blocked reading a pipe, so the
+        whole export sits at a fixed percentage looking like it is working. An
+        export that fails with a sentence is strictly better than one that
+        hangs, so this turns both cases into an exception.
+
+        The budget is per frame and deliberately generous - a 4K frame carrying
+        several video seeks measured well under a second, so seconds a frame is
+        far outside anything healthy and only trips on a genuine stall.
+        """
+        watchers = [asyncio.ensure_future(self.lost.wait())]
+        try:
+            done, _ = await asyncio.wait(
+                [task, *watchers],
+                timeout=EXPORT_BATCH_TIMEOUT * max(1, size),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if task in done:
+                return task.result()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if self.lost.is_set():
+                raise RuntimeError(
+                    "The export renderer stopped responding - the browser it "
+                    "runs in went away mid-export. This is usually memory: try "
+                    "exporting at a smaller resolution."
+                )
+            raise RuntimeError(
+                f"The export renderer stalled on a batch of {size} frame(s) and "
+                f"was given up on after "
+                f"{EXPORT_BATCH_TIMEOUT * max(1, size):.0f}s."
+            )
+        finally:
+            for watcher in watchers:
+                watcher.cancel()
+            await asyncio.gather(*watchers, return_exceptions=True)
+
+    def blank_frame(self, planes: int) -> bytes:
+        """A transparent PNG the size of one strip, encoded once per width."""
+        if planes not in self._blank:
+            self._blank[planes] = _transparent_png(self.width * planes, self.height)
+        return self._blank[planes]
 
     async def frame_batches(
         self,
         seg: dict,
         cancel: asyncio.Event,
-        batch_size: int = 4,
+        batch_size: int = 8,
+        slots: Optional[list[str]] = None,
     ):
-        if not self.page:
+        """Yield rendered overlay batches in order, keeping every lane busy.
+
+        The caller writes each batch into FFmpeg's stdin and waits for the pipe
+        to drain, so anything rendered during that wait is free. Rasterising is
+        the slowest part of an export and it is single-threaded per page, so
+        several batches are kept in flight across the page pool at once and
+        handed back strictly in order - FFmpeg is being fed a video stream and
+        cannot take frame 40 before frame 32.
+
+        Exactly `lanes` batches are ever outstanding, so memory stays bounded
+        at lanes * batch_size frames however long the segment is.
+        """
+        if not self.pages:
             raise RuntimeError("overlay renderer is not started")
+        slots = slots or ["front"]
         fps = self.state.source_info.fps or 30
         count = max(1, int(math.ceil((seg["src_out"] - seg["src_in"]) * fps)))
-        for first in range(0, count, batch_size):
-            if cancel.is_set():
-                raise asyncio.CancelledError()
-            times = [
+        starts = list(range(0, count, batch_size))
+
+        def times_for(first: int) -> list[float]:
+            return [
                 seg["tl"] + frame / fps
                 for frame in range(first, min(count, first + batch_size))
             ]
-            data_urls = await self.page.evaluate(
-                "times => window.__renderFrames(times)",
-                times,
-            )
-            frames = [
-                __import__("base64").b64decode(data.split(",", 1)[1])
-                for data in data_urls
-            ]
-            yield first, count, frames
+
+        inflight: "collections.deque[tuple[int, asyncio.Task]]" = collections.deque()
+        next_batch = 0
+
+        def fill() -> None:
+            """Start batches until every lane has one."""
+            nonlocal next_batch
+            while len(inflight) < len(self.pages) and next_batch < len(starts):
+                first = starts[next_batch]
+                page = self.pages[next_batch % len(self.pages)]
+                inflight.append((
+                    first,
+                    asyncio.create_task(self._render_batch(times_for(first), slots, page)),
+                ))
+                next_batch += 1
+
+        try:
+            fill()
+            while inflight:
+                if cancel.is_set():
+                    raise asyncio.CancelledError()
+                first, task = inflight.popleft()
+                frames = await self._await_batch(task, len(times_for(first)))
+                # Refill only after one has been taken, so a lane is never
+                # asked for two batches at once.
+                fill()
+                yield first, count, frames
+        finally:
+            for _, task in inflight:
+                task.cancel()
+            await asyncio.gather(*(task for _, task in inflight),
+                                 return_exceptions=True)
         if self.errors:
             raise RuntimeError(
                 "Template renderer error: " + " | ".join(self.errors[-5:])
             )
 
     async def close(self) -> None:
+        # Drop the pile first: a frame still in flight when the page goes away
+        # should be refused rather than kept for an export that has finished.
+        EXPORT_FRAMES.pop(self.token, None)
+        self.pages = []
         if self.browser:
             await self.browser.close()
         if self.playwright:
@@ -2352,26 +5276,52 @@ async def encode_dirty_segment(
     fps = st.source_info.fps or 30
     duration = seg["src_out"] - seg["src_in"]
     frames = segment_frames(seg, fps)
-    source_filter = camera_filter_graph(st, seg, fps)
+    # Which overlay planes this span needs. Most spans need only "front", and
+    # then everything below builds the same single-composite graph as before.
+    slots = overlay_slots(st, seg)
+    # The matte, when there is one, is the third input: source, overlay pipe,
+    # depth. It is seeked to the same source moment, so the two videos are
+    # frame-aligned without any further bookkeeping.
+    matte = look_inputs(st, seg["src_in"], duration, need_matte="behind" in slots)
+    source_filter = base_video_graph(st, seg, fps, 2 if matte else None)
+    # Scale the footage BEFORE the overlay goes on, not after. The overlay is
+    # rendered at the output size, so compositing at the output size is what
+    # keeps the two aligned - and it means the expensive lanczos pass runs on
+    # the source frame alone instead of on the composite.
+    width, height = export_dimensions(st, resolution)
     scale_filter = ""
     if resolution != "source":
-        target_h = int(resolution)
-        target_w = int(round(target_h * st.source_info.width / st.source_info.height / 2) * 2)
-        scale_filter = f",scale={target_w}:{target_h}:flags=lanczos"
+        scale_filter = f"scale={width}:{height}:flags=lanczos,"
+    # A block behind the speaker is cut against the matte, so the matte has to
+    # have been through the same camera move as the footage - otherwise a
+    # punch-in slides the silhouette off the person it was cut from.
+    matte_label = None
+    matte_prep = ""
+    if "behind" in slots and matte:
+        matte_prep = (
+            f"[2:v]setpts=PTS-STARTPTS,scale={width}:{height}"
+            f":flags=bicubic:in_range=tv:out_range=pc[dpraw];"
+            + camera_filter_graph(st, seg, fps, "[dpraw]", "[dpcam]", (width, height))
+            + ";"
+        )
+        matte_label = "[dpcam]"
+    composite = overlay_composite_graph(
+        slots, "[padded]", "[1:v]", "[composited]", width, height, matte_label,
+    )
     # The base is padded with a cloned final frame and the output is bounded by
     # an exact frame count. Previously this relied on overlay's `shortest`, so a
     # single rounding disagreement between the decoder and the frame generator
     # shortened the span and every later cut drifted against the audio.
     command = [
-        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+        FFMPEG, "-hide_banner", "-loglevel", "error", "-y", *look_hw_args(st),
         "-ss", f"{seg['src_in']:.6f}", "-t", f"{duration + 0.5:.6f}", "-i", str(src),
         "-thread_queue_size", "64", "-f", "image2pipe",
         "-framerate", f"{fps:.6f}", "-vcodec", "png", "-i", "pipe:0",
+        *matte,
         "-filter_complex",
-        f"{source_filter};[base]tpad=stop=-1:stop_mode=clone[padded];"
-        f"[1:v]setpts=PTS-STARTPTS[ov];"
-        f"[padded][ov]overlay=0:0:format=auto:eof_action=pass:shortest=0"
-        f"{scale_filter},fps={fps:.6f}[v]",
+        f"{source_filter};[base]{scale_filter}tpad=stop=-1:stop_mode=clone[padded];"
+        f"{matte_prep}{composite};"
+        f"[composited]fps={fps:.6f}[v]",
         "-map", "[v]", *vcodec, "-frames:v", str(frames), "-an",
         *bitstream_filter(st), "-f", "mpegts", str(part),
     ]
@@ -2382,10 +5332,11 @@ async def encode_dirty_segment(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
+        creationflags=CHILD_FLAGS,
     )
     stderr_task = asyncio.create_task(process.stderr.read())
     try:
-        async for first, count, frames in renderer.frame_batches(seg, cancel):
+        async for first, count, frames in renderer.frame_batches(seg, cancel, slots=slots):
             if cancel.is_set():
                 raise asyncio.CancelledError()
             if process.returncode is not None:
@@ -2469,21 +5420,31 @@ async def render_still(name: str, timeline_time: float, width: int = 0) -> bytes
             camera = camera_effect_at(st, timeline_time)
             segment = {"src_in": source_time, "src_out": source_time + 1 / fps,
                        "tl": timeline_time, "camera": camera.id if camera else None}
-            graph = camera_filter_graph(st, segment, fps)
+            # The still has to go through the same planes the export does, or
+            # an agent checking its own work sees a frost that is not there and
+            # a block in front of the speaker it asked to put behind them.
+            slots = overlay_slots(st, segment)
+            matte = look_inputs(st, source_time, 1 / fps, need_matte="behind" in slots)
+            graph = base_video_graph(st, segment, fps, 1 if matte else None)
             command = [
-                FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
-                "-ss", f"{source_time:.6f}", "-i", str(folder / st.source),
+                FFMPEG, "-hide_banner", "-loglevel", "error", "-y", *look_hw_args(st),
+                "-ss", f"{source_time:.6f}", "-i", str(folder / st.source), *matte,
                 "-filter_complex", graph, "-map", "[base]", "-frames:v", "1", str(base),
             ]
             result = run(command)
             if result.returncode or not base.is_file():
                 raise HTTPException(500, (result.stderr or "could not read that frame")[-400:])
 
-            renderer = OverlayRenderSession(name, st)
+            renderer = OverlayRenderSession(
+                name, st,
+                scrub=export_scrub_map(st, st.source_info.width,
+                                       st.source_info.height, build=False),
+            )
             await renderer.start()
             try:
                 data_url = await renderer.page.evaluate(
-                    "t => window.__renderFrame(t)", timeline_time)
+                    "args => window.__renderFrame(args.t, args.slots)",
+                    {"t": timeline_time, "slots": slots})
             finally:
                 await renderer.close()
             overlay = work / "overlay.png"
@@ -2491,15 +5452,141 @@ async def render_still(name: str, timeline_time: float, width: int = 0) -> bytes
 
             out = work / "frame.png"
             scale = f",scale={int(width)}:-2:flags=lanczos" if width else ""
+            frame_w, frame_h = st.source_info.width, st.source_info.height
+            matte_prep, matte_label = "", None
+            if "behind" in slots and matte:
+                # Input 2 here, not 3: this command re-reads the base PNG rather
+                # than the source, so the matte is the second extra input.
+                matte_prep = (
+                    f"[2:v]scale={frame_w}:{frame_h}"
+                    f":flags=bicubic:in_range=tv:out_range=pc[dpraw];"
+                    + camera_filter_graph(st, segment, fps, "[dpraw]", "[dpcam]",
+                                          (frame_w, frame_h))
+                    + ";"
+                )
+                matte_label = "[dpcam]"
+            composite = overlay_composite_graph(
+                slots, "[0:v]", "[1:v]", "[composited]",
+                frame_w, frame_h, matte_label,
+            )
             result = run([
                 FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
                 "-i", str(base), "-i", str(overlay),
-                "-filter_complex", f"[0:v][1:v]overlay=0:0:format=auto{scale}[v]",
+                # Seeked to the same source moment as the base frame, or the
+                # silhouette would be the one from the start of the video.
+                *(["-ss", f"{source_time:.6f}", "-i", str(matte_path(st.name))]
+                  if matte_label else []),
+                "-filter_complex",
+                f"{matte_prep}{composite};[composited]null{scale}[v]",
                 "-map", "[v]", "-frames:v", "1", str(out),
             ])
             if result.returncode or not out.is_file():
                 raise HTTPException(500, (result.stderr or "could not compose that frame")[-400:])
             return out.read_bytes()
+
+
+# ------------------------------------------------------------- the thumbnail
+# The design is composed in the browser, by the same canvas code that draws the
+# preview, and arrives here already rendered. That is deliberate: a thumbnail is
+# a still, so there is nothing for the headless renderer to time, and asking the
+# export pipeline to reproduce a second layout engine for one PNG would be two
+# implementations of one picture - the exact trap the overlay engine exists to
+# avoid. The browser draws it, the server stores it and knows how to hold it on
+# the front of a video.
+THUMBNAIL_SIZES = {"horizontal": (1280, 720), "vertical": (1080, 1920)}
+
+
+def thumbnail_file(name: str, orientation: str) -> Path:
+    return require_project(name) / f"thumbnail-{orientation}.png"
+
+
+@app.post("/api/projects/{name}/thumbnail")
+async def api_thumbnail_save(name: str, request: Request, orientation: str = "horizontal",
+                             keep: bool = False):
+    """Store the rendered thumbnail; `keep` also drops a dated copy in exports."""
+    folder = require_project(name)
+    if orientation not in THUMBNAIL_SIZES:
+        raise HTTPException(400, "orientation must be horizontal or vertical")
+    png = await request.body()
+    if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise HTTPException(400, "expected a PNG body")
+    if len(png) > 24 * 1024 * 1024:
+        raise HTTPException(413, "thumbnail too large")
+    thumbnail_file(name, orientation).write_bytes(png)
+    saved = None
+    if keep:
+        (folder / "exports").mkdir(exist_ok=True)
+        saved = folder / "exports" / f"{name}-thumb-{time.strftime('%Y%m%d-%H%M%S')}.png"
+        saved.write_bytes(png)
+    return {"ok": True, "bytes": len(png),
+            "file": f"exports/{saved.name}" if saved else None}
+
+
+@app.get("/api/projects/{name}/thumbnail")
+def api_thumbnail_read(name: str, orientation: str = "horizontal"):
+    path = thumbnail_file(name, orientation)
+    if not path.is_file():
+        raise HTTPException(404, "no thumbnail saved yet")
+    return FileResponse(path, media_type="image/png",
+                        headers={"Cache-Control": "no-store"})
+
+
+async def prepend_thumbnail(
+    st: ProjectState, name: str, finished: Path, work: Path, fps: float,
+    vcodec: list[str], log: Path, cancel: asyncio.Event,
+) -> None:
+    """Hold the saved thumbnail on the front of a finished export, in place.
+
+    Runs after the frame audit rather than inside the join, and that is on
+    purpose. The audit exists to prove that every source frame survived the cut
+    list; a deliberately added still would make it fail for a good reason, and a
+    check that has to be relaxed to pass is not a check. So the video is built
+    and verified exactly as it always was, and the cover is concatenated onto
+    the front of the verified file afterwards.
+
+    MPEG-TS for the join, for the same reason the spans use it: the still and
+    the video carry different parameter sets and TS carries those inline.
+    """
+    still = thumbnail_file(name, st.orientation)
+    if st.thumbnail.hold <= 0 or not still.is_file():
+        return
+    info = probe(finished)
+    codec = (info.codec or "").lower()
+    bitstream = {"h264": "h264_mp4toannexb", "hevc": "hevc_mp4toannexb",
+                 "h265": "hevc_mp4toannexb"}.get(codec)
+    if not bitstream:
+        with open(log, "a", encoding="utf-8") as handle:
+            handle.write(f"\nthumbnail hold skipped: cannot stream-join {codec or 'unknown'}\n")
+        return
+    width, height = info.width or st.source_info.width, info.height or st.source_info.height
+    # Whole frames. A hold of "0.7 of a frame" is a hold of one frame with a
+    # duration nobody can predict, and the join then lands off the grid.
+    frames = max(1, round(st.thumbnail.hold * fps))
+    cover, tail, joined = work / "cover.ts", work / "tail.ts", work / "withcover.mp4"
+    await run_cancelable([
+        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+        "-loop", "1", "-framerate", f"{fps:.9f}", "-t", f"{frames / fps:.6f}", "-i", str(still),
+        "-f", "lavfi", "-t", f"{frames / fps:.6f}", "-i", "anullsrc=r=48000:cl=stereo",
+        "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+               f"pad={width}:{height}:-1:-1:color=black,format=yuv420p,fps={fps:.9f}",
+        *vcodec, "-c:a", "aac", "-b:a", "256k", "-ar", "48000",
+        "-f", "mpegts", str(cover),
+    ], log, cancel, check=True)
+    await run_cancelable([
+        FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-i", str(finished),
+        "-c", "copy", "-bsf:v", bitstream, "-f", "mpegts", str(tail),
+    ], log, cancel, check=True)
+    listing = work / "cover-list.txt"
+    listing.write_text("".join(f"file '{path.as_posix()}'\n" for path in (cover, tail)),
+                       encoding="utf-8")
+    await run_cancelable([
+        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+        "-fflags", "+genpts", "-f", "concat", "-safe", "0", "-i", str(listing),
+        "-c", "copy", "-movflags", "+faststart", str(joined),
+    ], log, cancel, check=True)
+    os.replace(joined, finished)
+    with open(log, "a", encoding="utf-8") as handle:
+        handle.write(f"\nthumbnail held on the front for {frames} frame(s)\n")
 
 
 @app.get("/api/projects/{name}/frame")
@@ -2608,14 +5695,16 @@ async def export(name: str, mode: str, resolution: str = "source"):
     log = exp / "export.log"
     log.write_text(
         f"Editoro {APP_VERSION} export started {datetime.now().isoformat()}\n"
-        f"mode={mode} resolution={resolution} orientation={st.orientation}\n",
+        f"mode={mode} resolution={resolution} orientation={st.orientation}\n"
+        f"look={json.dumps(look_state(st))} "
+        f"defocus={st.look.defocus:.3f} grade={st.look.grade:.3f}\n",
         encoding="utf-8",
     )
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     final = exp / f"{name}-{stamp}.mp4"
     src = d / st.source
     fps = st.source_info.fps or 30
-    nvenc = has_nvenc()
+    nvenc = nvenc_available()
     vcodec = video_encoder(st, nvenc)
     if not nvenc:
         await progress(name, note="NVENC unavailable - using the fast high-quality CPU encoder")
@@ -2638,26 +5727,40 @@ async def export(name: str, mode: str, resolution: str = "source"):
         kfs = keyframes(src, log)
         parts: list[Path] = []
         work.mkdir()
-        copy_compatible = st.source_info.codec in {"h264", "avc1", "hevc", "h265"}
+        # A look changes every pixel of every frame, so there is no span left
+        # that can be copied through untouched.
+        copy_compatible = (
+            st.source_info.codec in {"h264", "avc1", "hevc", "h265"}
+            and not look_active(st)
+        )
         annexb = bitstream_filter(st)
 
         async def encode_plain(seg_in: float, seg_out: float, target: Path) -> None:
             """Re-encode one untouched span, matched to the source parameters."""
             span = seg_out - seg_in
             count = max(1, int(round(span * fps)))
+            matte = look_inputs(st, seg_in, span)
             command = [
                 FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
                 "-ss", f"{seg_in:.6f}", "-t", f"{span + 0.5:.6f}", "-i", str(src),
+                *matte,
             ]
             filters = [f"fps={fps:.6f}"]
             if resolution != "source":
-                target_h = int(resolution)
-                target_w = int(round(target_h * st.source_info.width
-                                     / max(1, st.source_info.height) / 2) * 2)
+                target_w, target_h = export_dimensions(st, resolution)
                 filters.append(f"scale={target_w}:{target_h}:flags=lanczos")
             filters.append("tpad=stop=-1:stop_mode=clone")
+            # A span with nothing drawn on it still carries the look, so this
+            # path builds the same chain the rendered spans do - otherwise the
+            # grade would switch on and off at every graphic.
+            graph = look_graph(st, "[0:v]", "[looked]", 1 if matte else None)
+            if graph:
+                command += ["-filter_complex",
+                            f"{graph};[looked]{','.join(filters)}[v]", "-map", "[v]"]
+            else:
+                command += ["-vf", ",".join(filters)]
             command += [
-                "-vf", ",".join(filters), *vcodec, "-frames:v", str(count),
+                *vcodec, "-frames:v", str(count),
                 "-an", *annexb, "-f", "mpegts", str(target),
             ]
             await run_cancelable(command, log, cancel, check=True)
@@ -2700,7 +5803,14 @@ async def export(name: str, mode: str, resolution: str = "source"):
                 await encode_plain(seg["src_in"], seg["src_out"], part)
             else:
                 if renderer is None:
-                    renderer = OverlayRenderSession(name, st)
+                    overlay_w, overlay_h = export_dimensions(st, resolution)
+                    # Built before the browser starts, so the page picks the
+                    # scrub copies up in its own asset preload rather than
+                    # loading the masters first and swapping later.
+                    scrub = await asyncio.to_thread(
+                        export_scrub_map, st, overlay_w, overlay_h, log)
+                    renderer = OverlayRenderSession(
+                        name, st, overlay_w, overlay_h, scrub)
                     await renderer.start()
                 await encode_dirty_segment(
                     renderer, st, seg, src, part, vcodec, resolution, log, cancel,
@@ -2870,6 +5980,10 @@ async def export(name: str, mode: str, resolution: str = "source"):
             raise RuntimeError(
                 f"Final video lost frames ({final_frames} vs {expected_frames} expected)"
             )
+        # The cover, if one was asked for. After the audit, so a deliberately
+        # added still can never be mistaken for a lost or duplicated frame.
+        await prepend_thumbnail(st, name, partial, work, fps, vcodec, log, cancel)
+        verified = probe(partial)
         os.replace(partial, final)
         shutil.rmtree(work, ignore_errors=True)
         await progress(name, done=True, file=f"exports/{final.name}",
@@ -2894,9 +6008,212 @@ async def export(name: str, mode: str, resolution: str = "source"):
         EXPORT_CANCEL.pop(name, None)
 
 
+def _test_compositing() -> None:
+    """The plane split: which planes a segment asks for, and the graph shape."""
+    scan_templates()
+    base = ProjectState(name="t", source_info=MediaInfo(duration=10, width=1920, height=1080))
+    seg = {"src_in": 0.0, "src_out": 2.0, "tl": 0.0, "camera": None}
+
+    # Nothing special on the timeline: one plane, and therefore the exact graph
+    # Editoro built before any of this existed.
+    plain = base.model_copy(update={"instances": [
+        Instance(id="a", template="keyword", start=0, duration=2)]})
+    assert overlay_slots(plain, seg) == ["front"], overlay_slots(plain, seg)
+    graph = overlay_composite_graph(["front"], "[padded]", "[1:v]", "[out]", 1920, 1080, None)
+    assert "crop=" not in graph and "gblur" not in graph, graph
+    assert graph.count("overlay=") == 1, graph
+
+    # A block asking for the frost adds the plane it is composited over and the
+    # mask that fades it, and nothing else.
+    frosted = base.model_copy(update={"instances": [
+        Instance(id="a", template="keyword", start=0, duration=2),
+        Instance(id="b", template="backdrop-blur", start=0, duration=2, backdrop=True)]})
+    assert overlay_slots(frosted, seg) == ["below", "mask", "front"]
+    graph = overlay_composite_graph(
+        ["below", "mask", "front"], "[padded]", "[1:v]", "[out]", 1920, 1080, None)
+    assert "split=3" in graph and graph.count("crop=") == 3, graph
+    # The three cells are cropped from the strip in the order they were named.
+    for index, slot in enumerate(["below", "mask", "front"]):
+        assert f"crop=1920:1080:{index * 1920}:0[ov{slot}]" in graph, (slot, graph)
+    assert "alphaextract" in graph and "alphamerge" in graph, graph
+    assert f"gblur=sigma={BACKDROP_BLUR * 1080:.3f}" in graph, graph
+    assert graph.endswith("[out]"), graph
+
+    # Behind-the-speaker needs a matte; without one the plane is dropped rather
+    # than producing a graph that refers to an input that is not there.
+    behind = base.model_copy(update={"instances": [
+        Instance(id="a", template="keyword", start=0, duration=2, depth="behind")]})
+    assert overlay_slots(behind, seg) == ["front"], "no matte means no behind plane"
+    graph = overlay_composite_graph(
+        ["behind", "front"], "[padded]", "[1:v]", "[out]", 1920, 1080, "[mt]")
+    assert "[dpsubject][dpmask]alphamerge" in graph, graph
+    # The speaker goes back on AFTER the block that was put behind them.
+    assert graph.index("[ovbehind]overlay") < graph.index("[dpcut]overlay"), graph
+
+    # A block only counts for a segment it is actually on screen during.
+    late = base.model_copy(update={"instances": [
+        Instance(id="a", template="backdrop-blur", start=5, duration=2, backdrop=True)]})
+    assert overlay_slots(late, seg) == ["front"]
+
+    # The camera move is reproducible onto another stream at another size,
+    # which is what keeps a matte lined up with the footage under a punch-in.
+    assert camera_filter_graph(plain, seg, 30, "[m]", "[mc]", (960, 540)).endswith("[mc]")
+
+
+def _test_breathe() -> None:
+    """The breathing zoom: its amplitude, its overrides, and its cost."""
+    state = ProjectState(
+        name="breathe-test", breathe="standard",
+        source_info=MediaInfo(width=1920, height=1080, fps=30, duration=30),
+    )
+    assert state.orientation == "horizontal"
+    assert breathe_level("standard", "horizontal") == 0.012
+    # Vertical breathes deeper for the same named strength, because the same
+    # percentage of a smaller frame reads as less movement.
+    assert breathe_level("standard", "vertical") > breathe_level("standard", "horizontal")
+    assert breathes(state) and not breathes(state.model_copy(update={"breathe": "off"}))
+
+    # A camera block is an override to zero, so nothing stacks on a punch-in.
+    state.instances = [Instance(id="p", template="punch-in", start=5, duration=3)]
+    assert (5.0, 8.0, 0.0) in breathe_spans(state)
+    # ...and a project with the effect off but a `breathe` block asking for it
+    # is still breathing, or the block would silently do nothing.
+    quiet = ProjectState(
+        name="breathe-test", breathe="off",
+        source_info=MediaInfo(width=1920, height=1080, fps=30, duration=30),
+        instances=[Instance(id="b", template="breathe", start=0, duration=4,
+                            fields={"strength": "strong"})],
+    )
+    assert breathes(quiet)
+    assert breathe_spans(quiet)[0][2] == breathe_level("strong", "horizontal")
+
+    # The expression is evaluatable arithmetic, not a shape that happens to
+    # look right: FFmpeg will not tell us if it is unbalanced.
+    expression = breathe_amplitude_expr(state, "T")
+    assert expression.count("(") == expression.count(")")
+    assert "0.012" in expression and "clip(" in expression
+
+    graph = breathe_filter_graph(state, {"tl": 0.0}, 30, "[0:v]", "[base]")
+    assert "zoompan" in graph and "sin(" in graph
+    off = state.model_copy(update={"breathe": "off", "instances": []})
+    assert breathe_filter_graph(off, {"tl": 0.0}, 30, "[0:v]", "[base]") \
+        == "[0:v]setpts=PTS-STARTPTS[base]", "off must be genuinely off"
+    print("breathing tests OK")
+
+
+def _test_camera_modes() -> None:
+    """Each camera mode does what its pack says, at the two ends of its span.
+
+    These are the assertions the preview used to fail and the export used to
+    pass: ken-burns travelling instead of snapping, and zoom-out opening out
+    rather than closing in. cameraStateAt() in index.html evaluates the same
+    four cases, and tools/test_ui.py compares the two at sampled times.
+    """
+    fps = 30.0
+
+    def zoom_at(item: Instance, when: float) -> float:
+        plan = camera_plan(ProjectState(name="camera-test"), item, fps)
+        expression, _, _ = camera_expressions(plan, f"{when:.6f}")
+        # The expressions are plain arithmetic over a literal time, so they
+        # can be evaluated directly. `if` is renamed because it is a keyword
+        # here and a function there; both branches evaluating eagerly is
+        # harmless when every denominator in them is a clamped window.
+        return eval(expression.replace("if(", "_if("), {  # noqa: S307
+            "clip": lambda value, low, high: max(low, min(high, value)),
+            "pow": pow, "min": min, "max": max,
+            "_if": lambda condition, a, b=0: a if condition else b,
+            "lt": lambda a, b: a < b, "gt": lambda a, b: a > b,
+        })
+
+    tight = {"x": 0.22, "y": 0.16, "w": 0.56, "h": 0.64}
+    wide = {"x": 0.1, "y": 0.08, "w": 0.8, "h": 0.84}
+
+    punch = Instance(id="p", template="punch-in", start=0, duration=3, fields={"rect": tight})
+    assert zoom_at(punch, 0.0) < 1.02, "a punch-in starts on the full frame"
+    assert zoom_at(punch, 1.5) > 1.4, "a punch-in holds tight in the middle"
+
+    out = Instance(id="z", template="zoom-out", start=0, duration=3, fields={"rect": tight})
+    assert zoom_at(out, 0.0) > 1.4, "a zoom-out starts tight"
+    assert zoom_at(out, 2.9) < 1.05, "a zoom-out ends on the full frame"
+
+    burns = Instance(id="k", template="ken-burns", start=0, duration=4,
+                     fields={"rect": wide, "rect2": tight})
+    begin, middle, end = zoom_at(burns, 0.0), zoom_at(burns, 2.0), zoom_at(burns, 3.99)
+    assert begin < middle < end, "ken-burns travels; it does not snap and hold"
+    assert abs(begin - 1 / 0.84) < 0.02, "ken-burns begins on its start framing"
+    print("camera tests OK")
+
+
+def _test_value_ladder() -> None:
+    """The counting ladder, and the foley that has to land on it.
+
+    The point of the whole mechanism is that the ticks and the digits are the
+    same list of times, so these assertions are about the shape of that list:
+    it must start at the beginning of the climb, end exactly on the arrival,
+    and decelerate the whole way without ever being too fast to hear.
+    """
+    spec = TEMPLATE_PACKS["stat-pop"]
+    item = Instance(id="s1", template="stat-pop", start=2.0, duration=3.0,
+                    fields={"value": "250"})
+    delay, window, value = value_ramp(spec, item, "number")
+    # "number" is the second staggered element, so it starts one 70 ms step in.
+    assert abs(delay - 0.07) < 1e-9, delay
+    assert abs(window - 1.0) < 1e-9, window
+    assert value["steps"] == 10
+
+    times = value_step_times(spec, item, "number")
+    assert len(times) == 10, times
+    assert times[0] > delay, times[0]
+    # The last notch is the arrival: the final tick and the final digit are the
+    # same instant, which is the only moment in the effect the ear checks.
+    assert abs(times[-1] - (delay + window)) < 1e-9, times[-1]
+    gaps = [b - a for a, b in zip([delay] + times, times)]
+    assert all(b > a for a, b in zip(gaps, gaps[1:])), gaps
+    # Fast enough at the top to read as a mechanism, never so fast that two
+    # 45 ms wooden ticks overlap into a buzz; slow enough at the bottom to feel
+    # like it is settling rather than stopping dead.
+    assert 0.045 <= gaps[0] <= 0.06, gaps[0]
+    assert 0.14 <= gaps[-1] <= 0.20, gaps[-1]
+
+    events = resolve_sfx_events(item, spec)
+    ticks = [e for e in events if "count-wood" in e["file"]]
+    assert len(ticks) == 10, len(ticks)
+    assert ticks[0]["time"] > item.start + delay
+    assert abs(ticks[-1]["time"] - (item.start + delay + window)) < 1e-9
+    # The old sound named a repeat_spacing but no repeat_field, so it fired
+    # exactly once: a "counting" sound that made a single click.
+    assert not any("count-tick" in e["file"] for e in events)
+
+    # Silence still wins over the ladder.
+    item.silent = True
+    assert resolve_sfx_events(item, spec) == []
+    item.silent = False
+
+    # A short block shortens the climb, and the ticks follow it down rather
+    # than running past the end of the block.
+    brief = Instance(id="s2", template="stat-pop", start=0.0, duration=1.0,
+                     fields={"value": "9"})
+    short = value_step_times(spec, brief, "number")
+    assert short[-1] < brief.duration, short[-1]
+    assert all(e["time"] <= brief.duration for e in resolve_sfx_events(brief, spec))
+
+    # A ratio of 1 is an even ladder, which is what a pack gets if it asks for
+    # steps and says nothing about the deceleration.
+    even = dict(spec, motion={**spec["motion"], "value": {"ms": 1000, "steps": 4, "ratio": 1.0}})
+    flat = value_step_times(even, item, "number")
+    spacing = [round(b - a, 9) for a, b in zip([delay] + flat, flat)]
+    assert len(set(spacing)) == 1, spacing
+    print("counting tests OK")
+
+
 def run_self_tests() -> None:
     """Fast deterministic checks used by launch-independent verification."""
     _test_parser()
+    _test_look()
+    _test_compositing()
+    _test_breathe()
+    _test_camera_modes()
+    _test_value_ladder()
     assert len(TEMPLATE_PACKS) >= 30, sorted(TEMPLATE_PACKS)
     assert not TEMPLATE_ERRORS, TEMPLATE_ERRORS
     colours: dict[str, str] = {}
@@ -3021,8 +6338,23 @@ def run_self_tests() -> None:
                                   follow_global=False, x=.3, y=.7)
     assert pinned_caption.follow_global is False and pinned_caption.y == .7
 
+    # ...and it keeps them per orientation, so pinning one in 16:9 leaves the
+    # 9:16 placement alone.
+    both = ProjectState(
+        name="c", source_info=MediaInfo(width=1920, height=1080, fps=30, duration=8),
+        captions=[CaptionBlock(id="c1", start=0, end=1, text="x",
+                               follow_global=False, x=.3, y=.7)],
+    )
+    assert both.captions[0].layouts["horizontal"].y == .7
+    assert "vertical" not in both.captions[0].layouts
+    following = ProjectState(
+        name="c", source_info=MediaInfo(width=1920, height=1080, fps=30, duration=8),
+        captions=[CaptionBlock(id="c1", start=0, end=1, text="x")],
+    )
+    assert not following.captions[0].layouts
+
     sample = ProjectState(
-        name="selftest", source_info=MediaInfo(duration=10),
+        name="selftest", source_info=MediaInfo(duration=10), breathe="off",
         cuts=[Cut(src_in=0, src_out=10)],
         instances=[Instance(id="x", template="keyword", start=2, duration=2)],
     )
@@ -3030,6 +6362,11 @@ def run_self_tests() -> None:
     assert [(p["src_in"], p["src_out"], p["dirty"]) for p in pieces] == [
         (0.0, 2.0, False), (2.0, 4.0, True), (4.0, 10.0, False)
     ]
+    # With breathing on there is no clean span to copy, because the footage is
+    # moving everywhere. That is the cost of the effect and it has to be
+    # visible in the classifier rather than discovered at export.
+    breathing = sample.model_copy(update={"breathe": "standard"})
+    assert all(piece["dirty"] for piece in timeline_segments(breathing))
     try:
         project_dir("../escape")
         raise AssertionError("path traversal was accepted")
@@ -3247,6 +6584,30 @@ def run_self_tests() -> None:
             )
             assert len(rechunked.json()["captions"]) == 3
 
+            # The look endpoints: the two amounts round-trip, the grade table
+            # is served in the form the preview uploads, and a project with
+            # nothing analysed reports that rather than failing.
+            look = await client.get(f"/api/projects/{test_name}/look")
+            assert look.status_code == 200
+            assert look.json()["defocus"] == 0 and look.json()["grade"] == 0
+            assert look.json()["matte_ready"] is False
+            assert look.json()["running"] is False
+            assert (await client.get(f"/api/projects/{test_name}/look/lut")).status_code == 404
+            changed = await client.post(
+                f"/api/projects/{test_name}/look", json={"defocus": 0.5, "grade": 0.8})
+            assert changed.status_code == 200, changed.text
+            assert changed.json()["defocus"] == 0.5 and changed.json()["grade"] == 0.8
+            assert load_state(test_name).look.defocus == 0.5
+            # Amounts alone change nothing on screen: without a matte and a
+            # measured grade there is nothing to apply.
+            assert not look_active(load_state(test_name))
+            refused = await client.post(
+                f"/api/projects/{test_name}/look", json={"defocus": 4})
+            assert refused.status_code == 422
+            bad_parts = await client.post(
+                f"/api/projects/{test_name}/look/analyze", json={"parts": ["sharpen"]})
+            assert bad_parts.status_code == 400, bad_parts.text
+
             missing_asset = await client.get(
                 f"/api/projects/{test_name}/asset-info", params={"asset": "nope.png"})
             assert missing_asset.status_code == 404
@@ -3376,6 +6737,11 @@ def run_export_e2e_tests() -> None:
                 x=float(variant["x"]), y=float(variant["y"]),
                 scale=float(variant["scale"]) * 0.7,
                 fields=fields,
+                # A pack that ships the frost switched on gets it here too, so
+                # the export this test runs actually builds the multi-plane
+                # graph - crop, alphamerge and all - rather than the single
+                # composite every other block takes.
+                backdrop=bool(spec.get("backdrop")),
             ))
         cameras = [item for item in instances if item.template in camera_packs()]
         for order, item in enumerate(cameras):
@@ -3421,12 +6787,58 @@ def run_export_e2e_tests() -> None:
             assert "image2pipe" in export_log and "f%06d.png" not in export_log
             assert "Template renderer error" not in export_log
             assert "mpegts" in export_log, "spans must be joined through MPEG-TS"
+            # The timeline carries a backdrop-blur block, so at least one span
+            # must have taken the multi-plane route: the strip cropped back into
+            # planes, the blur applied, and the mask's alpha fading it in. If
+            # this stops appearing the frost has silently become a no-op.
+            assert "crop=" in export_log and "gblur=sigma=" in export_log,                 "the backdrop plane never ran"
+            assert "alphaextract" in export_log, "the blur was not masked by its plane"
         # A still has to come back from the same renderer, or the MCP server and
         # any agent looking at its own work are running blind.
         still = asyncio.run(render_still(name, 0.5, width=320))
         assert still[:8] == b"\x89PNG\r\n\x1a\n" and len(still) > 2000
+        # ---- a block behind the speaker -------------------------------------
+        # This is the one plane the run above cannot reach: it needs a subject
+        # matte, and a synthetic project has never had the Look run over it. So
+        # build a matte - a white column on black, which is what a silhouette of
+        # someone standing in the middle of frame amounts to - and export again.
+        # Without this the depth path would ship having only ever been checked
+        # as a string.
+        look_dir(name).mkdir(parents=True, exist_ok=True)
+        run([
+            FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i",
+            f"color=c=black:s=640x360:r={info.fps:.6f}:d={info.duration + 1:.3f}",
+            "-vf", "drawbox=x=iw/3:y=0:w=iw/3:h=ih:color=white:t=fill,format=yuv420p",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-an", str(matte_path(name)),
+        ], check=True)
+        behind_state = load_state(name)
+        behind_state.look.matte_revision = behind_state.source_revision
+        assert matte_ready(behind_state), "the synthetic matte was not accepted"
+        target = next(item for item in behind_state.instances
+                      if item.template == "keyword")
+        target.depth = "behind"
+        target.start, target.duration = 0.2, 1.0
+        save_state(behind_state)
+        probe_seg = {"src_in": 0.2, "src_out": 1.2, "tl": 0.2, "camera": None}
+        assert "behind" in overlay_slots(behind_state, probe_seg), (
+            overlay_slots(behind_state, probe_seg))
+        before = set((folder / "exports").glob("*.mp4"))
+        asyncio.run(export(name, "hq", "720"))
+        created = set((folder / "exports").glob("*.mp4")) - before
+        behind_log = (folder / "exports" / "export.log").read_text(errors="replace")
+        assert len(created) == 1, behind_log[-2000:]
+        assert "EXPORT FAILED" not in behind_log, behind_log[-2000:]
+        # The labels the depth composite uses, so this fails loudly if the plane
+        # is dropped rather than quietly exporting the block in front.
+        assert "[dpsubject]" in behind_log and "[dpcam]" in behind_log, (
+            "the behind-the-speaker plane never ran")
+        assert probe(created.pop()).width == 1280
+
         print(f"synthetic HQ + smart-lossless export tests OK "
-              f"({len(state.instances)} template packs, 2 modes, still frame)")
+              f"({len(state.instances)} template packs, 2 modes, still frame, "
+              f"backdrop + behind planes)")
     finally:
         shutil.rmtree(folder, ignore_errors=True)
 

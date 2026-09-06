@@ -2,7 +2,7 @@
   "id": "meme-frame",
   "version": 1,
   "schema": 2,
-  "display_name": "ميم · Meme",
+  "display_name": "Meme",
   "category": "image",
   "category_color": "#FF8A5B",
   "directive_verb": "ميم",
@@ -30,6 +30,56 @@
       "max_length": 48,
       "default": "",
       "description": "Impact text across the bottom of the image."
+    },
+    {
+      "name": "text_size",
+      "label": "Text size",
+      "type": "number",
+      "min": 0.5,
+      "max": 2.0,
+      "step": 0.05,
+      "default": 1.0,
+      "description": "Multiplier on the impact text, measured from the image rather than the frame, so it looks the same on a small meme and a large one. Big type wraps onto more lines instead of shrinking back to fit two, so the setting holds even on a long line; it stops growing once the text fills the picture."
+    },
+    {
+      "name": "top_x",
+      "label": "Top text X",
+      "type": "number",
+      "min": 0,
+      "max": 1,
+      "step": 0.02,
+      "default": 0.5,
+      "description": "Where the top line sits across the image, 0 flush left and 1 flush right. Always clamped against the text's own measured size, so either end of the slider still lands the whole line inside the picture."
+    },
+    {
+      "name": "top_y",
+      "label": "Top text Y",
+      "type": "number",
+      "min": 0,
+      "max": 1,
+      "step": 0.02,
+      "default": 0.0,
+      "description": "Where the top line sits down the image, 0 flush with the top edge and 1 with the bottom. Always clamped against the text's own measured size, so either end of the slider still lands the whole line inside the picture."
+    },
+    {
+      "name": "bottom_x",
+      "label": "Bottom text X",
+      "type": "number",
+      "min": 0,
+      "max": 1,
+      "step": 0.02,
+      "default": 0.5,
+      "description": "Where the bottom line sits across the image, 0 flush left and 1 flush right. Always clamped against the text's own measured size, so either end of the slider still lands the whole line inside the picture."
+    },
+    {
+      "name": "bottom_y",
+      "label": "Bottom text Y",
+      "type": "number",
+      "min": 0,
+      "max": 1,
+      "step": 0.02,
+      "default": 1.0,
+      "description": "Where the bottom line sits down the image, 0 flush with the top edge and 1 with the bottom. Always clamped against the text's own measured size, so either end of the slider still lands the whole line inside the picture."
     }
   ],
   "variants": {

@@ -2,7 +2,7 @@
   "id": "quote-card",
   "version": 1,
   "schema": 2,
-  "display_name": "اقتباس · Quote",
+  "display_name": "Quote",
   "category": "text",
   "category_color": "#E8A0BF",
   "directive_verb": "اقتباس",

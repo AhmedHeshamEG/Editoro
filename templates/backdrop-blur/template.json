@@ -1,0 +1,24 @@
+{
+  "id": "backdrop-blur",
+  "version": 1,
+  "schema": 2,
+  "display_name": "Backdrop blur",
+  "category": "ambient",
+  "category_color": "#8B9DC3",
+  "directive_verb": "blur",
+  "description": "Frosts everything underneath it. Blocks placed on higher tracks stay sharp, so an image, a quote or a screenshot reads as sitting in front of the room rather than pasted onto it.",
+  "fields": [],
+  "full_frame": true,
+  "backdrop": true,
+  "variants": {
+    "horizontal": { "x": 0.5, "y": 0.5, "scale": 1.0 },
+    "vertical": { "x": 0.5, "y": 0.5, "scale": 1.0 }
+  },
+  "motion": {
+    "in": { "type": "ease", "easing": "outCubic", "ms": 420, "from": { "opacity": 0 } },
+    "out": { "type": "ease", "easing": "inCubic", "ms": 360, "to": { "opacity": 0 } }
+  },
+  "sfx": [],
+  "assets": [],
+  "default_duration": 4.0
+}

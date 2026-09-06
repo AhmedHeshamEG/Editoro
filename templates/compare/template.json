@@ -2,7 +2,7 @@
   "id": "compare",
   "version": 1,
   "schema": 2,
-  "display_name": "مقارنة · Compare",
+  "display_name": "Compare",
   "category": "text",
   "category_color": "#F472B6",
   "directive_verb": "مقارنة",

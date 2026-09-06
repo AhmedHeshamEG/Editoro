@@ -2,7 +2,7 @@
   "id": "progress-bar",
   "version": 1,
   "schema": 2,
-  "display_name": "نسبة · Progress",
+  "display_name": "Progress",
   "category": "text",
   "category_color": "#FB923C",
   "directive_verb": "نسبة",
@@ -88,6 +88,9 @@
         "bar",
         "value"
       ]
+    },
+    "value": {
+      "ms": 900
     }
   },
   "sfx": [

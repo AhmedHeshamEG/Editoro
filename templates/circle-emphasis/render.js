@@ -12,7 +12,7 @@ registerTemplate(ID, {
       ctx.translate((rect.x + rect.w / 2) * W, (rect.y + rect.h / 2) * H);
       scribbleEllipse(ctx, {
         w: rect.w * W * 1.18, h: rect.h * H * 1.22,
-        progress: state.phase === "in" ? state.k : 1,
+        progress: A.value(instance, t),
         seed: instance.id, color: instance.fields.colour || A.categoryColor(ID),
         width: Math.max(3, 9 * u * instance.scale),
         laps: Math.max(1, Math.min(3, instance.fields.laps ?? 1.5)),

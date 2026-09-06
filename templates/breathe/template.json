@@ -1,0 +1,31 @@
+{
+  "id": "breathe",
+  "version": 1,
+  "schema": 2,
+  "display_name": "Breathe",
+  "category": "motion",
+  "category_color": "#6B7280",
+  "directive_verb": null,
+  "description": "Overrides the project's breathing strength for as long as it lasts. Draws nothing; it only changes how deeply the frame moves. Use it to open a section up or to hold a section still without switching the effect off everywhere.",
+  "fields": [
+    {
+      "name": "strength",
+      "label": "Strength",
+      "type": "select",
+      "options": ["off", "subtle", "standard", "strong"],
+      "default": "standard",
+      "description": "How deep the breath is over this stretch. The tempo never changes; every strength shares one clock so the footage and the graphics stay in step."
+    }
+  ],
+  "variants": {
+    "horizontal": { "x": 0.5, "y": 0.5, "scale": 1.0 },
+    "vertical": { "x": 0.5, "y": 0.5, "scale": 1.0 }
+  },
+  "motion": {
+    "in": { "type": "ease", "easing": "linear", "ms": 1, "from": {} },
+    "out": { "type": "ease", "easing": "linear", "ms": 1, "to": {} }
+  },
+  "sfx": [],
+  "assets": [],
+  "default_duration": 8.0
+}

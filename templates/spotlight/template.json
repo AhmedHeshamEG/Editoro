@@ -2,7 +2,7 @@
   "id": "spotlight",
   "version": 1,
   "schema": 2,
-  "display_name": "تركيز · Spotlight",
+  "display_name": "Spotlight",
   "category": "annotation",
   "category_color": "#FACC15",
   "directive_verb": "تركيز",

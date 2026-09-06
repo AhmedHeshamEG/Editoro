@@ -69,7 +69,7 @@ registerTemplate(ID, {
         ctx.save();
         ctx.translate(left + g.tick / 2, y - g.itemSize * 0.06);
         checkMark(ctx, {
-          size: g.tick, progress: state.phase === "in" ? Math.min(1, state.k * 1.4) : 1,
+          size: g.tick, progress: A.value(instance, t, `item${index}`),
           color: A.categoryColor("checklist"), width: Math.max(2, g.itemSize * 0.16),
         });
         ctx.restore();

@@ -2,7 +2,7 @@
   "id": "whip-pan",
   "version": 1,
   "schema": 2,
-  "display_name": "تحويلة · Whip pan",
+  "display_name": "Whip pan",
   "category": "camera",
   "category_color": "#EC4899",
   "directive_verb": null,

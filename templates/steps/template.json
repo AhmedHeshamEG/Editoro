@@ -2,7 +2,7 @@
   "id": "steps",
   "version": 1,
   "schema": 2,
-  "display_name": "خطوات · Steps",
+  "display_name": "Steps",
   "category": "text",
   "category_color": "#38BDF8",
   "directive_verb": "خطوات",
@@ -70,6 +70,9 @@
       "elevation": 18,
       "opacity": 0.42,
       "lift": false
+    },
+    "value": {
+      "ms": 620
     }
   },
   "sfx": [

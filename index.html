@@ -63,6 +63,16 @@ select{font:inherit;color:var(--tx);background:var(--bg2);border:1px solid var(-
 #mediaViewport{position:absolute;overflow:hidden;background:#000;box-shadow:0 12px 50px #0008}
 #mediaViewport video{position:absolute;inset:0;width:100%;height:100%;max-width:none;max-height:none;
   object-fit:fill;transform-origin:0 0;will-change:transform}
+/* The look preview draws over the video element rather than replacing it: the
+   <video> keeps decoding (a hidden one would stop feeding frames) and simply
+   stops being the thing anyone sees. The matte is here for the same reason. */
+#previewNote{position:absolute;left:10px;bottom:10px;z-index:6;pointer-events:none;
+  background:rgba(0,0,0,.62);color:#fff;font-size:11px;padding:4px 8px;border-radius:5px}
+#lookCanvas{position:absolute;inset:0;width:100%;height:100%;
+  transform-origin:0 0;will-change:transform}
+#matteVid{opacity:0;pointer-events:none}
+#lookDlg input[type=range]{width:100%;accent-color:var(--c-keyword)}
+#lookDlg .lookValue{float:right;color:var(--tx2);font-variant-numeric:tabular-nums}
 #projectBar{z-index:12;display:flex;gap:8px;align-items:center;padding:6px 10px;
   background:#15161a;border-bottom:1px solid var(--line);min-width:0}
 #projectTitle{font-weight:700;padding:10px 4px;
@@ -78,6 +88,13 @@ select{font:inherit;color:var(--tx);background:var(--bg2);border:1px solid var(-
 #emptyState p{color:var(--tx2);margin-bottom:18px}
 #emptyState .actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
 #overlay{position:absolute;pointer-events:none}
+#underlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#behindLayer,#subjectLayer{position:absolute;pointer-events:none}
+/* The frost. A CSS filter on the whole viewport is composited on the GPU, so
+   scrubbing with a backdrop on screen costs the same as scrubbing without one;
+   doing it with a canvas blur per frame would not. The export reaches the same
+   picture through FFmpeg, masked by the same strength this opacity comes from. */
+#mediaViewport{transition:none}
 #gestures{position:absolute;inset:0;z-index:3;touch-action:none}
 .handle{position:absolute;width:22px;height:22px;border-radius:50%;
   background:var(--tx);border:3px solid var(--bg);transform:translate(-50%,-50%);
@@ -127,6 +144,14 @@ select{font:inherit;color:var(--tx);background:var(--bg2);border:1px solid var(-
 #timelineZoom{width:150px;accent-color:var(--c-keyword)}
 #zoomReadout{min-width:104px;color:var(--tx2);font-variant-numeric:tabular-nums;font-size:12px}
 #timelineViewport{position:relative;flex:1;min-height:0;overflow:hidden;touch-action:none}
+/* The playhead is a DOM element rather than part of the timeline drawing.
+   Repainting the whole timeline - ruler, waveform, every clip - to move one
+   white line was most of what playback spent its time on; a transform on this
+   moves it for free and leaves the canvas alone. */
+#tlPlayhead{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:#fff;
+  pointer-events:none;z-index:3;will-change:transform}
+#tlPlayhead::before{content:"";position:absolute;top:0;left:-5px;border-left:6px solid transparent;
+  border-right:6px solid transparent;border-top:8px solid #fff}
 #tl{width:100%;height:100%;display:block}
 /* panel */
 #panel{grid-area:panel;background:var(--bg2);border-left:1px solid var(--line);
@@ -195,13 +220,25 @@ dialog::backdrop{background:#000a}
       <div class="spacer"></div>
       <button id="layoutBtn" title="Template layout: 16:9 or 9:16">16:9</button>
       <button id="captionStyleBtn" title="Caption placement and style">Aa</button>
+      <button id="lookBtn" title="Background defocus and automatic colour">Look</button>
+      <button id="thumbBtn" title="Design the thumbnail / first frame">Thumbnail</button>
       <button id="sourceBtn">Source</button><button id="transcriptBtn">Transcript</button>
     </div>
     <div id="stage">
-      <div id="mediaViewport"><video id="vid" playsinline preload="auto"></video></div>
+      <div id="mediaViewport"><video id="vid" playsinline preload="auto"></video>
+        <video id="matteVid" playsinline preload="auto" muted></video>
+        <canvas id="lookCanvas" hidden></canvas>
+        <!-- Blocks under a backdrop live inside the viewport so the CSS blur
+             that frosts the footage frosts them with it, in one GPU pass. -->
+        <canvas id="underlay" hidden></canvas></div>
+      <!-- Between the frosted footage and the speaker: blocks set to sit
+           behind them. Then the speaker, cut from the footage by the matte. -->
+      <canvas id="behindLayer" hidden></canvas>
+      <canvas id="subjectLayer" hidden></canvas>
       <canvas id="overlay"></canvas>
+      <div id="previewNote" hidden></div>
       <div id="selbox"></div>
-      <div class="zoneguide" data-z="فوق_الراس">فوق الراس</div>
+      <div class="zoneguide" data-z="above_head">Above head</div>
       <div class="zoneguide" data-z="lower_third">lower third</div>
       <div id="gestures"></div>
       <div id="emptyState" hidden><div class="emptyCard">
@@ -253,7 +290,7 @@ dialog::backdrop{background:#000a}
       <div class="separator"></div>
       <span class="pill" id="timelineHint">Ctrl+wheel zoom · wheel scroll · S split</span>
     </div>
-    <div id="timelineViewport"><canvas id="tl"></canvas></div>
+    <div id="timelineViewport"><canvas id="tl"></canvas><div id="tlPlayhead" hidden></div></div>
   </div>
 
   <div id="panel">
@@ -266,8 +303,8 @@ dialog::backdrop{background:#000a}
     <div class="tabpane on" data-t="cats" id="catsPane"></div>
     <div class="tabpane" data-t="inspector" id="inspPane"><p style="color:var(--tx2)">Select a block on the timeline or preview to edit its fields.</p></div>
     <div class="tabpane" data-t="dir">
-      <p style="color:var(--tx2);margin-bottom:10px">Paste the da7ee7-director output. Verbatim quotes + Arabic verbs + timestamps.</p>
-      <textarea id="dirText" rows="10" placeholder='[0:42] نص "the whole trick"&#10;"neural networks" صورة diagram of layers'></textarea>
+      <p style="color:var(--tx2);margin-bottom:10px">Paste a shot list: one line each, a timestamp or a verbatim quote, then the template and what goes in it.</p>
+      <textarea id="dirText" rows="10" placeholder='[0:42] keyword "the whole trick"&#10;[1:15] image-pop diagram of layers&#10;[2:03] stat-pop 40'></textarea>
       <button class="primary" style="margin-top:10px;width:100%" id="dirApply">Apply directives</button>
       <div id="dirReview" style="margin-top:12px"></div>
     </div>
@@ -289,6 +326,9 @@ dialog::backdrop{background:#000a}
   <div class="fieldrow"><label>Mode</label>
     <button data-m="lossless" class="primary" style="width:100%;margin-bottom:8px">LOSSLESS (smart) — default</button>
     <button data-m="hq" style="width:100%">High quality (full re-encode)</button>
+  </div>
+  <div class="fieldrow"><label>Cover</label>
+    <button id="expCover" style="width:100%">Thumbnail not on the video</button>
   </div>
   <div id="expProg" style="color:var(--tx2);min-height:22px"></div>
   <progress id="expBar" value="0" max="1" hidden></progress>
@@ -331,6 +371,86 @@ dialog::backdrop{background:#000a}
   <button id="capRegroup" style="width:100%">Re-group captions from word timings</button>
   <button id="capFollowAll" style="width:100%;margin-top:8px">Send every caption back to this position</button>
   <button id="capClose" style="width:100%;margin-top:8px">Close</button>
+</dialog>
+
+<dialog id="lookDlg">
+  <h3 style="margin-bottom:6px">Look</h3>
+  <p class="dialogNote">Two effects, both measured from this footage rather than dialled in.
+    The analysis runs once and writes a depth matte and a grade for the project; after that
+    the sliders are instant, and the preview shows exactly what the export will contain.</p>
+  <div class="fieldrow">
+    <label for="lookDefocus">Background defocus <span class="lookValue" id="lookDefocusValue">0%</span></label>
+    <input id="lookDefocus" type="range" min="0" max="100" step="1" value="0" disabled>
+  </div>
+  <div class="fieldrow">
+    <label for="lookGrade">Colour <span class="lookValue" id="lookGradeValue">0%</span></label>
+    <input id="lookGrade" type="range" min="0" max="100" step="1" value="0" disabled>
+  </div>
+  <div class="fieldrow">
+    <label>Breathing <span class="lookValue" id="breatheValue">Standard</span></label>
+    <div class="buttonrow" id="breatheRow">
+      <button data-breathe="off">Off</button>
+      <button data-breathe="subtle">Subtle</button>
+      <button data-breathe="standard">Standard</button>
+      <button data-breathe="strong">Strong</button>
+    </div>
+  </div>
+  <p class="dialogNote">Breathing is a very slow scale drift under the whole video, so no shot
+    is ever completely still. Named strengths rather than a slider because the tempo is shared:
+    the footage and every graphic on screen move on one clock, and a strength changes how deep
+    the video breathes, never how fast. A punch-in or a ken-burns switches it off for its own
+    span, so two moves never stack.</p>
+  <button id="lookBuild" class="primary" style="width:100%">Analyse this footage</button>
+  <progress id="lookBar" value="0" max="1" hidden style="width:100%;margin-top:8px"></progress>
+  <div id="lookNote" style="color:var(--tx2);min-height:22px;margin-top:10px"></div>
+  <button id="lookCancel" class="danger" style="width:100%;margin-top:8px" hidden>Cancel</button>
+  <button id="lookClose" style="width:100%;margin-top:8px">Close</button>
+</dialog>
+
+<dialog id="thumbDlg">
+  <h3 style="margin-bottom:6px">Thumbnail</h3>
+  <p class="dialogNote">A cover for this video, designed once and laid out for both shapes.
+    Pick a frame or drop a picture, choose an arrangement, type the words. The arrangement is
+    a starting point, not a cage - drag anything, scale it, add more.</p>
+  <canvas id="thumbCanvas" style="width:100%;background:#000;border-radius:10px;
+    touch-action:none;cursor:grab"></canvas>
+  <div class="fieldrow">
+    <label>Picture behind it</label>
+    <div class="buttonrow">
+      <button id="thumbFromFrame">Use this frame</button>
+      <button id="thumbFromFile">Drop a picture</button>
+      <button id="thumbFlat">Flat ground</button>
+    </div>
+  </div>
+  <div class="fieldrow">
+    <label>Arrangement</label>
+    <div class="buttonrow" id="thumbLayouts"></div>
+  </div>
+  <div class="fieldrow">
+    <label>Add</label>
+    <div class="buttonrow" id="thumbAdd">
+      <button data-add="headline">Headline</button>
+      <button data-add="subhead">Subhead</button>
+      <button data-add="cutout">You</button>
+      <button data-add="marker">Marker</button>
+      <button data-add="image">Picture</button>
+    </div>
+  </div>
+  <div id="thumbInspector"></div>
+  <div class="fieldrow">
+    <label>On the video</label>
+    <div class="buttonrow" id="thumbHold">
+      <button data-hold="0">Image only</button>
+      <button data-hold="frame">First frame</button>
+      <button data-hold="0.6">Hold 0.6s</button>
+    </div>
+  </div>
+  <p class="dialogNote">"First frame" holds the design on the front of the exported video for a
+    single frame, which is what a short opens on. "Image only" leaves the video untouched and
+    just writes the PNG out.</p>
+  <button id="thumbSave" class="primary" style="width:100%">Save the image</button>
+  <div id="thumbNote" style="color:var(--tx2);min-height:22px;margin-top:10px"></div>
+  <button id="thumbClose" style="width:100%;margin-top:8px">Close</button>
 </dialog>
 
 <dialog id="transcriptDlg">
@@ -441,6 +561,23 @@ const A = {
   },
   video(url) {
     if (!url) return null;
+    // During an export, every video the templates read is served from an
+    // all-intra scrub copy instead of the original. The renderer jumps to an
+    // arbitrary timestamp for every single frame, and seeking a long-GOP 4K
+    // master means decoding the whole group of pictures that contains it -
+    // measured at 5.8 SECONDS per frame on a 124 s master, which is what made
+    // a two-minute edit take the better part of an hour. Every frame of the
+    // scrub copy is a keyframe, so the same seek is one frame's decode.
+    // The map is empty outside export, and empty for anything not yet built,
+    // so this falls through to the original in both cases.
+    // Matched on the bare file name: the URLs here carry cache-busting
+    // signatures the server would have to reproduce exactly to match on, and a
+    // near-miss would fail by silently never substituting - correct, and still
+    // slow, which is the hardest kind of bug to spot.
+    if (EXPORT_MODE && window.__EDITORO_SCRUB) {
+      const file = decodeURIComponent(url.split("?")[0].split("/").pop() || "");
+      if (window.__EDITORO_SCRUB[file]) url = window.__EDITORO_SCRUB[file];
+    }
     if (this.vid[url]) return this.vid[url];
     const clip = document.createElement("video");
     clip.src = url; clip.preload = "auto"; clip.muted = true;
@@ -511,6 +648,97 @@ function springValue(seconds, { stiffness = 200, damping = 18, mass = 1 }) {
   return 1 - (r1 * Math.exp(r2 * seconds) - r2 * Math.exp(r1 * seconds)) / (r1 - r2);
 }
 
+/* ------------------------------------------------------- the breathing zoom
+
+   One slow scale oscillation under the whole project, so nothing on screen is
+   ever completely still. Mirrors BREATHE_* in server.py exactly; the numbers
+   are the only thing keeping the preview and the export the same picture.
+
+   The tempo is a single constant shared by all three strengths, and every
+   overlay's hold state is multiplied by the same factor at the same instant.
+   That is the entire point of the effect: the footage and the graphics move
+   together on one clock, so the frame reads as alive rather than as a video
+   with wobbling stickers on it. A strength control changes how deep it
+   breathes and never how fast, because the tempo is what everything shares. */
+const BREATHE_HZ = .075, BREATHE_RAMP = .4;
+const BREATHE_LEVELS = {
+  off: { horizontal: 0, vertical: 0 },
+  subtle: { horizontal: .006, vertical: .009 },
+  standard: { horizontal: .012, vertical: .018 },
+  strong: { horizontal: .022, vertical: .030 },
+};
+
+function breatheLevel(level, orientation) {
+  const table = BREATHE_LEVELS[level] || BREATHE_LEVELS.off;
+  return table[orientation] ?? table.horizontal;
+}
+
+/* Stretches that override the project strength. A `breathe` block asks for its
+   own amount; a camera block asks for zero, because a punch-in riding on top
+   of a pulse is the one combination that reads as seasickness. */
+function breatheSpans() {
+  const orientation = S.state?.orientation || "horizontal";
+  const spans = [];
+  for (const item of S.state?.instances || []) {
+    if (!(item.duration > 0)) continue;
+    if (item.template === "breathe")
+      spans.push([item.start, item.start + item.duration,
+        breatheLevel(item.fields?.strength || S.state.breathe, orientation)]);
+    else if (isCameraEffect(item))
+      spans.push([item.start, item.start + item.duration, 0]);
+  }
+  return spans.sort((a, b) => a[0] - b[0]);
+}
+
+function breatheAmplitude(t) {
+  const orientation = S.state?.orientation || "horizontal";
+  const base = breatheLevel(S.state?.breathe ?? "off", orientation);
+  let amount = base, previousEnd = -1e9;
+  for (const span of breatheSpans()) {
+    const start = Math.max(span[0], previousEnd), end = span[1];
+    if (end - start <= 1e-6) continue;
+    previousEnd = end;
+    const ramp = Math.max(1e-3, Math.min(BREATHE_RAMP, (end - start) / 3));
+    amount += (span[2] - base)
+      * Math.max(0, Math.min(1, Math.min((t - start) / ramp, (end - t) / ramp)));
+  }
+  return amount;
+}
+
+/* Scaled up only, never down: dipping below 1 would pull the edges of the
+   picture into shot. The frame therefore sits at its true size at the bottom
+   of each breath and is at most 2a larger at the top. */
+function breatheScale(t) {
+  const a = breatheAmplitude(t);
+  return a <= 0 ? 1 : 1 + a + a * Math.sin(2 * Math.PI * BREATHE_HZ * t);
+}
+
+function breatheTransform(t) {
+  const scale = breatheScale(t);
+  return scale <= 1 + 1e-9 ? null : { cx: .5, cy: .5, scale };
+}
+
+/* ------------------------------------------------------------------- tilt
+
+   A card lying on the scene at a slight angle instead of taped to the glass.
+   Four named presets rather than a rotation control, for the same reason the
+   compositing toggles are toggles: the value that makes this read as depth and
+   not as a mistake is a narrow one, and it has to be the same value in every
+   template or thirty-seven packs end up leaning thirty-seven different ways.
+
+   Canvas has no perspective transform, so the lean is a rotation plus a
+   vertical shear - the near edge grows, the far edge shrinks - and a shadow
+   thrown further from the surface. Those two cues together are what the eye
+   reads as "turned away from me"; either one alone reads as "crooked". */
+const TILT = {
+  off: null,
+  left:  { rotate: -3.4, shear: -.055, sx: 1, sy: .995, lift: 1.5 },
+  right: { rotate:  3.4, shear:  .055, sx: 1, sy: .995, lift: 1.5 },
+  // Tipped away from the viewer rather than turned: no rotation at all, the
+  // top edge a little shorter, and the shadow well clear of the surface.
+  lean:  { rotate: 0, shear: 0, sx: .992, sy: .972, lift: 2.1 },
+};
+
 /* --------------------------------------------------- motion spec resolution */
 const IDENTITY = { opacity: 1, scale: 1, x: 0, y: 0, rotate: 0 };
 const DEFAULT_MOTION = {
@@ -520,6 +748,15 @@ const DEFAULT_MOTION = {
   idle: null,
   blur: { motion: false, max: 6 },
   shadow: { layers: 3, elevation: 22, opacity: .40, color: "#000000", lift: true },
+  // A quantity on screen — a counting number, a filling bar, a growing rule —
+  // is read, not felt, so it must never ride the entrance spring: a spring
+  // reaches its target in a fraction of its stated duration and then wobbles,
+  // which turns a count-up into a flash and a jitter. Values get their own
+  // monotonic ramp, deliberately slower than the landing, so the card settles
+  // first and the number keeps climbing under it.
+  // `steps` turns the ramp into a counter ladder and `ratio` is how much
+  // longer each notch is than the last; see valueLadder().
+  value: { easing: "outQuint", ms: 0, min_ms: 900, delay_ms: 0, steps: 0, ratio: 1 },
 };
 
 function motionSpec(templateId) {
@@ -536,6 +773,7 @@ function motionSpec(templateId) {
     idle: null,
     blur: { ...DEFAULT_MOTION.blur },
     shadow: { ...DEFAULT_MOTION.shadow },
+    value: { ...DEFAULT_MOTION.value },
   };
   const declared = pack.motion || {};
   if (declared.in) spec.in = { ...spec.in, ...declared.in, from: { ...spec.in.from, ...(declared.in.from || {}) } };
@@ -544,6 +782,7 @@ function motionSpec(templateId) {
   if (declared.idle) spec.idle = { type: "drift", amplitude: .0035, hz: .16, ...declared.idle };
   if (declared.blur) spec.blur = { ...spec.blur, ...declared.blur };
   if (declared.shadow) spec.shadow = { ...spec.shadow, ...declared.shadow };
+  if (declared.value) spec.value = { ...spec.value, ...declared.value };
   pack._motion = spec;
   return spec;
 }
@@ -619,12 +858,87 @@ function motionAt(inst, t, element) {
     state.dy += amplitude * 260 * Math.sin(seconds * 6.283 * hz * .74 + phaseB);
     state.rotate += amplitude * .35 * Math.sin(seconds * 6.283 * hz * .53 + phaseA);
   }
+  // The shared clock, read at global time rather than block-local time so that
+  // every block on screen is at the same point in the breath as the footage
+  // under it. Held blocks only: an entrance already has its own scale curve
+  // and multiplying a spring by a sine is how a landing turns into a bounce.
+  if (state.phase === "hold") {
+    const breathing = breatheScale(inst.start + seconds);
+    if (breathing !== 1) state.scale *= breathing;
+  }
   state.seconds = seconds;
   state.duration = duration;
   state.blur = spec.blur;
-  state.shadowSpec = spec.shadow;
+  state.tilt = TILT[inst.tilt || "off"] || null;
+  // A tilted card is further from its surface at one edge, so its shadow has
+  // to travel further too. Without this the lean reads as a printing error.
+  state.shadowSpec = state.tilt
+    ? { ...spec.shadow, elevation: spec.shadow.elevation * state.tilt.lift }
+    : spec.shadow;
   state.element = element || null;
   return state;
+}
+
+/**
+ * How far a *quantity* has travelled towards its final reading at time `t`:
+ * 0 at the start, 1 once it has arrived, and never anything else in between.
+ *
+ * This is deliberately not `motion().k`. That value is the entrance curve, and
+ * for the springs most packs declare it reaches its target in roughly a fifth
+ * of the stated duration and then oscillates around it — fine for a card that
+ * should feel thrown onto the screen, wrong for a number, which would snap to
+ * its value in two frames and then twitch. A count-up has to be monotonic and
+ * slow enough to read, so it gets its own ramp that outlasts the landing.
+ */
+function valueRamp(inst, element) {
+  const spec = motionSpec(inst.template);
+  const duration = Math.max(.001, inst.duration || 1);
+  const elements = spec.stagger.elements || [];
+  const index = element ? Math.max(0, elements.indexOf(element)) : 0;
+  const delay = index * (spec.stagger.step_ms || 0) / 1000
+    + (spec.value.delay_ms || 0) / 1000;
+  const inWindow = Math.max(0, (spec.in.ms || 0) / 1000);
+  // Long enough to be read, but never so long that it is still climbing when
+  // the block starts leaving — a number that never reaches its value is worse
+  // than one that arrives early.
+  const wanted = (spec.value.ms || 0) / 1000
+    || Math.max(inWindow, (spec.value.min_ms || 900) / 1000);
+  const room = Math.max(.15, duration * .65 - delay);
+  return { spec, duration, delay, window: Math.max(.05, Math.min(wanted, room)) };
+}
+
+/**
+ * The counter ladder: a geometric series of notch positions across the value
+ * window, so each notch lasts `ratio` times longer than the one before it and
+ * the climb visibly settles onto its figure. Mirrored by value_step_times() in
+ * server.py, which reads exactly these times to place the ticking foley — one
+ * tick per notch means every sound you hear is a digit you see change.
+ */
+function valueLadder(inst, element) {
+  const { spec, delay, window } = valueRamp(inst, element);
+  const steps = Math.max(0, Math.min(64, Math.round(spec.value.steps || 0)));
+  if (steps < 1) return [];
+  const ratio = +spec.value.ratio || 1;
+  const span = ratio > 1.0001 ? Math.pow(ratio, steps) - 1 : 0;
+  // One entry per *change* of the number, so the last one is the arrival.
+  return Array.from({ length: steps }, (_, k) =>
+    delay + window * (span ? (Math.pow(ratio, k + 1) - 1) / span : (k + 1) / steps));
+}
+
+function valueAt(inst, t, element) {
+  const { spec, duration, delay, window } = valueRamp(inst, element);
+  const seconds = Math.max(0, Math.min(duration, t * duration));
+  const progress = Math.max(0, Math.min(1, (seconds - delay) / window));
+  const steps = Math.max(0, Math.min(64, Math.round(spec.value.steps || 0)));
+  if (steps >= 1) {
+    // Stepped: hold each notch until the next one is due. The inverse of the
+    // ladder above, so the number changes on exactly the frames it ticks on.
+    const ratio = +spec.value.ratio || 1;
+    const span = ratio > 1.0001 ? Math.pow(ratio, steps) - 1 : 0;
+    const notch = span ? Math.log(1 + progress * span) / Math.log(ratio) : progress * steps;
+    return Math.max(0, Math.min(1, Math.floor(notch + 1e-6) / steps));
+  }
+  return Math.max(0, Math.min(1, (EASE[spec.value.easing] || EASE.outQuint)(progress)));
 }
 
 /* --------------------------------------------------- orientation variants */
@@ -672,6 +986,10 @@ function stageMotion(ctx, state, drawFn) {
     ctx.translate(state.dx * u + offsetX, state.dy * u + offsetY);
     ctx.rotate(state.rotate);
     ctx.scale(state.scale, state.scale);
+    if (state.tilt) {
+      ctx.rotate(state.tilt.rotate * Math.PI / 180);
+      ctx.transform(state.tilt.sx, state.tilt.shear, 0, state.tilt.sy, 0, 0);
+    }
     drawFn(ctx, state);
     ctx.restore();
   };
@@ -700,9 +1018,30 @@ Object.assign(A, {
         + `?asset=${encodeURIComponent(file)}&page=${instance.fields.page || 0}`;
     return `/media/${encodeURIComponent(S.project)}/assets/${encodeURIComponent(file)}`;
   },
+  /* The footage itself, for the templates that show it inside themselves.
+     In the preview that is the <video> already playing at this moment, so it
+     costs nothing. In the headless exporter there is no player, so it is a
+     video element of the master that prepareVideoAssets() seeks frame by frame
+     - the same mechanism a video-clip block already uses for its own asset.
+     The master rather than the proxy, because a PiP crops a small part of the
+     frame and magnifies it, which is exactly where a proxy would show. */
+  sourceFrame: () => {
+    if (!S.state?.source) return null;
+    const element = EXPORT_MODE ? A.video(masterUrl()) : vid;
+    return (element && (element.videoWidth || 0) > 0) ? element : null;
+  },
+  /* Where the speaker is in the source frame. A block may carry its own box;
+     otherwise it follows the one set once for the project. */
+  speakerRegion: instance => {
+    const own = instance?.fields?.region;
+    if (own && own.w > .02 && own.h > .02) return own;
+    const shared = S.state?.speaker_region;
+    if (shared && shared.w > .02 && shared.h > .02) return shared;
+    return { x: .30, y: .04, w: .40, h: .84 };
+  },
   fitContain, unit: renderUnit, viewportUnit, seeded: srand,
   ease: EASE, easeOut, easeOutBack, spring: springValue,
-  motion: motionAt, stage: stageMotion, shadow: layeredShadow,
+  motion: motionAt, value: valueAt, stage: stageMotion, shadow: layeredShadow,
   variant: packVariant,
   orientation: () => S.state?.orientation || "horizontal",
   isCamera: id => Boolean(S.packs[id]?.camera),
@@ -726,11 +1065,20 @@ function captionLayout(block) {
     ...global,
   };
   if (block && block.follow_global === false) {
+    // A pinned caption keeps a spot per orientation, exactly like a template
+    // instance does. The flat x/y/scale mirror the active orientation and are
+    // only consulted for states written before caption layouts existed —
+    // reading them in the *other* orientation is what used to make one drag in
+    // 16:9 silently move the caption in 9:16 too.
+    const layouts = block.layouts || {};
+    const saved = layouts[orientation]
+      || (Object.keys(layouts).length ? null
+          : { x: block.x, y: block.y, scale: block.scale });
     return {
       ...base,
-      x: block.x ?? base.x,
-      y: block.y ?? base.y,
-      scale: block.scale ?? base.scale,
+      x: saved?.x ?? base.x,
+      y: saved?.y ?? base.y,
+      scale: saved?.scale ?? base.scale,
     };
   }
   return base;
@@ -758,18 +1106,99 @@ function packUsesVideo(templateId) {
   return (S.packs[templateId]?.fields || []).some(field => field.type === "asset:video");
 }
 
+/* Templates that draw the source footage inside themselves. They need the
+   master loaded and seeked alongside the ordinary asset clips. */
+function packUsesSource(templateId) {
+  return !!S.packs[templateId]?.source_window;
+}
+function masterUrl(){
+  if(!S.project||!S.state?.source)return"";
+  return `/media/${encodeURIComponent(S.project)}/${encodeURIComponent(S.state.source)}`+
+    `?v=${encodeURIComponent(sourceSignature(S.state))}`;
+}
+
+/* ------------------------------------------------------- the source camera
+
+   These three functions are the preview's half of a promise: the footage moves
+   here exactly as camera_plan() and camera_expressions() in server.py move it
+   at export. They used to disagree, and the disagreement was invisible until
+   you rendered - the preview knew only one move ("ease from the full frame in
+   to `rect`") and applied it to every camera pack regardless of the `mode` the
+   pack declared. ken-burns, which declares `drift` and a one-millisecond
+   entrance, therefore snapped to its start framing and sat there instead of
+   travelling to `rect2`; zoom-out, which declares `reveal` and means *start
+   tight and open out*, played backwards. Both are correct on export and were
+   wrong on screen, which is the worst way round.
+
+   So the mode table lives here, next to the easing curves, rather than in each
+   pack's render.js: one table on each side of the wire is something a test can
+   compare, thirty-seven copies is not. A pack that genuinely needs its own
+   motion can still export `sourceTransform` and take over completely. */
+
+/** One rect clamped and measured the way `normalised()` in server.py does. */
+function cameraRect(raw, fallback) {
+  const rect = (raw && typeof raw === "object") ? raw : fallback;
+  const w = Math.max(.05, Math.min(1, +rect.w || 1));
+  const h = Math.max(.05, Math.min(1, +rect.h || 1));
+  const x = Math.max(0, Math.min(1 - w, +rect.x || 0));
+  const y = Math.max(0, Math.min(1 - h, +rect.y || 0));
+  return { x, y, w, h, cx: x + w / 2, cy: y + h / 2, zoom: 1 / Math.max(w, h) };
+}
+
+/** Mirror of camera_plan(): one instance resolved into its two framings. */
+function cameraPlan(item) {
+  const pack = S.packs[item.template] || {};
+  const settings = pack.camera || {}, motion = pack.motion || {}, legacy = pack.animation || {};
+  const fps = Math.max(1, S.fps || 30);
+  const duration = Math.max(1 / fps, item.duration || 1);
+  const window = ms => Math.max(1 / fps, Math.min((ms || 0) / 1000, duration * .7));
+  const full = { x: 0, y: 0, w: 1, h: 1 };
+  return {
+    mode: settings.mode || "hold",
+    easing: settings.easing || "outCubic",
+    entrance: window(motion.in?.ms ?? legacy.entrance_ms ?? 450),
+    exit: window(motion.out?.ms ?? legacy.exit_ms ?? 400),
+    start: item.start, end: item.start + item.duration, duration,
+    first: cameraRect(item.fields.rect, full),
+    second: cameraRect(item.fields.rect2, item.fields.rect || full),
+  };
+}
+
+/** Mirror of camera_expressions(), evaluated instead of stringified. */
+function cameraStateAt(plan, t) {
+  const { first, second, mode, easing, entrance, exit, start, end, duration } = plan;
+  const ease = (kind, k) => (EASE[kind] || EASE.outCubic)(Math.max(0, Math.min(1, k)));
+  const local = Math.max(0, Math.min(duration, t - start));
+  const lift = (amount) => 1 + (first.zoom - 1) * amount;
+
+  if (mode === "reveal")           // starts tight, opens out to the full frame
+    return { cx: first.cx, cy: first.cy, scale: lift(1 - ease(easing, local / entrance)) };
+
+  if (mode === "impact") {         // cuts to the tight framing, then releases
+    const release = Math.max(1 / 30, duration * .62);
+    return { cx: first.cx, cy: first.cy, scale: lift(1 - ease(easing, local / release)) };
+  }
+
+  if (mode === "drift" || mode === "whip") {   // travels from `rect` to `rect2`
+    const k = ease(mode === "drift" ? "inOutCubic" : "outQuint", local / duration);
+    return {
+      cx: first.cx + (second.cx - first.cx) * k,
+      cy: first.cy + (second.cy - first.cy) * k,
+      scale: first.zoom + (second.zoom - first.zoom) * k,
+    };
+  }
+                                   // "hold": ease in, stay, ease back out
+  const amount = t < start + entrance ? ease(easing, local / entrance)
+    : t > end - exit ? ease(easing, (end - t) / exit) : 1;
+  return { cx: first.cx, cy: first.cy, scale: lift(amount) };
+}
+
 /** Shared normalised source-camera state, mirrored exactly by the FFmpeg graph. */
 function cameraTransform(t) {
   const item = activeInstances(t).find(i => isCameraEffect(i) && i.fields.rect);
-  if (!item) return null;
-  const local = (t - item.start) / item.duration;
-  const custom = REG[item.template]?.sourceTransform?.(item, local, A);
-  if (custom) return custom;
-  const state = motionAt(item, local);
-  const rect = item.fields.rect;
-  const target = 1 / Math.max(.05, Math.max(rect.w, rect.h));
-  const k = state.phase === "in" ? state.k : state.phase === "out" ? state.k : 1;
-  return { cx: rect.x + rect.w / 2, cy: rect.y + rect.h / 2, scale: 1 + (target - 1) * k };
+  if (!item) return breatheTransform(t);
+  const custom = REG[item.template]?.sourceTransform?.(item, (t - item.start) / item.duration, A);
+  return custom || cameraStateAt(cameraPlan(item), t);
 }
 
 function syncOverlayVideos(t) {
@@ -792,6 +1221,22 @@ function syncOverlayVideos(t) {
 
 async function prepareVideoAssets(t) {
   const waits = [];
+  // The preview's <video> is already sitting on this frame, so only the
+  // headless exporter has to go and find it.
+  if (EXPORT_MODE && activeInstances(t).some(i => packUsesSource(i.template))) {
+    const master = A.video(masterUrl()), at = tl2src(t);
+    waits.push(new Promise(resolve => {
+      const seek = () => {
+        if (Math.abs(master.currentTime - at) < 1 / (S.fps || 30)) { resolve(); return; }
+        const done = () => { master.removeEventListener("seeked", done); resolve(); };
+        master.addEventListener("seeked", done, { once: true });
+        master.currentTime = Math.min(at, Math.max(0, (master.duration || at) - .001));
+        setTimeout(done, 1200);
+      };
+      if (master.readyState >= 1) seek();
+      else { master.addEventListener("loadedmetadata", seek, { once: true }); setTimeout(resolve, 1800); }
+    }));
+  }
   for (const inst of activeInstances(t).filter(i => i.fields.asset && !i.missing
       && packUsesVideo(i.template))) {
     const clip = A.video(A.projectAsset(inst.fields.asset));
@@ -811,11 +1256,61 @@ async function prepareVideoAssets(t) {
   await Promise.all(waits);
 }
 
-/** THE shared render. The preview and the headless exporter both call this. */
-function drawFrame(ctx, W, H, t) {
+/* Which block, if any, is frosting the frame right now, and how far into its
+   own entrance it has got. The strength comes from the block's motion curve
+   rather than from a separate animation, so the blur fades in with the thing
+   that asked for it and can never be left switched on behind it. The lowest
+   such block wins: everything under that track is what gets softened. */
+/* These two must match BACKDROP_BLUR and BACKDROP_DIM in server.py. The
+   preview reaches the frost with a CSS filter and the export reaches it with
+   FFmpeg, so the numbers are the only thing keeping the two pictures the same.
+   Radius is a fraction of the frame's short edge; the dim cancels the rise in
+   average brightness that blurring a frame causes. */
+const BACKDROP_BLUR=.040, BACKDROP_DIM=.10;
+
+function backdropAt(t) {
+  let track = Infinity, strength = 0;
+  for (const inst of activeInstances(t)) {
+    if (!inst.backdrop) continue;
+    const state = motionAt(inst, (t - inst.start) / inst.duration);
+    track = Math.min(track, inst.track);
+    strength = Math.max(strength, Math.max(0, Math.min(1, state.opacity ?? 1)));
+  }
+  return strength > .001 ? { track, strength } : null;
+}
+
+/* The plane a block is composited into. "below" is softened by the backdrop,
+   "behind" is placed between the background and the speaker, "front" is the
+   ordinary case and where captions always live. */
+function planeOf(inst, backdrop) {
+  if (backdrop && inst.track < backdrop.track) return "below";
+  if (depthOf(inst) === "behind") return "behind";
+  return "front";
+}
+
+/* Mirrors effective_depth() in server.py. A pack may declare `depth_from` so
+   that one of its own fields decides the side, for templates where the side is
+   the meaning of that field rather than a separate choice - the stage backdrop
+   being "behind" the speaker is not a second decision on top of its framing,
+   it IS its framing. Everything else answers with its own toggle. */
+function depthOf(inst) {
+  const rule = S.packs[inst.template]?.depth_from;
+  if (rule?.field) {
+    const value = inst.fields?.[rule.field] ?? rule.default;
+    return (rule.behind || []).includes(value) ? "behind" : "front";
+  }
+  return inst.depth;
+}
+
+/** THE shared render. The preview and the headless exporter both call this.
+    `plane` limits it to one compositing plane; "all" draws the lot, which is
+    what a preview with no backdrop and nothing behind the speaker needs. */
+function drawFrame(ctx, W, H, t, plane = "all") {
   ctx.clearRect(0, 0, W, H);
+  const backdrop = plane === "all" ? null : backdropAt(t);
   for (const inst of activeInstances(t)) {
     if (isCameraEffect(inst)) continue;
+    if (plane !== "all" && planeOf(inst, backdrop) !== plane) continue;
     const fns = REG[inst.template];
     if (!fns?.draw) continue;
     const local = (t - inst.start) / inst.duration;
@@ -827,6 +1322,9 @@ function drawFrame(ctx, W, H, t) {
     catch (error) { if (EXPORT_MODE) throw error; console.warn(inst.template, error); }
     ctx.restore();
   }
+  // Captions are never softened and never go behind anyone. They are the one
+  // thing on screen that has to stay readable whatever else is happening.
+  if (plane !== "all" && plane !== "front") return;
   const renderer = REG.captions;
   for (const block of captionsAt(t)) {
     const layout = captionLayout(block);
@@ -846,7 +1344,15 @@ function drawFrame(ctx, W, H, t) {
 
 /* =================================== [E] preview & transform controls */
 const vid=$("#vid"), ov=$("#overlay");
-const PREVIEW_MAX_EDGE=1920;
+const underlay=$("#underlay"), behindLayer=$("#behindLayer"), subjectLayer=$("#subjectLayer");
+/* How large the overlay canvas is actually rasterised. Every template draws
+   with shadows and soft edges, which in canvas 2D cost per pixel and not per
+   shape, so this number is the single biggest lever on how smoothly the
+   preview plays. Paused - which is when placement is judged - it stays at full
+   detail. Playing, it drops: at 30 frames a second nobody is inspecting an
+   edge, and a 4K vertical project goes from redrawing 2.1 million pixels a
+   frame to 900 thousand. The export is unaffected; it never reads this. */
+const PREVIEW_MAX_EDGE=1920, PREVIEW_PLAYING_EDGE=1280;
 function layoutOverlay(force=false){
   const stage=$("#stage"),s=stage.getBoundingClientRect();
   if(s.width<2||s.height<2)return S.previewLayout;
@@ -854,7 +1360,8 @@ function layoutOverlay(force=false){
   const mediaH=vid.videoHeight||S.state?.source_info.height||9;
   const ratio=Math.min(s.width/mediaW,s.height/mediaH);
   const displayW=Math.max(1,mediaW*ratio),displayH=Math.max(1,mediaH*ratio);
-  const backingScale=Math.min(1,PREVIEW_MAX_EDGE/Math.max(mediaW,mediaH));
+  const edge=S.playing?PREVIEW_PLAYING_EDGE:PREVIEW_MAX_EDGE;
+  const backingScale=Math.min(1,edge/Math.max(mediaW,mediaH));
   const backingW=Math.max(2,Math.round(mediaW*backingScale));
   const backingH=Math.max(2,Math.round(mediaH*backingScale));
   const left=(s.width-displayW)/2,top=(s.height-displayH)/2;
@@ -865,10 +1372,16 @@ function layoutOverlay(force=false){
   const viewport=$("#mediaViewport");
   viewport.style.left=left+"px";viewport.style.top=top+"px";
   viewport.style.width=displayW+"px";viewport.style.height=displayH+"px";
-  ov.style.left=left+"px";ov.style.top=top+"px";
-  ov.style.width=displayW+"px";ov.style.height=displayH+"px";
-  if(ov.width!==backingW)ov.width=backingW;
-  if(ov.height!==backingH)ov.height=backingH;
+  // Every compositing plane is the same rectangle at the same backing size;
+  // they differ only in what is drawn into them and what sits between them.
+  for(const layer of [ov,behindLayer,subjectLayer]){
+    layer.style.left=left+"px";layer.style.top=top+"px";
+    layer.style.width=displayW+"px";layer.style.height=displayH+"px";
+    if(layer.width!==backingW)layer.width=backingW;
+    if(layer.height!==backingH)layer.height=backingH;
+  }
+  if(underlay.width!==backingW)underlay.width=backingW;
+  if(underlay.height!==backingH)underlay.height=backingH;
   return S.previewLayout;
 }
 function paintOverlay(){S.overlayQueued=false;if(!S.state)return;layoutOverlay();
@@ -879,9 +1392,61 @@ function paintOverlay(){S.overlayQueued=false;if(!S.state)return;layoutOverlay()
     const ty=Math.max(1-z.scale,Math.min(0,.5-z.cy*z.scale))*layout.displayH;
     vid.style.transform=`matrix(${z.scale},0,0,${z.scale},${tx},${ty})`;
   }else vid.style.transform="";
-  const context=ov.getContext("2d");drawFrame(context,ov.width,ov.height,S.t);
+  lookDraw(vid.style.transform);
+  paintCompositingPlanes(S.t);
+  const context=ov.getContext("2d");
+  drawFrame(context,ov.width,ov.height,S.t,S.planesActive?"front":"all");
   drawPreviewToolOverlay(context);
   drawSelection();
+}
+
+/* The preview's half of the compositing order, matching the export's:
+
+     footage -> below -> FROST -> behind -> speaker -> front
+
+   The frost is a CSS filter on the viewport rather than a canvas blur, so it
+   costs one GPU composite instead of a per-frame convolution, and the blocks
+   that belong under it are drawn into a canvas inside that same viewport so
+   they are frosted by the same filter. Every plane is skipped outright when
+   nothing uses it, which is the ordinary case - a timeline with no backdrop
+   and nothing behind the speaker paints exactly what it painted before. */
+function paintCompositingPlanes(t){
+  const viewport=$("#mediaViewport");
+  const backdrop=backdropAt(t);
+  const behind=activeInstances(t).some(i=>depthOf(i)==="behind"&&!isCameraEffect(i)
+    &&!(backdrop&&i.track<backdrop.track));
+  const below=backdrop&&activeInstances(t).some(i=>i.track<backdrop.track&&!isCameraEffect(i));
+  S.planesActive=!!(backdrop||behind);
+  if(backdrop){
+    // Radius as a fraction of the frame's short edge, so the preview and a 4K
+    // export are the same picture at different sizes rather than two looks.
+    const radius=BACKDROP_BLUR*Math.min(ov.width,ov.height)*backdrop.strength;
+    viewport.style.filter=
+      `blur(${radius.toFixed(2)}px) brightness(${(1-BACKDROP_DIM*backdrop.strength).toFixed(3)})`;
+  }else if(viewport.style.filter)viewport.style.filter="";
+  underlay.hidden=!below;
+  if(below)drawFrame(underlay.getContext("2d"),underlay.width,underlay.height,t,"below");
+  behindLayer.hidden=subjectLayer.hidden=!behind;
+  if(!behind)return;
+  drawFrame(behindLayer.getContext("2d"),behindLayer.width,behindLayer.height,t,"behind");
+  // The speaker, lifted off the footage with the matte and put back on top of
+  // whatever was placed behind them. Drawn from the graded canvas when the look
+  // is running, so the cutout carries the same colour as the frame around it.
+  const plate=LOOK.active?LOOK.canvas:vid;
+  const context=subjectLayer.getContext("2d");
+  context.clearRect(0,0,subjectLayer.width,subjectLayer.height);
+  if(!(plate&&(plate.videoWidth||plate.width))||!(LOOK.matte?.videoWidth))return;
+  context.save();
+  const z=cameraTransform(t);
+  if(z){
+    const sx=Math.max(1-z.scale,Math.min(0,.5-z.cx*z.scale))*subjectLayer.width;
+    const sy=Math.max(1-z.scale,Math.min(0,.5-z.cy*z.scale))*subjectLayer.height;
+    context.setTransform(z.scale,0,0,z.scale,sx,sy);
+  }
+  context.drawImage(plate,0,0,subjectLayer.width,subjectLayer.height);
+  context.globalCompositeOperation="destination-in";
+  context.drawImage(LOOK.matte,0,0,subjectLayer.width,subjectLayer.height);
+  context.restore();
 }
 function drawOverlay(){
   if(S.overlayQueued)return;
@@ -991,8 +1556,12 @@ function finishPreviewTool(){
   const tool=previewTool,a=tool.start,b=tool.current||a,item=tool.item;
   if(tool.type==="rect"){
     const x=Math.max(0,Math.min(a.x,b.x)),y=Math.max(0,Math.min(a.y,b.y));
-    item.fields[tool.field||"rect"]={x,y,w:Math.max(.05,Math.min(1-x,Math.abs(b.x-a.x))),
+    const box={x,y,w:Math.max(.05,Math.min(1-x,Math.abs(b.x-a.x))),
       h:Math.max(.05,Math.min(1-y,Math.abs(b.y-a.y)))};
+    // The same drag, written either onto one block or onto the project. The
+    // project's box is what every PiP follows unless it was given its own.
+    if(tool.scope==="speaker")S.state.speaker_region=box;
+    else item.fields[tool.field||"rect"]=box;
     previewTool=null;
   }else{
     const box=highlightContentBounds(item),left=Math.max(0,Math.min(1,(Math.min(a.x,b.x)-box.x)/box.w));
@@ -1020,17 +1589,21 @@ G.addEventListener("pointerdown",e=>{
   const inside=(box)=>p.x>=box.x&&p.x<=box.x+box.w&&p.y>=box.y&&p.y<=box.y+box.h;
   const hit=[...activeInstances(S.t)].reverse().find(i=>!S.packs[i.template]?.full_frame
     &&inside(instanceNormBounds(i)));
+  // Capture the pointer for the whole drag. Without this a quick throw that
+  // leaves the preview stops updating and never gets its pointerup, which
+  // leaves the block stranded mid-move and the drag still armed.
+  const grab=()=>{try{G.setPointerCapture(e.pointerId)}catch(error){}};
   if(hit){S.sel=hit.id;snapshot();const box=instanceNormBounds(hit);
     drag={id:hit.id,dx:p.x-box.x,dy:p.y-box.y,box,
       rect:isCameraEffect(hit)&&hit.fields.rect?structuredClone(hit.fields.rect):null};
-    $$(".zoneguide").forEach(z=>z.style.display="block");positionGuides();}
+    grab();$$(".zoneguide").forEach(z=>z.style.display="block");positionGuides();}
   else{
     // Captions are grabbable straight off the preview; dragging one is also how
     // it stops following the project-wide placement.
     const block=captionsAt(S.t).find(entry=>inside(captionNormBounds(entry)));
     if(block){S.sel=block.id;snapshot();const box=captionNormBounds(block);
       drag={id:block.id,caption:true,dx:p.x-box.x,dy:p.y-box.y,box};
-      $$(".zoneguide").forEach(z=>z.style.display="block");positionGuides();}
+      grab();$$(".zoneguide").forEach(z=>z.style.display="block");positionGuides();}
     else S.sel=null;
   }
   renderInspector();drawOverlay();
@@ -1044,16 +1617,25 @@ G.addEventListener("pointermove",e=>{
     const block=S.state.captions.find(c=>c.id===drag.id);
     if(block){block.follow_global=false;
       block.x=Math.max(0,Math.min(1,left+drag.box.w/2));
-      block.y=Math.max(0,Math.min(1,top+drag.box.h/2));}
+      block.y=Math.max(0,Math.min(1,top+drag.box.h/2));
+      block.scale??=captionLayout(block).scale;
+      (block.layouts??={})[S.state.orientation]=
+        {x:block.x,y:block.y,scale:block.scale};}
   }
   else if(drag.rect){i.fields[drag.field||"rect"]={...drag.rect,x:left,y:top}}
   else{i.x=left+drag.box.w/2;i.y=top+drag.box.h/2;
     (i.layouts??={})[S.state.orientation]={x:i.x,y:i.y,scale:i.scale};}
   drawOverlay();
 });
-G.addEventListener("pointerup",()=>{if(previewTool?.active){finishPreviewTool();return}if(drag){drag=null;
+const releasePointer=e=>{try{G.releasePointerCapture(e.pointerId)}catch(error){}};
+G.addEventListener("pointerup",e=>{releasePointer(e);
+  if(previewTool?.active){finishPreviewTool();return}if(drag){drag=null;
   $$(".zoneguide").forEach(z=>z.style.display="none");afterMutate();}});
-G.addEventListener("pointercancel",()=>{if(previewTool?.active){previewTool.active=false;S.undo.pop();drawOverlay()}});
+G.addEventListener("pointercancel",e=>{releasePointer(e);
+  if(previewTool?.active){previewTool.active=false;S.undo.pop();drawOverlay();return}
+  // A cancelled drag still moved things, so it ends like a finished one rather
+  // than leaving `drag` armed and the guides stuck on screen.
+  if(drag){drag=null;$$(".zoneguide").forEach(z=>z.style.display="none");afterMutate();}});
 G.addEventListener("touchmove",e=>{ // pinch to scale selected
   if(e.touches.length===2&&S.sel){e.preventDefault();
     const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
@@ -1080,7 +1662,7 @@ $("#selbox").addEventListener("pointerdown",e=>{ // corner handle uniform scale
   addEventListener("pointermove",mv);addEventListener("pointerup",up);
 });
 function positionGuides(){const r=layoutOverlay();if(!r)return;
-  const g1=$('[data-z="فوق_الراس"]'),g2=$('[data-z="lower_third"]');
+  const g1=$('[data-z="above_head"]'),g2=$('[data-z="lower_third"]');
   g1.style.left=(r.left+r.displayW*0.25)+"px";g1.style.top=(r.top+r.displayH*0.06)+"px";
   g1.style.width=r.displayW*0.5+"px";g1.style.height=r.displayH*0.22+"px";
   g2.style.left=(r.left+r.displayW*0.1)+"px";g2.style.top=(r.top+r.displayH*0.72)+"px";
@@ -1100,7 +1682,7 @@ function seek(t){const next=Math.min(tlDuration(),frameSnap(t));
   if(next<S.t-.2)SFX_AUDIO.fired.clear();
   S.t=next;SFX_AUDIO.lastTime=next;S.lastPlaybackFrame=-1;
   if(S.state.source&&vid.readyState)vid.currentTime=tl2src(S.t);
-  $("#tc").textContent=fmt(S.t);drawOverlay();drawTimeline();}
+  $("#tc").textContent=fmt(S.t);drawOverlay();followPlayhead();}
 function fmt(t){
   const fps=Math.max(1,Math.round(S.fps||30));
   const frames=Math.max(0,Math.round(t*(S.fps||30)));
@@ -1112,7 +1694,17 @@ function fmtCompact(t){
   const minutes=Math.floor(t/60),seconds=Math.floor(t%60);
   return `${minutes}:${String(seconds).padStart(2,"0")}`;
 }
-function tick(){if(S.playing){
+/* Keep the playhead on screen while playing. Scrolling the view is the only
+   thing here that needs the timeline redrawn; the common case moves one DOM
+   element and costs nothing. */
+function followPlayhead(){
+  const r=timelineRect(),x=px(S.t);
+  if(x>=LABEL&&x<=r.width-24){drawPlayhead();return}
+  S.scroll=Math.max(0,S.t-(r.width-LABEL)/S.zoom*0.15);
+  drawTimeline();
+}
+function tick(){
+  if(!S.playing){S.ticking=false;return}
   S.t=src2tl(vid.currentTime);
   // jump over deleted regions
   const s=vid.currentTime;let inside=S.state.cuts.some(c=>s>=c.src_in-0.02&&s<=c.src_out+0.02);
@@ -1120,13 +1712,22 @@ function tick(){if(S.playing){
     if(nxt)vid.currentTime=nxt.src_in;else{vid.pause();S.playing=false;$("#play").textContent="▶"}}
   const frame=Math.round(S.t*Math.max(1,S.fps||30));
   if(frame!==S.lastPlaybackFrame){
-    S.lastPlaybackFrame=frame;$("#tc").textContent=fmt(S.t);drawOverlay();drawTimeline();
+    S.lastPlaybackFrame=frame;$("#tc").textContent=fmt(S.t);drawOverlay();followPlayhead();
   }
-  playSFX();}
-  requestAnimationFrame(tick)}
+  playSFX();
+  requestAnimationFrame(tick);
+}
+/* The loop only exists while something is moving. It used to run at the
+   display rate for the whole session, waking the page sixty times a second to
+   decide it had nothing to do. */
+function startTick(){
+  if(S.ticking||!S.playing)return;
+  S.ticking=true;requestAnimationFrame(tick);
+}
 $("#play").onclick=()=>{if(!S.state?.source){toast("Import source footage first");return}
   S.playing=!S.playing;$("#play").textContent=S.playing?"⏸":"▶";
-  if(S.playing){ensureSfxAudio();preloadSfx();
+  layoutOverlay(true);drawOverlay();
+  if(S.playing){ensureSfxAudio();preloadSfx();startTick();
     vid.play().catch(e=>{S.playing=false;$("#play").textContent="▶";toast(e.message)})}
   else vid.pause()};
 $("#frameBack").onclick=()=>{vid.pause();S.playing=false;$("#play").textContent="▶";seek(S.t-frameDuration())};
@@ -1153,9 +1754,23 @@ function sfxRepeatCount(item,fieldName){
     return Math.max(1,Math.min(64,Math.round(value)));
   return 1;
 }
+/* Mirrors resolve_sfx_events() in server.py, silence included: a silenced block
+   resolves to no events rather than to muted ones, so it contributes nothing to
+   the mix and draws no markers. The SFX track is then a truthful picture of
+   what the export will contain, which is the only reason to have the track. */
 function sfxEventsForInstance(item,spec){
+  if(item.silent)return[];
   const events=[];
   for(const sound of spec?.sfx||[]){
+    if(sound.follow_value!==undefined){
+      const offset=sound.offset||0;
+      valueLadder(item,sound.follow_value||"").forEach((step,index)=>{
+        const relative=step+offset;
+        if(relative<=item.duration)events.push({time:item.start+relative,
+          url:sfxUrl(spec,sound.file),gain:sound.gain??.5,index});
+      });
+      continue;
+    }
     const count=sfxRepeatCount(item,sound.repeat_field);
     const base=sound.offset_ratio!=null?item.duration*sound.offset_ratio:(sound.offset||0);
     const spread=sound.spread_ratio!=null?item.duration*sound.spread_ratio:0;
@@ -1388,10 +2003,18 @@ function drawTimeline(){if(!S.state)return;
     tctx.save();tctx.beginPath();tctx.rect(x+4,captionY,Math.max(1,w-8),h);tctx.clip();tctx.fillText(block.text,x+6,captionY+h/2);tctx.restore();
   }
   const sfxTrack=overlayTrackCount()+2,sfxY=trackY(sfxTrack)+7;
-  for(const item of S.state.instances){const spec=S.packs[item.template];
+  // A sound belongs to the block that generated it, so the markers of the
+  // selected block light up with it. That is the whole answer to "which of
+  // these ticks is the one I keep hearing" - select a marker, see its block
+  // and every other sound it makes, then silence it from the panel.
+  for(const item of S.state.instances){const spec=S.packs[item.template],own=item.id===S.sel;
     for(const sound of sfxEventsForInstance(item,spec)){const x=px(sound.time);
-      if(x<LABEL||x>r.width)continue;tctx.fillStyle=cc("sfx");
-      tctx.beginPath();tctx.roundRect(x-3,sfxY,8,TRACK_H-14,4);tctx.fill();}}
+      if(x<LABEL||x>r.width)continue;
+      tctx.save();
+      if(own){tctx.fillStyle="#fff";tctx.shadowColor=cc("sfx");tctx.shadowBlur=10}
+      else tctx.fillStyle=cc("sfx");
+      tctx.beginPath();tctx.roundRect(x-3,sfxY,8,TRACK_H-14,4);tctx.fill();
+      tctx.restore();}}
   // Fixed track headers.
   tctx.fillStyle="#111216ee";tctx.fillRect(0,0,LABEL,r.height);
   tctx.fillStyle="#aaa9a2";tctx.font="600 10px Inter";tctx.textBaseline="middle";
@@ -1399,13 +2022,18 @@ function drawTimeline(){if(!S.state)return;
   label("SOURCE",0);for(let track=1;track<=overlayTrackCount();track++)label(`OVERLAY ${track}`,track);
   label("CAPTIONS",captionTrack);label("SFX",sfxTrack);
   tctx.fillStyle="#2c2d33";tctx.fillRect(LABEL-1,0,1,r.height);
-  // Playhead and frame-accurate time badge.
-  const playX=px(S.t);
-  if(playX>=LABEL&&playX<=r.width){
-    tctx.fillStyle="#fff";tctx.fillRect(playX-1,0,2,r.height);
-    tctx.beginPath();tctx.moveTo(playX-6,0);tctx.lineTo(playX+6,0);tctx.lineTo(playX,8);tctx.closePath();tctx.fill();
-  }
+  drawPlayhead();
   updateTimelineControls();
+}
+/* Move the playhead without touching the timeline canvas. Everything that
+   changes only the current time calls this; only structure, zoom and scroll
+   need the full drawTimeline(). */
+function drawPlayhead(){
+  const head=$("#tlPlayhead");if(!head||!S.state)return;
+  const r=timelineRect(),x=px(S.t);
+  const visible=x>=LABEL&&x<=r.width;
+  head.hidden=!visible;
+  if(visible)head.style.transform=`translateX(${x}px)`;
 }
 /* Timeline gestures: scrub, move across tracks, trim, magnetic/frame snap, and deep zoom. */
 let tlDrag=null,tlPinch=null;
@@ -1427,6 +2055,18 @@ function tlHit(x,y){const time=S.scroll+(x-LABEL)/S.zoom;
     if(x>=left-edge&&x<=left+edge)return{kind:"capL",b:block};
     if(x>=left+width-edge&&x<=left+width+edge)return{kind:"capR",b:block};
     if(x>=left&&x<=left+width)return{kind:"cap",b:block};}
+  // An SFX marker is a picture of a sound its block owns, not an object of its
+  // own, so hitting one selects the block rather than dragging the marker.
+  // Moving a sound away from the thing that makes it would be a lie.
+  const sfxTrack=overlayTrackCount()+2;
+  if(y>=trackY(sfxTrack)&&y<trackY(sfxTrack)+TRACK_H){
+    let best=null,bestDistance=9;
+    for(const item of S.state.instances)
+      for(const sound of sfxEventsForInstance(item,S.packs[item.template])){
+        const distance=Math.abs(px(sound.time)-x);
+        if(distance<bestDistance){bestDistance=distance;best={kind:"sfx",i:item,t:sound.time}}}
+    if(best)return best;
+  }
   return{kind:y<RULER?"scrub":"none",t:time};
 }
 function magneticSnap(time,ignoreId=null){
@@ -1444,6 +2084,7 @@ function magneticSnap(time,ignoreId=null){
 tl.addEventListener("pointerdown",event=>{
   const r=tl.getBoundingClientRect(),x=event.clientX-r.left,y=event.clientY-r.top,hit=tlHit(x,y);
   if(hit.kind==="scrub"){seek(hit.t);tlDrag={kind:"scrub"}}
+  else if(hit.kind==="sfx"){S.sel=hit.i.id;seek(hit.t);renderInspector();selectTab("inspector")}
   else if(hit.i){S.sel=hit.i.id;snapshot();
     if(S.t<hit.i.start||S.t>=hit.i.start+hit.i.duration)
       seek(hit.i.start+Math.min(Math.max(frameDuration(),.25),Math.max(frameDuration(),hit.i.duration-frameDuration())));
@@ -1599,6 +2240,9 @@ function cycleOrientation(){
   const previous=S.state.orientation;
   for(const item of S.state.instances)
     (item.layouts??={})[previous]={x:item.x,y:item.y,scale:item.scale};
+  for(const block of S.state.captions||[])
+    if(block.follow_global===false&&block.x!=null)
+      (block.layouts??={})[previous]={x:block.x,y:block.y,scale:block.scale??1};
   S.state.orientation_mode=next;
   S.state.orientation=resolvedOrientation(next);
   for(const item of S.state.instances){
@@ -1607,6 +2251,15 @@ function cycleOrientation(){
     item.x=saved?.x??zone.x??.5;
     item.y=saved?.y??zone.y??.3;
     item.scale=saved?.scale??zone.scale??1;
+  }
+  // A caption pinned in one orientation is not pinned in the other until it is
+  // dragged there; until then it follows the project placement for that shape.
+  for(const block of S.state.captions||[]){
+    if(block.follow_global===false){
+      const saved=block.layouts?.[S.state.orientation];
+      block.x=saved?.x??null;block.y=saved?.y??null;block.scale=saved?.scale??null;
+      if(block.x==null)block.follow_global=true;
+    }
   }
   syncLayoutButton();afterMutate();
   toast(S.state.orientation==="vertical"?"9:16 template layout":"16:9 template layout");
@@ -1632,7 +2285,10 @@ function placeInstance(tid){if(!S.state.source){toast("Import source footage bef
     ...placement,
     layouts:{[S.state.orientation]:placement,
       [other]:{x:alternate.x??0.5,y:alternate.y??0.3,scale:alternate.scale??1}},
-    fields,missing:needs,review:false};
+    fields,missing:needs,review:false,
+    // A template can ship with the frost already on - that is the whole of what
+    // the backdrop-blur block is. Everything else starts sharp and in front.
+    backdrop:!!sp.backdrop,depth:"front",silent:false,tilt:"off"};
   S.state.instances.push(inst);S.sel=inst.id;
   selectTab("inspector");afterMutate();}
 function renderInspector(){const p=$("#inspPane");
@@ -1681,6 +2337,71 @@ function renderInspector(){const p=$("#inspPane");
       }
     }else i[key]=key==="scale"?clampInstanceScale(value):Math.max(0,Math.min(1,value));
     afterMutate()});p.append(placement);
+  // Compositing. Both of these change where the block sits in the stack rather
+  // than what it draws, which is why they are here rather than among the
+  // template's own fields - every template has them and no template defines
+  // them. `backdrop` is off for a block that draws nothing but the frost
+  // itself, where turning it off would leave an invisible block doing nothing.
+  if(!isCameraEffect(i)){
+    const sp2=S.packs[i.template]||{};
+    const layer=document.createElement("div");layer.className="fieldrow";
+    const layerLabel=document.createElement("label");
+    layerLabel.textContent="Compositing";layer.append(layerLabel);
+    const row=document.createElement("div");row.className="buttonrow";
+    if(!sp2.backdrop){
+      const frost=document.createElement("button");
+      const paintFrost=()=>{frost.classList.toggle("on",!!i.backdrop);
+        frost.textContent=i.backdrop?"Blur underneath · on":"Blur underneath";};
+      frost.onclick=()=>{snapshot();i.backdrop=!i.backdrop;paintFrost();afterMutate()};
+      frost.title="Frost the footage and every lower track. This block and anything above it stay sharp.";
+      paintFrost();row.append(frost);
+    }
+    // A pack that derives its side from one of its own fields does not get a
+    // toggle as well: two controls for one intent is how a block ends up
+    // saying one thing on the panel and rendering another.
+    if(!sp2.depth_from){
+    const depth=document.createElement("button");
+    const paintDepth=()=>{const behind=i.depth==="behind";
+      depth.classList.toggle("on",behind);
+      depth.textContent=behind?"Behind the speaker":"In front of the speaker";};
+    depth.onclick=()=>{snapshot();i.depth=i.depth==="behind"?"front":"behind";
+      paintDepth();afterMutate();
+      if(i.depth==="behind"&&!S.state?.look?.matte_revision)
+        toast("Open the Look panel once to build the subject matte, or this stays in front on export")};
+    depth.title="Composite this block between the background and the speaker, cut against the subject matte.";
+    paintDepth();row.append(depth);
+    }
+    layer.append(row);p.append(layer);
+
+    // Tilt. Four buttons rather than a rotation control, because the angle
+    // that reads as depth is a narrow one and it has to be the same angle in
+    // every template. "Lean" tips the card away from the viewer instead of
+    // turning it, which is the one that survives behind the speaker.
+    const tiltRow=document.createElement("div");tiltRow.className="fieldrow";
+    const tiltLabel=document.createElement("label");
+    tiltLabel.textContent="Tilt";tiltRow.append(tiltLabel);
+    const tiltButtons=document.createElement("div");tiltButtons.className="buttonrow";
+    for(const [value,text] of [["off","Flat"],["left","Left"],["right","Right"],["lean","Lean back"]]){
+      const button=document.createElement("button");button.textContent=text;
+      button.classList.toggle("on",(i.tilt||"off")===value);
+      button.onclick=()=>{snapshot();i.tilt=value;renderInspector();afterMutate()};
+      tiltButtons.append(button);
+    }
+    tiltRow.append(tiltButtons);p.append(tiltRow);
+  }
+  // Foley. Only offered where the pack actually makes a sound, so a silent
+  // template does not grow a control that does nothing.
+  if((S.packs[i.template]?.sfx||[]).length){
+    const foley=document.createElement("div");foley.className="fieldrow";
+    const foleyLabel=document.createElement("label");
+    foleyLabel.textContent="Sound";foley.append(foleyLabel);
+    const button=document.createElement("button");
+    const paint=()=>{button.classList.toggle("on",!!i.silent);
+      button.textContent=i.silent?"Silenced":`Plays ${(S.packs[i.template].sfx||[]).length} sound(s)`;};
+    button.onclick=()=>{snapshot();i.silent=!i.silent;paint();afterMutate()};
+    button.title="Silence this block's foley. Its markers leave the SFX track too, so the track keeps showing exactly what you will hear.";
+    paint();foley.append(button);p.append(foley);
+  }
   for(const f of sp.fields||[]){
     const row=document.createElement("div");row.className="fieldrow";
     const lab=document.createElement("label");lab.textContent=f.label||f.name;row.append(lab);
@@ -1761,6 +2482,21 @@ function renderInspector(){const p=$("#inspPane");
       inp.onchange=()=>afterMutate();row.append(inp,value);}
     if(f.note){const note=document.createElement("small");note.className="catmeta";note.textContent=f.note;row.append(note)}
     p.append(row);}
+  if(sp.source_window){
+    const region=document.createElement("div");region.className="fieldrow";
+    const label=document.createElement("label");
+    label.textContent="Project speaker region";region.append(label);
+    const set=document.createElement("button");set.style.width="100%";
+    const current=S.state?.speaker_region;
+    set.textContent=current?"Re-draw where you stand":"Draw where you stand";
+    set.onclick=()=>{snapshot();rectMode(i,"region","speaker")};
+    set.title="Set once for the project. Blocks with their own region ignore it.";
+    const note=document.createElement("small");note.className="catmeta";
+    note.textContent=i.fields.region
+      ? "This block has its own region and does not follow the project's."
+      : "This block follows the project's region.";
+    region.append(set,note);p.append(region);
+  }
   const reset=document.createElement("button");reset.textContent="Reset placement";reset.style.width="100%";
   reset.onclick=()=>{snapshot();const zone=packVariant(i.template,S.state.orientation);
     i.x=zone.x??.5;i.y=zone.y??.3;i.scale=zone.scale??1;
@@ -1775,8 +2511,10 @@ function renderInspector(){const p=$("#inspPane");
     S.sel=null;afterMutate()};p.append(del);}
 /* stroke editor: one drag = one ruler-straight 0° stroke on the framed image */
 function strokeMode(i){previewTool={type:"stroke",item:i,active:false};toast("Draw straight horizontal strokes on the page. Use Finish drawing when done.");renderInspector()}
-function rectMode(i,field="rect"){previewTool={type:"rect",item:i,field,active:false};
-  toast("Drag the rectangle on the preview.");renderInspector()}
+function rectMode(i,field="rect",scope=""){previewTool={type:"rect",item:i,field,scope,active:false};
+  toast(scope==="speaker"
+    ?"Drag a box around yourself. Every PiP will frame that, unless it has its own."
+    :"Drag the rectangle on the preview.");renderInspector()}
 function stopPreviewTool(){previewTool=null;drawOverlay();renderInspector()}
 /* tabs + phone bottom-sheet */
 function selectTab(t){$$("#tabs button").forEach(b=>b.classList.toggle("on",b.dataset.t===t));
@@ -1821,9 +2559,12 @@ function renderCaptionInspector(panel,block){
     follow.classList.toggle("on",!on);
   };
   follow.onclick=()=>{snapshot();
-    if(block.follow_global===false){block.follow_global=true;block.x=block.y=block.scale=null}
+    if(block.follow_global===false){block.follow_global=true;
+      block.x=block.y=block.scale=null;block.layouts={}}
     else{const layout=captionLayout(block);block.follow_global=false;
-      block.x=layout.x;block.y=layout.y;block.scale=layout.scale}
+      block.x=layout.x;block.y=layout.y;block.scale=layout.scale;
+      (block.layouts??={})[S.state.orientation]=
+        {x:layout.x,y:layout.y,scale:layout.scale}}
     paintFollow();afterMutate()};
   paintFollow();
   const text=panel.querySelector("textarea");text.value=block.text;let captured=false;
@@ -1900,7 +2641,7 @@ async function loadExportHistory(){
   }catch(error){setLatestExport(null);history.textContent=error.message}
 }
 $("#latestBtn").onclick=$("#expLatest").onclick=downloadLatestExport;
-$("#exportBtn").onclick=()=>{$("#exportDlg").showModal();loadExportHistory()};
+$("#exportBtn").onclick=()=>{$("#exportDlg").showModal();loadExportHistory();renderCoverButton()};
 $("#expClose").onclick=()=>$("#exportDlg").close();
 $$("#exportDlg [data-m]").forEach(b=>b.onclick=async()=>{
   if(!S.state.source){toast("Import source footage first");return}
@@ -2017,7 +2758,7 @@ $("#capBox").onclick=()=>{snapshot();
   renderCaptionDialog();afterMutate()};
 $("#capFollowAll").onclick=()=>{snapshot();
   for(const block of S.state.captions){block.follow_global=true;
-    block.x=block.y=block.scale=null}
+    block.x=block.y=block.scale=null;block.layouts={}}
   afterMutate();toast("All captions follow the project placement again")};
 $("#capRegroup").onclick=async()=>{
   try{
@@ -2033,11 +2774,559 @@ $("#captionStyleBtn").onclick=()=>{
   renderCaptionDialog();$("#captionDlg").showModal();
 };
 
+/* ================================= [E2] the look: defocus and grade
+   The export applies the look in FFmpeg. This applies the same look in the
+   browser, from the same two files: the depth matte the analysis pass wrote,
+   and the .cube it measured. The grade is literally the same table - it is
+   uploaded as a 3D texture and sampled - so a graded frame here and a graded
+   frame in the export are one piece of arithmetic, not two that resemble each
+   other. The defocus is the same three depth slices with the same bands; only
+   the blur itself is an approximation, because a preview does not need a
+   Gaussian accurate to the last percent, it needs to be honest about where
+   the sharpness ends. */
+const LOOK_NEAR_BAND=[.14,.46], LOOK_FAR_BAND=[.44,.82];
+const LOOK_LEVELS=6;   // pyramid depth; level 5 is 1/64 of the canvas
+const LOOK={canvas:$("#lookCanvas"),matte:$("#matteVid"),gl:null,failed:false,
+  program:{},levels:[],textures:{},lut:null,lutSize:0,lutKey:"",matteKey:"",
+  size:[0,0],active:false,videoSize:"",matteSize:"",frameKey:""};
+
+function lookSettings(){
+  const state=S.state; if(!state||!state.source)return{defocus:0,grade:0};
+  const look=state.look||{};
+  const revision=state.source_revision||"";
+  return{
+    defocus:(look.matte_revision===revision?Number(look.defocus)||0:0),
+    grade:(look.grade_revision===revision?Number(look.grade)||0:0),
+    revision,
+  };
+}
+function lookIsOn(){const s=lookSettings();return s.defocus>.001||s.grade>.001}
+
+const LOOK_VERT=`#version 300 es
+in vec2 p; out vec2 uv;
+void main(){uv=p*.5+.5;gl_Position=vec4(p,0,1);}`;
+/* Halve the image with a 2x2 box, taken as four bilinear samples so the cost
+   is four fetches rather than sixteen. Every level of the chain is a correctly
+   filtered image, which is what stops the blur from aliasing. */
+const LOOK_DOWN=`#version 300 es
+precision highp float;
+in vec2 uv; out vec4 o;
+uniform sampler2D src; uniform vec2 texel;
+void main(){
+  vec4 sum=texture(src,uv+vec2(-.5,-.5)*texel)
+          +texture(src,uv+vec2( .5,-.5)*texel)
+          +texture(src,uv+vec2(-.5, .5)*texel)
+          +texture(src,uv+vec2( .5, .5)*texel);
+  o=sum*.25;
+}`;
+/* Weight every pixel by how much background it is and carry that weight in
+   alpha, so the blur that follows is made of background only. Without this the
+   subject's own bright edge smears outward and traces a halo around their hair
+   - the same fix the export kernel does, for the same reason. */
+const LOOK_PREMUL=`#version 300 es
+precision highp float;
+in vec2 uv; out vec4 o;
+uniform sampler2D src,matte; uniform vec2 matteStep; uniform vec2 bandNear;
+float ss(float a,float b,float x){float t=clamp((x-a)/max(1e-4,b-a),0.,1.);return t*t*(3.-2.*t);}
+void main(){
+  float d=texture(matte,uv).r;
+  d=min(d,texture(matte,uv+vec2(matteStep.x,0)).r);
+  d=min(d,texture(matte,uv-vec2(matteStep.x,0)).r);
+  d=min(d,texture(matte,uv+vec2(0,matteStep.y)).r);
+  d=min(d,texture(matte,uv-vec2(0,matteStep.y)).r);
+  float w=ss(bandNear.x,bandNear.y,d);
+  o=vec4(texture(src,uv).rgb*w,w);
+}`;
+/* One axis of a Gaussian, seventeen taps one texel apart. The taps are one
+   texel apart on purpose: the pyramid has already brought the radius down to
+   about three pixels at this level, so seventeen taps cover well past two
+   sigma and the kernel is sampled densely instead of being stepped across in
+   jumps. The old preview took seven taps spread over the full radius, which at
+   a large radius meant sampling a thirty-pixel blur at seven points - that is
+   where the banding and the ghost edges came from. */
+const LOOK_BLUR=`#version 300 es
+precision highp float;
+in vec2 uv; out vec4 o;
+uniform sampler2D src; uniform vec2 dir; uniform float w[9];
+void main(){
+  vec4 sum=texture(src,uv)*w[0];
+  for(int i=1;i<9;i++){vec2 d=dir*float(i);
+    sum+=(texture(src,uv+d)+texture(src,uv-d))*w[i];}
+  o=sum;
+}`;
+const LOOK_MIX=`#version 300 es
+precision highp float;
+precision highp sampler3D;
+in vec2 uv; out vec4 o;
+uniform sampler2D video,near,far,matte;
+uniform sampler3D lut;
+uniform vec2 matteStep;
+uniform float lutSize,gradeOn,defocusOn;
+uniform vec4 bands;
+float ss(float a,float b,float x){float t=clamp((x-a)/max(1e-4,b-a),0.,1.);return t*t*(3.-2.*t);}
+/* Undo the weighting the blur was done under. Where almost no background
+   reached a pixel there is nothing to recover, so it keeps the sharp frame
+   rather than dividing by nearly zero. */
+vec3 unweight(vec4 blurred,vec3 sharp){
+  return blurred.a>.004?blurred.rgb/blurred.a:sharp;
+}
+void main(){
+  vec3 c=texture(video,uv).rgb;
+  if(defocusOn>.5){
+    /* The matte as it is, with no erosion - the same as the export kernel.
+       Eroding here would push the blur a few pixels off the subject and leave
+       a rim of sharp background tracing their outline. The erosion belongs on
+       the weighting pass, which is where it keeps the subject out of the blur
+       without moving where the blur is shown. */
+    float d=texture(matte,uv).r;
+    c=mix(c,unweight(texture(near,uv),c),ss(bands.x,bands.y,d));
+    c=mix(c,unweight(texture(far,uv),c),ss(bands.z,bands.w,d));
+  }
+  if(gradeOn>.5){
+    float s=lutSize;
+    c=texture(lut,clamp(c,0.,1.)*((s-1.)/s)+.5/s).rgb;
+  }
+  o=vec4(c,1.);
+}`;
+
+function lookCompile(gl,type,source){
+  const shader=gl.createShader(type);gl.shaderSource(shader,source);gl.compileShader(shader);
+  if(!gl.getShaderParameter(shader,gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(shader)||"shader failed to compile");
+  return shader;
+}
+/* Programs carry their own uniform locations. Looking one up is a string
+   lookup inside the driver, and the draw loop used to do a dozen of them on
+   every frame. */
+function lookProgram(gl,fragment,names){
+  const program=gl.createProgram();
+  gl.attachShader(program,lookCompile(gl,gl.VERTEX_SHADER,LOOK_VERT));
+  gl.attachShader(program,lookCompile(gl,gl.FRAGMENT_SHADER,fragment));
+  gl.bindAttribLocation(program,0,"p");gl.linkProgram(program);
+  if(!gl.getProgramParameter(program,gl.LINK_STATUS))
+    throw new Error(gl.getProgramInfoLog(program)||"shader failed to link");
+  program.u={};
+  for(const name of names)program.u[name]=gl.getUniformLocation(program,name);
+  return program;
+}
+function lookTexture(gl,filter){
+  const texture=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,texture);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,filter);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,filter);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  return texture;
+}
+function lookInit(){
+  if(LOOK.gl||LOOK.failed)return LOOK.gl;
+  try{
+    const gl=LOOK.canvas.getContext("webgl2",{alpha:false,antialias:false,
+      preserveDrawingBuffer:false,powerPreference:"high-performance"});
+    if(!gl)throw new Error("WebGL 2 is not available in this browser");
+    LOOK.gl=gl;
+    LOOK.program.premul=lookProgram(gl,LOOK_PREMUL,["src","matte","matteStep","bandNear"]);
+    LOOK.program.down=lookProgram(gl,LOOK_DOWN,["src","texel"]);
+    LOOK.program.blur=lookProgram(gl,LOOK_BLUR,["src","dir","w"]);
+    LOOK.program.mix=lookProgram(gl,LOOK_MIX,["video","near","far","matte","lut",
+      "matteStep","lutSize","gradeOn","defocusOn","bands"]);
+    const quad=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,quad);
+    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+    LOOK.textures.video=lookTexture(gl,gl.LINEAR);
+    LOOK.textures.matte=lookTexture(gl,gl.LINEAR);
+    LOOK.levels=[];
+    for(let level=0;level<LOOK_LEVELS;level++){
+      const slot={size:[0,0]};
+      // down: the halved image at this level. scratch: one axis of the blur.
+      // near/far: the finished slices, kept apart so the second blur cannot
+      // overwrite the first.
+      for(const name of["down","scratch","near","far"]){
+        slot[name]=lookTexture(gl,gl.LINEAR);
+        slot[name+"FB"]=gl.createFramebuffer();
+      }
+      LOOK.levels.push(slot);
+    }
+    // Both samplers are bound on every draw whether or not they are read, and
+    // an incomplete texture is enough to make some drivers drop the whole
+    // call - so each one starts life valid: an opaque near-plane matte, and an
+    // identity cube that leaves colour exactly as it found it.
+    gl.bindTexture(gl.TEXTURE_2D,LOOK.textures.matte);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,
+      new Uint8Array([0,0,0,255]));
+    LOOK.lut=gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D,LOOK.lut);
+    gl.texImage3D(gl.TEXTURE_3D,0,gl.RGBA8,2,2,2,0,gl.RGBA,gl.UNSIGNED_BYTE,
+      new Uint8Array([0,0,0,255, 255,0,0,255, 0,255,0,255, 255,255,0,255,
+                      0,0,255,255, 255,0,255,255, 0,255,255,255, 255,255,255,255]));
+    gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+    for(const wrap of[gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T,gl.TEXTURE_WRAP_R])
+      gl.texParameteri(gl.TEXTURE_3D,wrap,gl.CLAMP_TO_EDGE);
+    LOOK.lutSize=2;
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);
+    return gl;
+  }catch(error){
+    LOOK.failed=true;LOOK.gl=null;LOOK.error=error.message;
+    toast("The look preview needs WebGL 2: "+error.message);
+    return null;
+  }
+}
+function lookResize(width,height){
+  const gl=LOOK.gl;if(!gl)return;
+  if(LOOK.size[0]===width&&LOOK.size[1]===height)return;
+  LOOK.size=[width,height];
+  LOOK.canvas.width=width;LOOK.canvas.height=height;
+  let levelWidth=width,levelHeight=height;
+  for(const slot of LOOK.levels){
+    levelWidth=Math.max(2,levelWidth>>1);levelHeight=Math.max(2,levelHeight>>1);
+    slot.size=[levelWidth,levelHeight];
+    for(const name of["down","scratch","near","far"]){
+      gl.bindTexture(gl.TEXTURE_2D,slot[name]);
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,levelWidth,levelHeight,0,
+        gl.RGBA,gl.UNSIGNED_BYTE,null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER,slot[name+"FB"]);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,slot[name],0);
+    }
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+}
+/* Gaussian weights for seventeen taps one texel apart, normalised over the taps
+   that actually exist so the image keeps its brightness at the edges of the
+   kernel rather than darkening. */
+function lookWeights(sigma){
+  const weights=[];let total=0;
+  for(let i=0;i<9;i++){
+    const value=Math.exp(-(i*i)/(2*sigma*sigma));
+    weights.push(value);total+=i?2*value:value;
+  }
+  return weights.map(value=>value/total);
+}
+/* Which level of the pyramid to blur on. Halving the image halves the radius,
+   so this picks the level where what is left is about three pixels - small
+   enough for seventeen taps to describe exactly, and large enough that the
+   Gaussian, rather than the chain of halvings, is doing the blurring. Going
+   deeper is cheaper but hands more of the work to bilinear upsampling, which
+   is where a pyramid blur starts to look faceted. */
+function lookLevelFor(sigma){
+  return Math.max(0,Math.min(LOOK_LEVELS-1,Math.round(Math.log2(Math.max(1,sigma)/3))));
+}
+/* Blur the video down the pyramid and leave the result in slot[name] of the
+   level it returns. `sigma` is in canvas pixels. */
+function lookBlurChain(gl,sigma,name){
+  const level=lookLevelFor(sigma);
+  // Level zero weights the frame by the matte; every level after it is a
+  // plain halving of that weighted image, alpha and all.
+  const first=LOOK.levels[0];
+  const premul=LOOK.program.premul;gl.useProgram(premul);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,first.downFB);
+  gl.viewport(0,0,first.size[0],first.size[1]);
+  gl.uniform1i(premul.u.src,0);gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D,LOOK.textures.video);
+  gl.uniform1i(premul.u.matte,1);gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D,LOOK.textures.matte);
+  gl.uniform2f(premul.u.matteStep,3/Math.max(2,LOOK.size[0]),3/Math.max(2,LOOK.size[1]));
+  gl.uniform2f(premul.u.bandNear,LOOK_NEAR_BAND[0],LOOK_NEAR_BAND[1]);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  const program=LOOK.program.down;gl.useProgram(program);
+  gl.uniform1i(program.u.src,0);gl.activeTexture(gl.TEXTURE0);
+  let source=first.down,sourceSize=first.size;
+  for(let i=1;i<=level;i++){
+    const slot=LOOK.levels[i];
+    gl.bindFramebuffer(gl.FRAMEBUFFER,slot.downFB);
+    gl.viewport(0,0,slot.size[0],slot.size[1]);
+    gl.bindTexture(gl.TEXTURE_2D,source);
+    gl.uniform2f(program.u.texel,1/sourceSize[0],1/sourceSize[1]);
+    gl.drawArrays(gl.TRIANGLES,0,3);
+    source=slot.down;sourceSize=slot.size;
+  }
+  // The chain of box halvings is itself a blur; subtract what it already did
+  // so the total radius comes out where it was asked to be.
+  const scale=1<<(level+1);
+  const spent=0.29*scale;
+  const remaining=Math.sqrt(Math.max(0.36,sigma*sigma-spent*spent))/scale;
+  const weights=new Float32Array(lookWeights(Math.max(0.6,remaining)));
+  const slot=LOOK.levels[level];
+  const blur=LOOK.program.blur;gl.useProgram(blur);
+  gl.uniform1fv(blur.u.w,weights);gl.uniform1i(blur.u.src,0);
+  gl.viewport(0,0,slot.size[0],slot.size[1]);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,slot.scratchFB);
+  gl.bindTexture(gl.TEXTURE_2D,slot.down);
+  gl.uniform2f(blur.u.dir,1/slot.size[0],0);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,slot[name+"FB"]);
+  gl.bindTexture(gl.TEXTURE_2D,slot.scratch);
+  gl.uniform2f(blur.u.dir,0,1/slot.size[1]);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  return slot[name];
+}
+/* Upload a video frame, allocating the texture only the first time. Calling
+   texImage2D every frame makes the driver throw the old storage away and
+   allocate again, sixty times a second, for a picture whose size never
+   changes. */
+function lookUpload(gl,texture,element,slotKey){
+  gl.bindTexture(gl.TEXTURE_2D,texture);
+  const size=`${element.videoWidth}x${element.videoHeight}`;
+  if(LOOK[slotKey]!==size){
+    LOOK[slotKey]=size;
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,gl.RGBA,gl.UNSIGNED_BYTE,element);
+    return;
+  }
+  gl.texSubImage2D(gl.TEXTURE_2D,0,0,0,gl.RGBA,gl.UNSIGNED_BYTE,element);
+}
+async function lookLoadLut(){
+  const gl=LOOK.gl;if(!gl)return;
+  const settings=lookSettings();
+  const key=settings.grade>.001?`${S.project}:${settings.revision}:${settings.grade}`:"";
+  if(key===LOOK.lutKey)return;
+  LOOK.lutKey=key;
+  if(!key){LOOK.lutSize=2;return}
+  const table=await api(`/api/projects/${S.project}/look/lut`);
+  const binary=atob(table.data),bytes=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+  // The .cube varies red fastest, which is exactly the memory order a GL 3D
+  // texture wants for (r, g, b), so the file uploads without rearranging.
+  const rgba=new Uint8Array(table.size**3*4);
+  for(let i=0,n=table.size**3;i<n;i++){
+    rgba[i*4]=bytes[i*3];rgba[i*4+1]=bytes[i*3+1];
+    rgba[i*4+2]=bytes[i*3+2];rgba[i*4+3]=255;
+  }
+  gl.bindTexture(gl.TEXTURE_3D,LOOK.lut);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);
+  gl.texImage3D(gl.TEXTURE_3D,0,gl.RGBA8,table.size,table.size,table.size,0,
+    gl.RGBA,gl.UNSIGNED_BYTE,rgba);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  for(const wrap of[gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T,gl.TEXTURE_WRAP_R])
+    gl.texParameteri(gl.TEXTURE_3D,wrap,gl.CLAMP_TO_EDGE);
+  LOOK.lutSize=table.size;
+}
+/* Called whenever the project state changes: attach or drop the matte video,
+   fetch the table if the grade changed, and hand the preview back to the plain
+   <video> element the moment the look is switched off. */
+async function lookRefresh(){
+  const settings=lookSettings(),wanted=settings.defocus>.001&&!S.preview?.baked;
+  const key=wanted?`${S.project}:${settings.revision}`:"";
+  if(key!==LOOK.matteKey){
+    LOOK.matteKey=key;
+    if(key){LOOK.matte.src=`/media/${encodeURIComponent(S.project)}/look/matte.mp4?v=${encodeURIComponent(settings.revision)}`;
+      LOOK.matte.load()}
+    else{LOOK.matte.pause();LOOK.matte.removeAttribute("src");LOOK.matte.load()}
+  }
+  // When the browser is playing the baked proxy the look is already in the
+  // pixels; running the compositor over it would apply everything twice.
+  LOOK.active=lookIsOn()&&!S.preview?.baked&&!EXPORT_MODE&&!!lookInit();
+  LOOK.canvas.hidden=!LOOK.active;
+  vid.style.opacity=LOOK.active?"0":"";
+  if(!LOOK.active)return;
+  try{await lookLoadLut()}
+  catch(error){LOOK.lutKey="";LOOK.lutSize=2;toast("The grade could not be loaded: "+error.message)}
+  drawOverlay();
+}
+/* One composited frame, drawn under the overlay canvas. `transform` is the
+   camera move, applied to this canvas exactly as it is applied to the video
+   element it replaces - the matte and the footage are both pre-camera, so the
+   move magnifies an already-defocused frame the way a lens would. */
+/* `bypass` draws the same frame with both halves of the look switched off. It
+   exists for lookSample(), which needs a before and an after that are provably
+   the same frame: the frame key below is deliberately computed as though the
+   look were on, so the bypass pass uploads the texture and the pass after it
+   reuses that very upload. */
+function lookDraw(transform,bypass){
+  if(!LOOK.active)return;
+  const gl=LOOK.gl,layout=S.previewLayout;
+  if(!gl||!layout||!vid.videoWidth)return;
+  LOOK.canvas.style.transform=transform||"";
+  lookResize(layout.backingW,layout.backingH);
+  const settings=lookSettings();
+  const wanted=settings.defocus>.001&&LOOK.matte.readyState>=2;
+  const defocus=wanted&&!bypass;
+  if(wanted){
+    // Two <video> elements decoding the same timeline drift apart. Seeking the
+    // matte back is a decoder flush and shows up as a stutter, so small drift
+    // is corrected by running the matte a little fast or slow and letting it
+    // catch up; only a real desync gets a seek.
+    const drift=LOOK.matte.currentTime-vid.currentTime;
+    if(Math.abs(drift)>.5)LOOK.matte.currentTime=vid.currentTime;
+    else if(S.playing)LOOK.matte.playbackRate=Math.max(.85,Math.min(1.15,1-drift*1.6));
+    if(S.playing&&LOOK.matte.paused)LOOK.matte.play().catch(()=>{});
+    if(!S.playing){
+      if(!LOOK.matte.paused)LOOK.matte.pause();
+      if(Math.abs(drift)>.04)LOOK.matte.currentTime=vid.currentTime;
+    }
+  }
+  // Uploading a video frame to a texture is the most expensive thing in this
+  // function. Redrawing for a reason other than a new frame - a selection box
+  // moving, a slider being dragged - reuses the frame already on the GPU.
+  const frameKey=`${vid.currentTime.toFixed(4)}:${wanted?LOOK.matte.currentTime.toFixed(4):""}`;
+  const fresh=frameKey!==LOOK.frameKey;
+  if(fresh){
+    LOOK.frameKey=frameKey;
+    lookUpload(gl,LOOK.textures.video,vid,"videoSize");
+    if(wanted)lookUpload(gl,LOOK.textures.matte,LOOK.matte,"matteSize");
+  }
+  let nearTex=LOOK.textures.video,farTex=LOOK.textures.video;
+  if(defocus){
+    // The radii are the export's, restated in canvas pixels. They are not
+    // halved any more: the pyramid decides its own working resolution.
+    const source=S.state.source_info||{};
+    const short=Math.max(2,Math.min(source.width||layout.mediaW,source.height||layout.mediaH));
+    const far=Math.max(1,settings.defocus*.055*short)
+      *(layout.backingW/Math.max(1,source.width||layout.mediaW));
+    const near=Math.max(.6,far*.42);
+    nearTex=lookBlurChain(gl,near,"near");
+    farTex=lookBlurChain(gl,far,"far");
+  }
+  const program=LOOK.program.mix;gl.useProgram(program);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  gl.viewport(0,0,layout.backingW,layout.backingH);
+  const bind=(name,unit,texture,target)=>{
+    gl.activeTexture(gl.TEXTURE0+unit);gl.bindTexture(target||gl.TEXTURE_2D,texture);
+    gl.uniform1i(program.u[name],unit);
+  };
+  bind("video",0,LOOK.textures.video);
+  bind("near",1,nearTex);
+  bind("far",2,farTex);
+  bind("matte",3,LOOK.textures.matte);
+  bind("lut",4,LOOK.lut,gl.TEXTURE_3D);
+  gl.uniform1f(program.u.defocusOn,defocus?1:0);
+  gl.uniform1f(program.u.gradeOn,!bypass&&settings.grade>.001&&LOOK.lutSize>2?1:0);
+  gl.uniform1f(program.u.lutSize,LOOK.lutSize||2);
+  gl.uniform2f(program.u.matteStep,
+    3/Math.max(2,layout.backingW),3/Math.max(2,layout.backingH));
+  gl.uniform4f(program.u.bands,
+    LOOK_NEAR_BAND[0],LOOK_NEAR_BAND[1],LOOK_FAR_BAND[0],LOOK_FAR_BAND[1]);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+}
+
+/* Draw one frame and read it back. The smoke test needs this because a WebGL
+   compositor that silently fails paints a plausible-looking black rectangle,
+   and nothing about the page would say so. */
+function lookSample(){
+  const gl=LOOK.gl;if(!gl||!LOOK.active)return null;
+  const[width,height]=LOOK.size;
+  const read=()=>{
+    const buffer=new Uint8Array(width*height*4);
+    gl.readPixels(0,0,width,height,gl.RGBA,gl.UNSIGNED_BYTE,buffer);
+    return buffer;
+  };
+  // The before and the after come out of the same pipeline, one after the
+  // other, off one upload of one frame. Comparing the composite against a
+  // separate drawImage() of the live <video> - which is what this used to do -
+  // compares two frames whenever the decoder has moved on between the reads,
+  // and then reports the seek as if it were the look.
+  lookDraw(vid.style.transform,true);
+  const raw=read();
+  lookDraw(vid.style.transform);
+  const pixels=read();
+  let ink=0,red=0,green=0,blue=0;
+  for(let i=0;i<pixels.length;i+=4){
+    if(pixels[i]||pixels[i+1]||pixels[i+2])ink++;
+    red+=pixels[i];green+=pixels[i+1];blue+=pixels[i+2];
+  }
+  const count=Math.max(1,width*height);
+  // How far the composite is from the raw frame, per pixel. Comparing average
+  // brightness instead would report almost nothing for a grade that is mostly
+  // contrast - it moves every pixel and leaves the mean where it was.
+  let diff=0,rawRed=0,rawGreen=0,rawBlue=0;
+  for(let i=0;i<pixels.length;i+=4){
+    diff+=Math.abs(pixels[i]-raw[i])+Math.abs(pixels[i+1]-raw[i+1])
+         +Math.abs(pixels[i+2]-raw[i+2]);
+    rawRed+=raw[i];rawGreen+=raw[i+1];rawBlue+=raw[i+2];
+  }
+  // The same three means for the untouched frame. A magnitude on its own says
+  // only that *something* moved - which a mismatched pair of frames does too.
+  // Comparing the two sets says which way the grade pushed each channel, and
+  // no accident pushes red down and blue up together.
+  return{width,height,ink,diff:diff/(count*3),
+    red:red/count,green:green/count,blue:blue/count,
+    rawRed:rawRed/count,rawGreen:rawGreen/count,rawBlue:rawBlue/count};
+}
+
+/* ------------------------------------------------------- the Look panel */
+function renderLookDialog(status){
+  const look=S.state?.look||{};
+  const defocus=Math.round((Number(look.defocus)||0)*100);
+  const grade=Math.round((Number(look.grade)||0)*100);
+  $("#lookDefocus").value=defocus;$("#lookDefocusValue").textContent=defocus+"%";
+  $("#lookGrade").value=grade;$("#lookGradeValue").textContent=grade+"%";
+  const breathe=S.state?.breathe||"off";
+  $("#breatheValue").textContent=breathe[0].toUpperCase()+breathe.slice(1);
+  for(const button of $("#breatheRow").querySelectorAll("button"))
+    button.classList.toggle("on",button.dataset.breathe===breathe);
+  const revision=S.state?.source_revision||"";
+  const matteReady=look.matte_revision===revision;
+  const gradeReady=look.grade_revision===revision;
+  $("#lookDefocus").disabled=!matteReady;
+  $("#lookGrade").disabled=!gradeReady;
+  const running=status?.running;
+  $("#lookBuild").disabled=!!running;
+  $("#lookCancel").hidden=!running;
+  $("#lookBuild").textContent=(matteReady||gradeReady)?"Analyse this footage again":"Analyse this footage";
+  const analysis=look.analysis||{};
+  const measured=[];
+  if(analysis.depth_device)measured.push(`depth on the ${analysis.depth_device.toUpperCase()}`);
+  if(analysis.measured_mid!==undefined)
+    measured.push(`midtone ${analysis.measured_mid}, contrast ${analysis.measured_spread}`);
+  if(analysis.gain_r!==undefined)
+    measured.push(`white balance ${analysis.gain_r}/${analysis.gain_b}`);
+  $("#lookNote").textContent=status?.message
+    ||(status?.matte_outdated
+      ? "This depth matte was built by an earlier version. It still works; analysing again "
+        + "rebuilds it with the current model, at twice the resolution."
+      : measured.length?"Measured: "+measured.join(" · ")
+      :"Nothing measured yet. The pass reads the footage once and writes a depth matte and a grade for it.");
+  $("#lookBar").hidden=!running;
+  if(running)$("#lookBar").value=status.progress||0;
+}
+async function lookStatus(){
+  if(!S.project)return null;
+  try{return await api(`/api/projects/${S.project}/look`)}catch(error){return null}
+}
+async function pushLook(patch){
+  if(!S.project)return;
+  const state=await api(`/api/projects/${S.project}/look`,
+    {method:"POST",body:JSON.stringify(patch)});
+  if(S.state)S.state.look={...S.state.look,...patch};
+  // The baked proxy now shows the *previous* amounts, so it stops being the
+  // right thing to play the moment the slider moves. Asking the server which
+  // file to use hands playback back to the plain proxy and switches the live
+  // compositor on, which is what makes the slider feel connected to the
+  // picture while the new bake runs behind it.
+  await refreshPreviewProxy(false);
+  await lookRefresh();
+  renderLookDialog(state);
+}
+$("#breatheRow").onclick=event=>{
+  const value=event.target?.dataset?.breathe;
+  if(!value||!S.state)return;
+  snapshot();S.state.breathe=value;renderLookDialog();afterMutate();
+};
+$("#lookDefocus").oninput=e=>{$("#lookDefocusValue").textContent=e.target.value+"%"};
+$("#lookGrade").oninput=e=>{$("#lookGradeValue").textContent=e.target.value+"%"};
+$("#lookDefocus").onchange=e=>pushLook({defocus:Number(e.target.value)/100});
+$("#lookGrade").onchange=e=>pushLook({grade:Number(e.target.value)/100});
+$("#lookBuild").onclick=async()=>{
+  try{
+    const status=await api(`/api/projects/${S.project}/look/analyze`,
+      {method:"POST",body:JSON.stringify({parts:["depth","color"]})});
+    renderLookDialog({...status,running:true,message:"Reading the footage…"});
+  }catch(error){toast(error.message)}
+};
+$("#lookCancel").onclick=()=>api(`/api/projects/${S.project}/look/cancel`,{method:"POST"})
+  .catch(error=>toast(error.message));
+$("#lookClose").onclick=()=>$("#lookDlg").close();
+$("#lookBtn").onclick=async()=>{
+  if(!S.state?.source){toast("Import source footage first");return}
+  renderLookDialog(await lookStatus());$("#lookDlg").showModal();
+};
+
 function connectWS(){const socket=new WebSocket(`${location.protocol==="https:"?"wss":"ws"}://${location.host}/ws`);S.ws=socket;
   socket.onopen=()=>$("#syncStatus").classList.add("on");
   socket.onmessage=async e=>{const m=JSON.parse(e.data);
     if(m.type==="state"&&m.state.name===S.project){
-      const previousState=S.state;S.state=m.state;await syncSourceMedia(previousState);afterMutate(false,false)}
+      const previousState=S.state;S.state=m.state;await syncSourceMedia(previousState);
+      await lookRefresh();afterMutate(false,false)}
     if(m.type==="saved"&&m.project===S.project)$("#syncStatus").classList.add("on");
     if(m.type==="error")toast(m.message);
     if(m.type==="export_progress"&&m.project===S.project){
@@ -2053,6 +3342,21 @@ function connectWS(){const socket=new WebSocket(`${location.protocol==="https:"?
           ?`Segment ${m.seg}/${m.total} · rendering frame ${m.frame}/${m.frames}`
           :`Segment ${m.seg}/${m.total} — ${m.status}`;
         $("#expBar").value=((m.seg-1)+frameProgress)/Math.max(1,m.total)}}
+    if(m.type==="look_progress"&&m.project===S.project){
+      if($("#lookDlg").open)renderLookDialog(m);
+      if(m.status==="complete"){const previousState=S.state;
+        S.state=await api(`/api/projects/${S.project}/state`);
+        await syncSourceMedia(previousState);await lookRefresh();afterMutate(false,false);
+        toast("The look is ready")}
+      if(m.error)toast("The look pass failed: "+m.error);
+    }
+    if(m.type==="preview_progress"&&m.project===S.project){
+      S.preview=m;
+      // Only swap the element's source when a build actually finished; doing
+      // it on every progress tick would restart the decoder mid-playback.
+      if(!m.running)applyPreviewProxy(); else renderPreviewNote();
+      if(m.error)toast("The preview copy failed: "+m.error);
+    }
     if(m.type==="transcription_progress"&&m.project===S.project){
       renderTranscriptionStatus(m);
       if(m.done){const previousState=S.state;S.state=await api(`/api/projects/${S.project}/state`);
@@ -2086,19 +3390,644 @@ addEventListener("keydown",e=>{
 $("#undoBtn").onclick=$("#timelineUndo").onclick=undo;
 $("#redoBtn").onclick=$("#timelineRedo").onclick=redo;
 
+
+/* --------------------------------------------------- the thumbnail designer
+
+   A thumbnail is not a template. A template is a thing that animates over
+   footage for a few seconds and is read in passing; a cover is a still that has
+   to survive being three centimetres wide next to eleven others. Those want
+   different type weights, a heavier outline, no motion at all and a different
+   idea of "too much text", so this is its own small engine rather than the
+   packs pressed into a job they were not designed for.
+
+   It draws in the browser, at final size, with the same canvas the preview uses
+   - and the finished PNG is what the server stores and holds on the front of
+   the export. One picture, drawn once, by the code that was looking at it. */
+
+const THUMB_SIZES = { horizontal: [1280, 720], vertical: [1080, 1920] };
+const THUMB = { base: null, matte: null, kit: null, sel: null, drag: null };
+
+/* The arrangements. Each preset places its elements for both shapes, so
+   choosing one answers "where do the words go" for a 16:9 cover and a 9:16
+   cover at once. They are seeds: the moment one is chosen its elements are
+   ordinary movable, scalable, deletable objects. */
+const THUMB_PRESETS = {
+  "headline-left": { label: "Words left", elements: [
+    { kind: "headline", text: "YOUR HOOK HERE",
+      horizontal: { x: .30, y: .50, scale: 1 }, vertical: { x: .50, y: .26, scale: .95 } },
+    { kind: "cutout",
+      horizontal: { x: .78, y: .58, scale: 1 }, vertical: { x: .50, y: .70, scale: 1.1 } },
+  ] },
+  "headline-top": { label: "Words over", elements: [
+    { kind: "headline", text: "YOUR HOOK HERE",
+      horizontal: { x: .50, y: .18, scale: 1 }, vertical: { x: .50, y: .14, scale: 1 } },
+    { kind: "cutout",
+      horizontal: { x: .50, y: .66, scale: 1.05 }, vertical: { x: .50, y: .62, scale: 1.15 } },
+  ] },
+  "giant-word": { label: "One word", elements: [
+    { kind: "headline", text: "WHY?",
+      horizontal: { x: .42, y: .50, scale: 1.7 }, vertical: { x: .50, y: .40, scale: 1.6 } },
+    { kind: "marker", marker: "circle",
+      horizontal: { x: .42, y: .50, scale: 1.5 }, vertical: { x: .50, y: .40, scale: 1.5 } },
+    { kind: "cutout",
+      horizontal: { x: .82, y: .62, scale: .9 }, vertical: { x: .50, y: .76, scale: 1 } },
+  ] },
+  "split-compare": { label: "This vs that", elements: [
+    { kind: "headline", text: "THIS",
+      horizontal: { x: .24, y: .24, scale: .9 }, vertical: { x: .50, y: .16, scale: .9 } },
+    { kind: "image",
+      horizontal: { x: .74, y: .52, scale: 1 }, vertical: { x: .50, y: .46, scale: 1.1 } },
+    { kind: "cutout",
+      horizontal: { x: .24, y: .68, scale: .85 }, vertical: { x: .50, y: .78, scale: .95 } },
+  ] },
+  "portrait-hero": { label: "You, big", elements: [
+    { kind: "cutout",
+      horizontal: { x: .50, y: .58, scale: 1.35 }, vertical: { x: .50, y: .55, scale: 1.35 } },
+    { kind: "headline", text: "YOUR HOOK",
+      horizontal: { x: .50, y: .15, scale: 1.05 }, vertical: { x: .50, y: .12, scale: 1.05 } },
+    { kind: "subhead", text: "the promise",
+      horizontal: { x: .50, y: .88, scale: 1 }, vertical: { x: .50, y: .90, scale: 1 } },
+  ] },
+};
+
+function thumbState() {
+  if (!S.state) return null;
+  if (!S.state.thumbnail) S.state.thumbnail = { layout: "headline-left", base: "frame",
+    frame_time: 0, asset: "", background: "#141210", cutout: true, elements: [], hold: 0 };
+  return S.state.thumbnail;
+}
+
+function thumbOrientation() { return S.state?.orientation || "horizontal"; }
+
+/* Placement in the shape being designed. The other shape is parked rather than
+   overwritten, the same way a timeline block parks its inactive layout, which
+   is what makes "design once, export both" true instead of nearly true. */
+function thumbPlace(element) {
+  const parked = element.layouts?.[thumbOrientation()];
+  return parked || { x: element.x ?? .5, y: element.y ?? .5, scale: element.scale ?? 1 };
+}
+
+function thumbMove(element, x, y, scale) {
+  const place = { x, y, scale: scale ?? thumbPlace(element).scale };
+  element.layouts = element.layouts || {};
+  element.layouts[thumbOrientation()] = place;
+  element.x = place.x; element.y = place.y; element.scale = place.scale;
+}
+
+function thumbApplyPreset(name) {
+  const thumb = thumbState(), preset = THUMB_PRESETS[name];
+  if (!thumb || !preset) return;
+  thumb.layout = name;
+  thumb.elements = preset.elements.map((seed, index) => ({
+    id: `te${Date.now().toString(36)}${index}`,
+    kind: seed.kind, text: seed.text || "", asset: "", marker: seed.marker || "arrow",
+    color: "", rotate: 0,
+    x: seed.horizontal.x, y: seed.horizontal.y, scale: seed.horizontal.scale,
+    layouts: { horizontal: { ...seed.horizontal }, vertical: { ...seed.vertical } },
+  }));
+  THUMB.sel = thumb.elements[0]?.id || null;
+}
+
+/* ------------------------------------------------------------- the drawing */
+
+/* Heavy type with a dark rim. The rim is not decoration: a cover lands on a
+   rail over whatever colour happens to be next to it, and white on a bright
+   frame is the commonest way a good design becomes unreadable. Wide dark
+   stroke first, fill second. */
+function thumbHeadline(ctx, text, { size, color, width }) {
+  const kit = THUMB.kit;
+  ctx.font = `800 ${size}px Rubik, Inter, sans-serif`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.lineJoin = "round";
+  const lines = kit.wrapLines(ctx, String(text || "").toUpperCase(), width, 3);
+  const step = size * 1.06, top = -(lines.length - 1) * step / 2;
+  lines.forEach((line, index) => {
+    const y = top + index * step;
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,.55)";
+    ctx.shadowBlur = size * .22;
+    ctx.shadowOffsetY = size * .06;
+    ctx.strokeStyle = "#12100d";
+    ctx.lineWidth = size * .17;
+    ctx.strokeText(line, 0, y);
+    ctx.restore();
+    ctx.fillStyle = color;
+    ctx.fillText(line, 0, y);
+  });
+}
+
+function thumbSubhead(ctx, text, { size, color }) {
+  ctx.font = `700 ${size}px Rubik, Inter, sans-serif`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const label = String(text || "");
+  const width = ctx.measureText(label).width;
+  THUMB.kit.roundRectPath(ctx, -width / 2 - size * .5, -size * .72,
+    width + size, size * 1.44, size * .34);
+  ctx.fillStyle = color; ctx.fill();
+  ctx.fillStyle = "#141210"; ctx.fillText(label, 0, size * .04);
+}
+
+/* You, lifted off the base frame by the subject matte and set down on top of
+   everything else. This is the element that makes a cover read as yours rather
+   than as a stock card, so it gets a real shadow instead of being pasted flat.
+   With no matte built yet it draws its own footprint and says so, rather than
+   silently putting the whole frame on top of the design. */
+function thumbCutout(ctx, { height }) {
+  const source = THUMB.base, matte = THUMB.matte;
+  if (!source || !matte) {
+    ctx.fillStyle = "rgba(255,255,255,.10)";
+    THUMB.kit.roundRectPath(ctx, -height * .22, -height * .3, height * .44, height * .6, 16);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,.6)";
+    ctx.font = "700 22px Inter"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("YOU", 0, 0);
+    ctx.font = "500 13px Inter";
+    ctx.fillText("analyse the look first", 0, 26);
+    return;
+  }
+  const sw = source.naturalWidth || source.videoWidth || source.width;
+  const sh = source.naturalHeight || source.videoHeight || source.height;
+  const drawH = height, drawW = drawH * (sw / sh);
+  const cut = document.createElement("canvas");
+  cut.width = Math.max(2, Math.round(drawW));
+  cut.height = Math.max(2, Math.round(drawH));
+  const cutContext = cut.getContext("2d");
+  cutContext.drawImage(source, 0, 0, cut.width, cut.height);
+  cutContext.globalCompositeOperation = "destination-in";
+  cutContext.drawImage(matte, 0, 0, cut.width, cut.height);
+  ctx.save();
+  ctx.shadowColor = "rgba(0,0,0,.6)";
+  ctx.shadowBlur = drawH * .06;
+  ctx.shadowOffsetY = drawH * .02;
+  ctx.drawImage(cut, -drawW / 2, -drawH / 2, drawW, drawH);
+  ctx.restore();
+}
+
+function thumbMarker(ctx, element, { height, color }) {
+  const kit = THUMB.kit, size = height;
+  if (element.marker === "circle")
+    kit.scribbleEllipse(ctx, { w: size * 1.5, h: size * .8, color, width: size * .045, progress: 1 });
+  else if (element.marker === "underline")
+    kit.scribbleUnderline(ctx, { w: size * 1.5, color, width: size * .06, progress: 1 });
+  else if (element.marker === "cross") {
+    ctx.strokeStyle = color; ctx.lineWidth = size * .09; ctx.lineCap = "round";
+    for (const sign of [1, -1]) {
+      ctx.beginPath();
+      ctx.moveTo(-size * .45, -size * .45 * sign);
+      ctx.lineTo(size * .45, size * .45 * sign);
+      ctx.stroke();
+    }
+  } else kit.handArrow(ctx, { x1: -size * .62, y1: size * .48, x2: size * .58, y2: -size * .40,
+    width: size * .075, color, head: size * .3, progress: 1 });
+}
+
+function thumbPicture(ctx, element, { height }) {
+  const kit = THUMB.kit, box = height;
+  const picture = element.asset ? A.load(A.projectAsset(element.asset)) : null;
+  ctx.save();
+  ctx.shadowColor = "rgba(0,0,0,.55)";
+  ctx.shadowBlur = box * .08;
+  ctx.shadowOffsetY = box * .03;
+  ctx.fillStyle = "#f7f2e4";
+  kit.roundRectPath(ctx, -box / 2 - 10, -box / 2 - 10, box + 20, box + 20, 12);
+  ctx.fill();
+  ctx.restore();
+  if (picture?.complete && picture.naturalWidth) {
+    const fit = kit.fitCover(picture.naturalWidth, picture.naturalHeight, box, box);
+    ctx.save();
+    kit.roundRectPath(ctx, -box / 2, -box / 2, box, box, 6);
+    ctx.clip();
+    ctx.drawImage(picture, -fit.w / 2, -fit.h / 2, fit.w, fit.h);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = "rgba(0,0,0,.4)";
+    ctx.font = "700 20px Inter"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("PICTURE", 0, 0);
+  }
+}
+
+/* The whole cover at final size. The on-screen preview and the PNG that gets
+   saved call this with the same numbers, so what was approved is what is
+   written out; `handles` is the only difference between them. */
+function drawThumbnail(ctx, W, H, handles) {
+  const thumb = thumbState();
+  if (!thumb || !THUMB.kit) return;
+  ctx.save();
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = thumb.background || "#141210";
+  ctx.fillRect(0, 0, W, H);
+  const source = THUMB.base;
+  if (thumb.base !== "color" && source) {
+    const sw = source.naturalWidth || source.videoWidth || source.width;
+    const sh = source.naturalHeight || source.videoHeight || source.height;
+    const fit = THUMB.kit.fitCover(sw, sh, W, H);
+    ctx.drawImage(source, (W - fit.w) / 2, (H - fit.h) / 2, fit.w, fit.h);
+    // The smallest amount of shade that reliably buys type its contrast back
+    // without turning the picture into a mood board.
+    const shade = ctx.createLinearGradient(0, 0, 0, H);
+    shade.addColorStop(0, "rgba(0,0,0,.34)");
+    shade.addColorStop(.55, "rgba(0,0,0,.12)");
+    shade.addColorStop(1, "rgba(0,0,0,.42)");
+    ctx.fillStyle = shade;
+    ctx.fillRect(0, 0, W, H);
+  }
+  const unit = Math.min(W, H);
+  for (const element of thumb.elements || []) {
+    const place = thumbPlace(element);
+    const scale = place.scale || 1;
+    const color = element.color || (element.kind === "marker" ? "#ffd166" : "#fcfbf8");
+    ctx.save();
+    ctx.translate(place.x * W, place.y * H);
+    ctx.rotate((element.rotate || 0) * Math.PI / 180);
+    if (element.kind === "headline")
+      thumbHeadline(ctx, element.text, { size: unit * .13 * scale, color, width: W * .84 });
+    else if (element.kind === "subhead")
+      thumbSubhead(ctx, element.text, { size: unit * .052 * scale, color: element.color || "#ffd166" });
+    else if (element.kind === "cutout") thumbCutout(ctx, { height: H * .78 * scale });
+    else if (element.kind === "marker") thumbMarker(ctx, element, { height: unit * .22 * scale, color });
+    else if (element.kind === "image") thumbPicture(ctx, element, { height: unit * .38 * scale });
+    ctx.restore();
+    if (handles && element.id === THUMB.sel) {
+      const reach = unit * .085 * scale;
+      ctx.save();
+      ctx.translate(place.x * W, place.y * H);
+      ctx.strokeStyle = "#ffd166";
+      ctx.lineWidth = Math.max(2, unit * .004);
+      ctx.setLineDash([unit * .022, unit * .016]);
+      ctx.strokeRect(-reach, -reach, reach * 2, reach * 2);
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+}
+
+/* --------------------------------------------------------- the dialog */
+
+/* Assets go through the same endpoint the timeline's drop target uses; there
+   was no shared helper for it, and one call site more did not justify moving
+   that one. */
+async function thumbUpload(file) {
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const uploaded = await api(`/api/projects/${S.project}/asset`, { method: "POST", body: form });
+    return uploaded.file;
+  } catch (error) { thumbNote("Upload failed: " + error.message); return null; }
+}
+
+async function thumbKit() {
+  if (!THUMB.kit) THUMB.kit = await import("/tpl/_shared/kit.js");
+  return THUMB.kit;
+}
+
+function thumbLoadImage(url) {
+  return new Promise(resolve => {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = url;
+  });
+}
+
+/* One frame of the matte, at the same moment as the base frame. The matte is a
+   video of the whole source, so this is a seek rather than a render; a still
+   element cannot borrow the player's own matte because that one is wherever
+   the playhead happens to be. */
+function thumbLoadMatte(sourceTime) {
+  const revision = S.state?.look?.matte_revision;
+  if (!revision || revision !== S.state?.source_revision) return Promise.resolve(null);
+  return new Promise(resolve => {
+    const video = document.createElement("video");
+    video.muted = true; video.preload = "auto";
+    const done = () => resolve(video.videoWidth ? video : null);
+    video.addEventListener("seeked", done, { once: true });
+    video.addEventListener("error", () => resolve(null), { once: true });
+    video.addEventListener("loadedmetadata", () => {
+      video.currentTime = Math.max(0, Math.min(sourceTime, (video.duration || sourceTime) - .001));
+    }, { once: true });
+    setTimeout(() => resolve(video.videoWidth ? video : null), 4000);
+    video.src = `/media/${encodeURIComponent(S.project)}/look/matte.mp4`
+      + `?v=${encodeURIComponent(revision)}`;
+  });
+}
+
+async function thumbUseFrame(timelineTime) {
+  const thumb = thumbState();
+  if (!thumb) return;
+  thumbNote("Grabbing the frame...");
+  thumb.base = "frame";
+  thumb.frame_time = timelineTime;
+  const [width] = THUMB_SIZES[thumbOrientation()];
+  const [base, matte] = await Promise.all([
+    thumbLoadImage(`/api/projects/${encodeURIComponent(S.project)}/frame`
+      + `?t=${timelineTime}&width=${Math.max(width, 1600)}`),
+    thumbLoadMatte(tl2src(timelineTime)),
+  ]);
+  THUMB.base = base; THUMB.matte = matte;
+  thumbNote(matte ? "" : "No subject matte yet - analyse the look to cut yourself out.");
+  thumbRender(); afterMutate();
+}
+
+function thumbNote(text) { const node = $("#thumbNote"); if (node) node.textContent = text || ""; }
+
+function thumbRender() {
+  const canvas = $("#thumbCanvas");
+  const [W, H] = THUMB_SIZES[thumbOrientation()];
+  // Drawn at a fraction of final size on screen and at full size only when it
+  // is written out, so dragging stays responsive on a phone.
+  const preview = Math.min(1, 720 / W);
+  if (canvas.width !== Math.round(W * preview)) {
+    canvas.width = Math.round(W * preview);
+    canvas.height = Math.round(H * preview);
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.save();
+  ctx.scale(preview, preview);
+  drawThumbnail(ctx, W, H, true);
+  ctx.restore();
+  thumbRenderInspector();
+  for (const button of $("#thumbLayouts").querySelectorAll("button"))
+    button.classList.toggle("on", button.dataset.layout === thumbState()?.layout);
+  const hold = thumbState()?.hold || 0;
+  for (const button of $("#thumbHold").querySelectorAll("button")) {
+    const value = button.dataset.hold === "frame" ? "frame" : Number(button.dataset.hold);
+    const active = value === "frame"
+      ? hold > 0 && hold <= 1.5 / Math.max(1, S.fps || 30)
+      : Math.abs(hold - value) < 1e-6;
+    button.classList.toggle("on", active);
+  }
+}
+
+function thumbRenderInspector() {
+  const host = $("#thumbInspector");
+  host.innerHTML = "";
+  const thumb = thumbState();
+  const element = (thumb?.elements || []).find(item => item.id === THUMB.sel);
+  if (!element) return;
+  const row = document.createElement("div"); row.className = "fieldrow";
+  const label = document.createElement("label");
+  label.textContent = { headline: "Headline", subhead: "Subhead", cutout: "You",
+    marker: "Marker", image: "Picture" }[element.kind] || element.kind;
+  row.append(label);
+
+  if (element.kind === "headline" || element.kind === "subhead") {
+    const input = document.createElement("input");
+    input.value = element.text || ""; input.maxLength = 120;
+    input.oninput = () => { element.text = input.value; thumbRender(); };
+    input.onchange = () => afterMutate();
+    row.append(input);
+  }
+  if (element.kind === "marker") {
+    const pick = document.createElement("select");
+    for (const option of ["arrow", "circle", "cross", "underline"]) {
+      const node = document.createElement("option");
+      node.value = option; node.textContent = option;
+      if (element.marker === option) node.selected = true;
+      pick.append(node);
+    }
+    pick.onchange = () => { element.marker = pick.value; thumbRender(); afterMutate(); };
+    row.append(pick);
+  }
+  if (element.kind === "image") {
+    const upload = document.createElement("input");
+    upload.type = "file"; upload.accept = "image/*";
+    upload.onchange = async () => {
+      const file = upload.files?.[0];
+      if (!file) return;
+      const name = await thumbUpload(file);
+      if (name) { element.asset = name; A.load(A.projectAsset(name)); setTimeout(thumbRender, 200); afterMutate(); }
+    };
+    row.append(upload);
+  }
+
+  const buttons = document.createElement("div"); buttons.className = "buttonrow";
+  const bigger = document.createElement("button"); bigger.textContent = "Bigger";
+  bigger.onclick = () => { const p = thumbPlace(element);
+    thumbMove(element, p.x, p.y, Math.min(6, p.scale * 1.12)); thumbRender(); afterMutate(); };
+  const smaller = document.createElement("button"); smaller.textContent = "Smaller";
+  smaller.onclick = () => { const p = thumbPlace(element);
+    thumbMove(element, p.x, p.y, Math.max(.1, p.scale / 1.12)); thumbRender(); afterMutate(); };
+  const turn = document.createElement("button"); turn.textContent = "Turn";
+  turn.onclick = () => { element.rotate = ((element.rotate || 0) + 3 + 45) % 90 - 45;
+    thumbRender(); afterMutate(); };
+  const remove = document.createElement("button"); remove.className = "danger";
+  remove.textContent = "Remove";
+  remove.onclick = () => { thumb.elements = thumb.elements.filter(item => item !== element);
+    THUMB.sel = thumb.elements[0]?.id || null; thumbRender(); afterMutate(); };
+  buttons.append(bigger, smaller, turn, remove);
+  row.append(buttons);
+  host.append(row);
+}
+
+/* Hit test in the same normalised space the drawing uses: nearest element
+   whose box contains the point, later elements first because those are the
+   ones drawn on top and therefore the ones being pointed at. */
+function thumbHit(fx, fy) {
+  const thumb = thumbState();
+  const [W, H] = THUMB_SIZES[thumbOrientation()];
+  const unit = Math.min(W, H);
+  for (const element of [...(thumb?.elements || [])].reverse()) {
+    const place = thumbPlace(element);
+    const reach = unit * .085 * (place.scale || 1);
+    if (Math.abs(fx * W - place.x * W) <= reach && Math.abs(fy * H - place.y * H) <= reach)
+      return element;
+  }
+  return null;
+}
+
+async function openThumbnail() {
+  if (!S.project) { toast("Open a project first"); return; }
+  await thumbKit();
+  const thumb = thumbState();
+  if (!thumb.elements?.length) thumbApplyPreset(thumb.layout || "headline-left");
+  const layouts = $("#thumbLayouts");
+  if (!layouts.childElementCount) {
+    for (const [id, preset] of Object.entries(THUMB_PRESETS)) {
+      const button = document.createElement("button");
+      button.textContent = preset.label; button.dataset.layout = id;
+      button.onclick = () => { snapshot(); thumbApplyPreset(id); thumbRender(); afterMutate(); };
+      layouts.append(button);
+    }
+  }
+  if (!THUMB.base && thumb.base === "frame") await thumbUseFrame(thumb.frame_time || S.t);
+  thumbRender();
+  $("#thumbDlg").showModal();
+}
+
+/* The same decision, offered where it is actually made. The thumbnail dialog
+   sets it while designing; this is for the moment you are about to render and
+   change your mind about whether the cover belongs on the video at all. */
+function renderCoverButton() {
+  const button = $("#expCover");
+  if (!button) return;
+  const hold = S.state?.thumbnail?.hold || 0;
+  button.classList.toggle("on", hold > 0);
+  button.textContent = hold > 0
+    ? `Held on the first frame (${hold < .2 ? "1 frame" : hold.toFixed(2) + "s"})`
+    : "Thumbnail not on the video";
+}
+$("#expCover").onclick = () => {
+  if (!S.state) return;
+  const thumb = thumbState();
+  snapshot();
+  thumb.hold = thumb.hold > 0 ? 0 : 1 / Math.max(1, S.fps || 30);
+  renderCoverButton();
+  afterMutate();
+};
+
+$("#thumbBtn").onclick = openThumbnail;
+$("#thumbClose").onclick = () => $("#thumbDlg").close();
+$("#thumbFromFrame").onclick = () => { snapshot(); thumbUseFrame(S.t); };
+$("#thumbFlat").onclick = () => { snapshot(); const thumb = thumbState();
+  thumb.base = "color"; THUMB.base = null; thumbRender(); afterMutate(); };
+$("#thumbFromFile").onclick = () => {
+  const picker = document.createElement("input");
+  picker.type = "file"; picker.accept = "image/*";
+  picker.onchange = async () => {
+    const file = picker.files?.[0];
+    if (!file) return;
+    const name = await thumbUpload(file);
+    if (!name) return;
+    snapshot();
+    const thumb = thumbState();
+    thumb.base = "asset"; thumb.asset = name;
+    // A dropped picture has no matte of its own, so the cutout falls back to
+    // its footprint rather than pasting a rectangle of you over the design.
+    THUMB.base = await thumbLoadImage(A.projectAsset(name));
+    THUMB.matte = null;
+    thumbRender(); afterMutate();
+  };
+  picker.click();
+};
+$("#thumbAdd").onclick = event => {
+  const kind = event.target?.dataset?.add;
+  if (!kind) return;
+  snapshot();
+  const thumb = thumbState();
+  const element = { id: `te${Date.now().toString(36)}`, kind,
+    text: kind === "headline" ? "NEW LINE" : kind === "subhead" ? "label" : "",
+    asset: "", marker: "arrow", color: "", rotate: 0, x: .5, y: .5, scale: 1,
+    layouts: { horizontal: { x: .5, y: .5, scale: 1 }, vertical: { x: .5, y: .5, scale: 1 } } };
+  thumb.elements.push(element);
+  THUMB.sel = element.id;
+  thumbRender(); afterMutate();
+};
+$("#thumbHold").onclick = event => {
+  const raw = event.target?.dataset?.hold;
+  if (raw == null) return;
+  snapshot();
+  const thumb = thumbState();
+  thumb.hold = raw === "frame" ? 1 / Math.max(1, S.fps || 30) : Number(raw);
+  thumbRender(); afterMutate();
+  if (thumb.hold > 0) thumbNote("Saved covers are held on the front of the next export.");
+};
+
+/* Dragging. Normalised coordinates throughout, so the same gesture means the
+   same thing whichever shape is being designed and whatever size the dialog
+   happens to be on this screen. */
+$("#thumbCanvas").addEventListener("pointerdown", event => {
+  const canvas = $("#thumbCanvas"), rect = canvas.getBoundingClientRect();
+  const fx = (event.clientX - rect.left) / rect.width;
+  const fy = (event.clientY - rect.top) / rect.height;
+  const element = thumbHit(fx, fy);
+  THUMB.sel = element?.id || null;
+  if (element) {
+    const place = thumbPlace(element);
+    snapshot();
+    THUMB.drag = { element, ox: fx - place.x, oy: fy - place.y };
+    canvas.setPointerCapture(event.pointerId);
+  }
+  thumbRender();
+});
+$("#thumbCanvas").addEventListener("pointermove", event => {
+  if (!THUMB.drag) return;
+  const rect = $("#thumbCanvas").getBoundingClientRect();
+  const fx = (event.clientX - rect.left) / rect.width;
+  const fy = (event.clientY - rect.top) / rect.height;
+  thumbMove(THUMB.drag.element,
+    Math.max(-.1, Math.min(1.1, fx - THUMB.drag.ox)),
+    Math.max(-.1, Math.min(1.1, fy - THUMB.drag.oy)));
+  thumbRender();
+});
+for (const kind of ["pointerup", "pointercancel"])
+  $("#thumbCanvas").addEventListener(kind, () => {
+    if (!THUMB.drag) return;
+    THUMB.drag = null;
+    afterMutate();
+  });
+
+/* Written at full size, from the same drawThumbnail() the dialog just showed.
+   The server stores it under the project so an export can hold it on the front
+   without the browser being involved, and drops a dated copy in exports/ to
+   upload. */
+$("#thumbSave").onclick = async () => {
+  const [W, H] = THUMB_SIZES[thumbOrientation()];
+  const canvas = document.createElement("canvas");
+  canvas.width = W; canvas.height = H;
+  drawThumbnail(canvas.getContext("2d"), W, H, false);
+  thumbNote("Writing the image...");
+  const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+  if (!blob) { thumbNote("The browser could not encode the image."); return; }
+  try {
+    const result = await api(
+      `/api/projects/${encodeURIComponent(S.project)}/thumbnail`
+      + `?orientation=${thumbOrientation()}&keep=true`,
+      { method: "POST", body: blob, headers: { "Content-Type": "image/png" } });
+    thumbNote(`Saved ${result.file || "the cover"} (${Math.round(result.bytes / 1024)} KB).`);
+  } catch (error) { thumbNote("Save failed: " + error.message); }
+};
+
 /* ------------------------------------------------ boot / home screen */
 async function loadPacks(){
   const {packs,shared}=await api("/api/templates");
   S.packs={};S.shared=shared||[];const modules=[];
   for(const p of packs){S.packs[p.id]=p;
-    if(p._has_render)modules.push(import(`/tpl/${p._dir}/render.js?v=${encodeURIComponent(p.version||"1")}`)
+    if(p._has_render)modules.push(import(`/tpl/${p._dir}/render.js?v=${encodeURIComponent(p._rev||p.version||"1")}`)
       .catch(error=>{throw new Error(`${p.display_name}: ${error.message}`)}));}
   await Promise.all(modules);
 }  // packs self-register before preview/export is declared ready
 function sourceSignature(state){const info=state?.source_info||{};
   return [state?.source||"",state?.source_revision||"",info.width||0,info.height||0,info.duration||0,info.fps||0].join(":")}
-function sourceUrl(){return `/media/${encodeURIComponent(S.project)}/${encodeURIComponent(S.state.source)}`+
-  `?v=${encodeURIComponent(sourceSignature(S.state))}`}
+/* What the <video> element actually plays. The server decides: a proxy with
+   the look already baked in if there is one, a plain proxy if not, and the
+   master only until the first proxy exists. The three share one timeline, so
+   nothing that reads currentTime has to know which it got. */
+function sourceUrl(){
+  if(S.preview?.url)return S.preview.url;
+  return `/media/${encodeURIComponent(S.project)}/${encodeURIComponent(S.state.source)}`+
+    `?v=${encodeURIComponent(sourceSignature(S.state))}`;
+}
+/* Fetch the proxy status and, if anything is missing or stale, ask for it.
+   Swaps the <video> source when the answer changes what should be playing. */
+async function refreshPreviewProxy(build){
+  if(!S.project||!S.state?.source)return;
+  try{
+    S.preview=build
+      ? await api(`/api/projects/${S.project}/preview/build`,{method:"POST"})
+      : await api(`/api/projects/${S.project}/preview`);
+  }catch(error){S.preview=null;return}
+  applyPreviewProxy();
+}
+function applyPreviewProxy(){
+  const wanted=sourceUrl();
+  if(S.state?.source&&vid.getAttribute("src")!==wanted){
+    const at=vid.currentTime,playing=S.playing;
+    vid.src=wanted;
+    vid.addEventListener("loadedmetadata",()=>{
+      if(at>0&&isFinite(at))vid.currentTime=at;
+      if(playing)vid.play().catch(()=>{});
+    },{once:true});
+  }
+  renderPreviewNote();
+  lookRefresh();
+}
+function renderPreviewNote(){
+  const note=$("#previewNote");if(!note)return;
+  const p=S.preview;
+  if(!p||!p.running){note.hidden=true;return}
+  note.hidden=false;
+  note.textContent=p.message||"Preparing the preview copy...";
+}
 async function syncSourceMedia(previousState){
   S.fps=S.state.source_info.fps||30;
   if(S.state.source){
@@ -2118,7 +4047,9 @@ async function importSource(file){if(!file||!S.project)return;
   const fd=new FormData();fd.append("file",file);toast("Uploading and reading source footage…");
   const previousState=S.state;
   S.state=await api(`/api/projects/${S.project}/source`,{method:"POST",body:fd});
-  await syncSourceMedia(previousState);seek(0);fitTimeline();syncLayoutButton();afterMutate(false);
+  S.preview=null;
+  await syncSourceMedia(previousState);
+  refreshPreviewProxy(false);seek(0);fitTimeline();syncLayoutButton();afterMutate(false);
   toast(`Source ready · ${S.state.source_info.width}×${S.state.source_info.height} · ${S.fps} fps`)}
 async function importTranscript(file){if(!file||!S.project)return;
   const fd=new FormData();fd.append("file",file);
@@ -2135,7 +4066,12 @@ async function openProject(name){S.project=name;
   $("#home").hidden=true;$("#app").hidden=false;
   $("#projectTitle").textContent=name;document.title=`${name} · Editoro`;
   S.fps=S.state.source_info.fps||30;
-  if(S.state.source){vid.src=sourceUrl();
+  S.preview=null;
+  if(S.state.source){
+    // Ask for the proxy before touching vid.src, so opening a project that
+    // already has one never starts a 4 GB master downloading first.
+    await refreshPreviewProxy(true);
+    vid.src=sourceUrl();
     S.peaks=(await api(`/api/projects/${name}/waveform`)).peaks;$("#emptyState").hidden=true;
     $("#play").disabled=false;$("#exportBtn").disabled=false}
   else{vid.removeAttribute("src");vid.load();$("#emptyState").hidden=false;
@@ -2143,15 +4079,22 @@ async function openProject(name){S.project=name;
   try{const directives=await api(`/api/projects/${name}/directives`);
     $("#dirText").value=directives.text||"";S.state.directives_review=directives.review||[];renderDirectiveReview();
   }catch(error){$("#dirText").value="";toast("Directives could not be loaded: "+error.message)}
-  renderCats();renderInspector();syncLayoutButton();
+  renderCats();renderInspector();syncLayoutButton();await lookRefresh();
   if(!S.ws||S.ws.readyState>1)connectWS();drawTimeline();drawOverlay();fitTimeline();
   loadExportHistory();
   applyMonitorGain();
-  if(!S.booted){S.booted=true;requestAnimationFrame(tick)}
+  S.booted=true;
   if(!S.resizeObserver){S.resizeObserver=new ResizeObserver(()=>{S.previewLayout=null;drawOverlay();drawTimeline()});
     S.resizeObserver.observe($("#preview"));S.resizeObserver.observe($("#timeline"))}
-  vid.onloadedmetadata=()=>{S.previewLayout=null;drawOverlay();drawTimeline()};}
+  vid.onloadedmetadata=()=>{S.previewLayout=null;drawOverlay();drawTimeline()};
+  // A <video> repaints itself after a seek; a canvas has to be told, or the
+  // look preview keeps showing the frame before the one being scrubbed to.
+  vid.addEventListener("seeked",()=>{if(LOOK.active)drawOverlay()});
+  vid.addEventListener("loadeddata",()=>{if(LOOK.active)drawOverlay()});
+  LOOK.matte.addEventListener("loadeddata",()=>{if(LOOK.active)drawOverlay()});}
 async function showHome(){vid.pause();S.playing=false;$("#play").textContent="▶";
+  LOOK.active=false;LOOK.canvas.hidden=true;LOOK.matteKey="";LOOK.lutKey="";
+  vid.style.opacity="";LOOK.matte.pause();LOOK.matte.removeAttribute("src");
   $("#app").hidden=true;$("#home").hidden=false;document.title="Editoro";await refreshProjects();loadDiagnostics()}
 async function refreshProjects(){const {projects}=await api("/api/projects");
   const l=$("#projList");l.innerHTML="";
@@ -2192,8 +4135,8 @@ document.body.addEventListener("drop",async e=>{const file=e.dataTransfer?.files
   else if(/^video\//.test(file.type)&&!S.state.source){e.preventDefault();await importSource(file)}});
 
 /* ============ [J] headless export entry — same engine, no UI, no video
-   Chromium renders the exact same drawFrame() the preview uses, at source
-   resolution, and hands frames to FFmpeg. Nothing may be lazily loaded once
+   Chromium renders the exact same drawFrame() the preview uses, at the
+   export's output resolution, and hands frames to FFmpeg. Nothing may be lazily loaded once
    rendering starts, so every asset any instance can touch is fetched and
    decoded before __exportReady flips. */
 if(EXPORT_MODE){
@@ -2204,13 +4147,30 @@ if(EXPORT_MODE){
       S.state=window.__EDITORO_EXPORT_STATE||
         await (await fetch(`/api/projects/${S.project}/state`)).json();
       S.fps=S.state.source_info.fps||30;
+      // The overlay is rasterised at the size the export actually writes, not
+      // at the size of the source. A 4K master exported to 720p used to render
+      // every overlay frame at 2160x3840, PNG-encode it, ship it over CDP and
+      // hand FFmpeg something it immediately scaled down - roughly thirty times
+      // the pixels the result keeps. Templates lay themselves out in units of
+      // the frame, so a smaller canvas is the same picture, not a cropped one.
+      const query=new URLSearchParams(location.search);
+      const frameW=parseInt(query.get("w"),10)||S.state.source_info.width;
+      const frameH=parseInt(query.get("h"),10)||S.state.source_info.height;
+      // `c` is the strip handed to FFmpeg: one frame-sized cell per plane the
+      // segment asked for, laid out left to right in the order the server sent.
+      // `cell` is where each plane is actually drawn, because a full-frame
+      // template resets the transform to identity and would otherwise ignore
+      // any offset applied to the strip.
       const c=document.createElement("canvas");
-      c.width=S.state.source_info.width;c.height=S.state.source_info.height;
+      c.width=frameW;c.height=frameH;
+      const cell=document.createElement("canvas");
+      cell.width=frameW;cell.height=frameH;
       const waits=[],images=new Set(),videos=new Set();
       for(const asset of S.shared||[])images.add(`/tpl/_shared/${asset}`);
       for(const spec of Object.values(S.packs))
         for(const asset of spec.assets||[])images.add(A.templateAsset(spec._dir,asset));
       for(const i of S.state.instances){
+        if(packUsesSource(i.template))videos.add(masterUrl());
         if(!i.fields.asset)continue;
         (packUsesVideo(i.template)?videos:images).add(A.instanceAssetUrl(i));
       }
@@ -2225,16 +4185,79 @@ if(EXPORT_MODE){
       for(const face of ["800 64px Rubik","600 40px Rubik","700 40px Inter","500 34px monospace"]){
         try{await document.fonts.load(face,"Aa اختبار")}catch(e){}
       }
-      window.__renderFrames=async times=>{
+      /* Hand one finished frame back to Python.
+
+         With a token, the bytes go out as a binary POST and only the sequence
+         number travels through CDP. Without one - a still frame, or a server
+         too old to hand out tokens - it falls back to the data URL this used
+         to always return. Both shapes are understood on the other side, so
+         the fast path failing is slow, never broken. */
+      const shipFrame=async(canvas,token,seq)=>{
+        if(!token)return canvas.toDataURL("image/png");
+        try{
+          const blob=await new Promise(res=>canvas.toBlob(res,"image/png"));
+          const response=await fetch(`/api/export/frame/${token}/${seq}`,
+            {method:"POST",body:blob,headers:{"Content-Type":"application/octet-stream"}});
+          if(response.ok)return seq;
+        }catch(error){/* fall through to the slow path */}
+        // The binary channel assumes this page is talking to the very process
+        // that started the export. That is true in normal use and NOT true if a
+        // second Editoro is listening on the port, which does happen. Rather
+        // than fail an otherwise perfectly good export, drop back to the data
+        // URL: same picture, same result, just the slower road. The server
+        // understands both shapes, so the two can even be mixed mid-batch.
+        return canvas.toDataURL("image/png");
+      };
+      /* Can this page reach the process that started the export?
+
+         It usually can, and then frames go back as binary bodies. It cannot
+         when a second Editoro already owns the port - the page is served by
+         that one while the export runs in this one, so every POST lands in a
+         session the receiving process has never heard of. Asking once, up
+         front, is much better than finding out per frame: the answer is the
+         same for the whole export, and a failed probe simply means the slower
+         data-URL road rather than an export full of console errors. */
+      window.__exportProbe=async token=>{
+        try{
+          const response=await fetch(`/api/export/frame/${token}/-1`,
+            {method:"POST",body:new Blob([new Uint8Array(1)]),
+             headers:{"Content-Type":"application/octet-stream"}});
+          return response.ok;
+        }catch(error){return false}
+      };
+      window.__renderFrames=async(times,slots,token,firstSeq)=>{
+        slots=(slots&&slots.length)?slots:["front"];
+        if(c.width!==frameW*slots.length){c.width=frameW*slots.length;c.height=frameH}
         const frames=[],context=c.getContext("2d",{alpha:true});
+        const cellContext=cell.getContext("2d",{alpha:true});
         for(const t of times){
+          // A frame with nothing on it still costs a full-size PNG encode and
+          // a base64 trip back to Python - 99 ms each at 4K, and a normal edit
+          // is mostly gaps. The empty string tells the server to reuse one
+          // cached transparent frame instead. This asks the same two questions
+          // drawFrame asks, so it can only be empty when drawFrame would have
+          // drawn nothing at all.
+          if(!activeInstances(t).length&&!captionsAt(t).length){frames.push("");continue}
           await prepareVideoAssets(t);
-          drawFrame(context,c.width,c.height,t);
-          frames.push(c.toDataURL("image/png"));
+          context.clearRect(0,0,c.width,c.height);
+          const backdrop=backdropAt(t);
+          slots.forEach((slot,index)=>{
+            if(slot==="mask"){
+              // The blur is applied to the whole frame and then masked back in
+              // by this plane's alpha, so this flat fill IS the blur strength.
+              cellContext.clearRect(0,0,frameW,frameH);
+              if(backdrop){
+                cellContext.fillStyle=`rgba(255,255,255,${backdrop.strength})`;
+                cellContext.fillRect(0,0,frameW,frameH);
+              }
+            }else drawFrame(cellContext,frameW,frameH,t,slot);
+            context.drawImage(cell,index*frameW,0);
+          });
+          frames.push(await shipFrame(c,token,(firstSeq|0)+frames.length));
         }
         return frames;
       };
-      window.__renderFrame=async t=>(await window.__renderFrames([t]))[0];
+      window.__renderFrame=async(t,slots)=>(await window.__renderFrames([t],slots))[0];
       window.__exportError=null;
       window.__exportReady=true;
     }catch(error){
@@ -2252,8 +4275,12 @@ window.editoro = {
   state: () => S.state, store: S, renderers: REG, runtime: A,
   openProject, placeInstance, cycleOrientation, setOrientationLabel: syncLayoutButton,
   drawOverlay, drawTimeline, renderInspector, renderCaptionDialog,
-  snapshot, afterMutate, undo, redo, seek, captionLayout, packVariant, motionAt,
+  snapshot, afterMutate, undo, redo, seek, captionLayout, packVariant, motionAt, valueAt,
+  valueLadder,
   captionsAt, activeInstances, $,
+  cameraPlan, cameraStateAt, cameraTransform, breatheScale, breatheAmplitude,
+  drawThumbnail, thumbState, sfxEventsForInstance,
+  LOOK, lookRefresh, lookDraw, lookSample, lookSettings,
 };
 </script>
 </body></html>

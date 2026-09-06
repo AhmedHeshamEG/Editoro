@@ -15,8 +15,30 @@ python mcp_server.py --transport sse --port 8766
 python mcp_server.py --print-config                    # paste-ready stdio config
 ```
 
-For a stdio client, point it at Editoro's own interpreter so the dependencies
-are the ones `launch.cmd` installed:
+Whatever the client, point it at Editoro's own interpreter rather than a
+system Python, so the dependencies are the ones `launch.cmd` installed.
+
+### Claude Code
+
+The repo ships a `.mcp.json`, so a clone is already wired up — approve the
+server when Claude Code offers it. That config is scoped to this directory,
+which is only useful while you are working *in* the repo. To edit video from
+anywhere, install it once at user scope instead:
+
+```bash
+claude mcp add -s user editoro -- \
+  E:/Programming/Editoro/.venv/Scripts/python.exe E:/Programming/Editoro/mcp_server.py
+claude mcp list          # editoro: ... - ✔ Connected
+```
+
+You do not need the editor running first. The server starts it on the first
+tool call and leaves it up, so `/editoro` works from a cold machine.
+
+### Claude Desktop, and every other stdio client
+
+Paste this into the client's MCP config — `claude_desktop_config.json` on
+Desktop, `mcp.json` or equivalent elsewhere. `python mcp_server.py
+--print-config` prints it with your own paths already filled in:
 
 ```json
 {
@@ -28,6 +50,9 @@ are the ones `launch.cmd` installed:
   }
 }
 ```
+
+On macOS and Linux the interpreter is `.venv/bin/python`. Forward slashes are
+fine on Windows; if you prefer backslashes, escape them (`\\`).
 
 ### Environment
 
@@ -65,6 +90,7 @@ get_transcript         what is actually said, with timings
 list_templates         what can go on screen, and its fields
 remove_range           cut the stumbles out first
 place_blocks           the entire edit in one call, anchored to quotes
+set_look               defocus the background, grade the picture (analyse once)
 render_frame           look at three or four moments
 update_blocks          fix what the frames showed
 export                 write the MP4
@@ -121,7 +147,26 @@ named problems rather than being silently dropped.
 | `set_caption_style` | Placement, grouping, size, active-word highlight — per orientation. |
 | `set_cuts`, `remove_range` | Cut the source down. |
 | `set_orientation` | Choose which of each template's two layouts is used. |
+| `set_look` | Project-wide background defocus and automatic colour, both measured from the footage. |
+| `set_speaker_region` | Where the speaker is in the source frame. Set once; PiP windows crop to it. |
 | `set_notes` | Leave an editing plan on the project. |
+
+### Per-block properties `place_blocks` and `update_blocks` both take
+
+| Property | What it does |
+|---|---|
+| `backdrop` | Frost the footage and every lower track while this block is on screen. |
+| `depth` | `front` or `behind` the speaker. `behind` needs the subject matte — check `speaker_matte` in `get_project` first. |
+| `silent` | Place the block without its template's foley. Use it when several blocks land within a few seconds and the edit starts to tick; it is a better answer than deleting a block that is doing visual work. |
+| `tilt` | `off`, `left`, `right` or `lean`. A small out-of-plane lean so the block reads as an object on the scene. Tuned presets, not an angle. Combines with `depth`. |
+
+Two things the timeline does on its own are worth knowing about before you place
+anything. The project **breathes** — a very slow scale drift on one shared clock
+under the footage and every graphic — and a camera block switches it off for its
+own span, which is another reason not to stack camera moves. And the **stage**
+template is a full-frame animated backdrop whose `framing` field (`behind`,
+`pip`, `solo`) decides what happens to the speaker; do not set `depth` on it, the
+framing already is the depth.
 
 ### Looking
 
@@ -164,6 +209,31 @@ they cannot:
 - **Meme blocks stay flagged.** They are placed with a review flag on purpose.
 - **Leave placement alone unless there is a reason.** The layouts are tuned.
 - **Silence is allowed.** A graphic every few seconds is decoration, not editing.
+- **Blur belongs to a block, not to the timeline.** `backdrop` on a block frosts
+  the footage and every lower track while that block is on screen, and leaves
+  the block itself and everything above it sharp. It fades in and out with the
+  block that owns it, so it cannot be left switched on behind one. Use it to put
+  an image, a screenshot or a quote *in front of the room* rather than pasted
+  onto it. `backdrop-blur` is the same thing with nothing drawn on top.
+- **Depth is a toggle, not a track order.** `depth: "behind"` composites a block
+  between the background and the speaker, cut against the subject matte, so it
+  passes behind their head. Track order everywhere else in Editoro means
+  time-and-stack; it does not also mean depth. `behind` needs the matte, which
+  is built the first time `set_look` analyses the footage — check
+  `speaker_matte` in `get_project` before relying on it, because without it the
+  block simply stays in front.
+- **The PiP window shows the speaker region, not the corner it sits in.** Set
+  `set_speaker_region` once per project and look at a `render_frame`. A block
+  can override it with its own `region`, but a talking head does not move
+  between shots, so it usually should not.
+- **Separate tracks are not separate places.** `place_blocks` returns
+  `overlapping` when two blocks are on screen at the same moment *and* land in
+  the same part of the frame. Different tracks put one over the other; they do
+  not move it.
+- **The look is measured, not chosen.** `set_look` has two amounts and no other
+  controls, because everything else about it was decided by reading the
+  footage. Analysing is a one-time pass per project and takes roughly as long
+  as the video; the amounts afterwards are instant.
 
 ---
 

@@ -39,7 +39,7 @@ registerTemplate(ID, {
     if (positions.length > 1) {
       A.stage(ctx, line, () => {
         const first = positions[0], last = positions[positions.length - 1];
-        const grown = line.phase === "in" ? Math.max(0, Math.min(1, line.k)) : 1;
+        const grown = A.value(instance, t, "line");
         ctx.strokeStyle = alpha(accent, 0.45);
         ctx.lineWidth = Math.max(2, 4 * g.scale * g.u);
         ctx.setLineDash([10 * g.u, 8 * g.u]);

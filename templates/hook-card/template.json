@@ -2,7 +2,7 @@
   "id": "hook-card",
   "version": 1,
   "schema": 2,
-  "display_name": "خطّاف · Hook",
+  "display_name": "Hook",
   "category": "structure",
   "category_color": "#FB7185",
   "directive_verb": null,
@@ -71,6 +71,9 @@
     "blur": {
       "motion": true,
       "max": 7
+    },
+    "value": {
+      "ms": 420
     }
   },
   "sfx": [

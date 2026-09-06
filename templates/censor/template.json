@@ -2,7 +2,7 @@
   "id": "censor",
   "version": 1,
   "schema": 2,
-  "display_name": "تغطية · Censor",
+  "display_name": "Censor",
   "category": "annotation",
   "category_color": "#64748B",
   "directive_verb": null,

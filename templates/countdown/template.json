@@ -2,7 +2,7 @@
   "id": "countdown",
   "version": 1,
   "schema": 2,
-  "display_name": "عد · Countdown",
+  "display_name": "Countdown",
   "category": "structure",
   "category_color": "#E879F9",
   "directive_verb": null,

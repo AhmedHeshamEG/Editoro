@@ -2,7 +2,7 @@
   "id": "punch-in",
   "version": 5,
   "schema": 2,
-  "display_name": "زوم · Punch-in",
+  "display_name": "Punch-in",
   "category": "camera",
   "category_color": "#FF6B6B",
   "directive_verb": "زوم",

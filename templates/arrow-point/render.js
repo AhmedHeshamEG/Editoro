@@ -23,7 +23,7 @@ registerTemplate(ID, {
         x1: from.x, y1: from.y, x2: tip.x, y2: tip.y,
         bend: 0.20, width: Math.max(3, 8 * u * instance.scale),
         color: colour, head: 34 * u * instance.scale,
-        progress: arrow.phase === "in" ? arrow.k : 1,
+        progress: A.value(instance, t, "arrow"),
       });
     });
     const label = String(instance.fields.label || "").trim();

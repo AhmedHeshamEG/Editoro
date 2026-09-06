@@ -2,7 +2,7 @@
   "id": "screen",
   "version": 5,
   "schema": 2,
-  "display_name": "سكرين · Screen",
+  "display_name": "Screen",
   "category": "screen",
   "category_color": "#B388FF",
   "directive_verb": "سكرين",

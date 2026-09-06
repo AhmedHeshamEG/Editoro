@@ -2,7 +2,7 @@
   "id": "keyword",
   "version": 5,
   "schema": 2,
-  "display_name": "نص · Keyword",
+  "display_name": "Keyword",
   "category": "text",
   "category_color": "#FFD166",
   "directive_verb": "نص",

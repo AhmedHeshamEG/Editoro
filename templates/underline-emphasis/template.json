@@ -2,7 +2,7 @@
   "id": "underline-emphasis",
   "version": 1,
   "schema": 2,
-  "display_name": "تسطير · Underline",
+  "display_name": "Underline",
   "category": "annotation",
   "category_color": "#FDBA74",
   "directive_verb": "تسطير",
@@ -68,6 +68,9 @@
       "to": {
         "opacity": 0
       }
+    },
+    "value": {
+      "ms": 380
     }
   },
   "sfx": [

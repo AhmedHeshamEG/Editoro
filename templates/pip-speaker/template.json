@@ -1,12 +1,12 @@
 {
   "id": "pip-speaker",
-  "version": 1,
+  "version": 2,
   "schema": 2,
-  "display_name": "نافذة · PiP speaker",
+  "display_name": "PiP speaker",
   "category": "video",
   "category_color": "#2DD4BF",
   "directive_verb": null,
-  "description": "Fills the frame with an image or clip and leaves the speaker showing through a small rounded window in a corner.",
+  "description": "Fills the frame with an image or clip and drops the speaker into a small rounded window in a corner. The window shows the speaker region of the footage - set once for the project, or overridden here - scaled down, so it frames the person rather than whatever happened to be in that corner.",
   "fields": [
     {
       "name": "asset",
@@ -21,16 +21,17 @@
       "description": "Optional video; takes priority over the image."
     },
     {
+      "name": "region",
+      "label": "Speaker region (overrides the project's)",
+      "type": "rect",
+      "description": "Drag the part of the source frame the window should show. Leave it unset to follow the project's speaker region."
+    },
+    {
       "name": "corner",
       "label": "Speaker corner",
       "type": "select",
       "default": "bottom-right",
-      "options": [
-        "bottom-right",
-        "bottom-left",
-        "top-right",
-        "top-left"
-      ],
+      "options": ["bottom-right", "bottom-left", "top-right", "top-left"],
       "description": "Which corner the speaker window sits in."
     },
     {
@@ -44,6 +45,22 @@
       "description": "Speaker window width as a fraction of the frame."
     },
     {
+      "name": "entrance",
+      "label": "Entrance",
+      "type": "select",
+      "default": "lid",
+      "options": ["lid", "pop", "slide", "whip"],
+      "description": "How the window arrives and leaves. 'lid' opens it from its hinged edge the way a laptop opens, and closes it the same way."
+    },
+    {
+      "name": "effects",
+      "label": "Around the window",
+      "type": "select",
+      "default": "glow",
+      "options": ["none", "glow", "ring"],
+      "description": "Decoration around the window as it lands. 'glow' breathes a soft halo, 'ring' sends one expanding ring out from the edge."
+    },
+    {
       "name": "volume",
       "label": "Clip volume",
       "type": "number",
@@ -55,42 +72,17 @@
     }
   ],
   "full_frame": true,
+  "source_window": true,
   "variants": {
-    "horizontal": {
-      "x": 0.5,
-      "y": 0.5,
-      "scale": 1.0
-    },
-    "vertical": {
-      "x": 0.5,
-      "y": 0.5,
-      "scale": 1.0
-    }
+    "horizontal": { "x": 0.5, "y": 0.5, "scale": 1.0 },
+    "vertical": { "x": 0.5, "y": 0.5, "scale": 1.0 }
   },
   "motion": {
-    "in": {
-      "type": "ease",
-      "easing": "outCubic",
-      "ms": 420,
-      "from": {
-        "opacity": 0
-      }
-    },
-    "out": {
-      "type": "ease",
-      "easing": "inCubic",
-      "ms": 320,
-      "to": {
-        "opacity": 0
-      }
-    }
+    "in": { "type": "ease", "easing": "outCubic", "ms": 760, "from": { "opacity": 0 } },
+    "out": { "type": "ease", "easing": "inCubic", "ms": 600, "to": { "opacity": 0 } }
   },
   "sfx": [
-    {
-      "file": "_shared/sfx/latch.wav",
-      "offset": 0.06,
-      "gain": 0.34
-    }
+    { "file": "_shared/sfx/latch.wav", "offset": 0.06, "gain": 0.34 }
   ],
   "assets": [],
   "default_duration": 6.0

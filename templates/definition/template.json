@@ -2,7 +2,7 @@
   "id": "definition",
   "version": 1,
   "schema": 2,
-  "display_name": "تعريف · Definition",
+  "display_name": "Definition",
   "category": "text",
   "category_color": "#7DD3A0",
   "directive_verb": "تعريف",

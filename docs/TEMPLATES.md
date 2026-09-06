@@ -23,10 +23,11 @@ templates/my-pack/
   "id": "my-pack",                     // must match the folder name
   "version": 1,
   "schema": 2,
-  "display_name": "اسم · My pack",      // shown in the palette
+  "display_name": "My pack",           // shown in the palette
   "category": "text",                  // text|image|video|annotation|camera|screen|structure|ambient
   "category_color": "#7DD3A0",         // unique across all packs; identifies it everywhere
-  "directive_verb": "اسم",              // optional: makes it placeable from a directive list
+  "directive_verb": "اسم",              // optional: an extra verb for directive lists;
+                                       // the pack id is always accepted as one
   "description": "One or two sentences saying what this is for and when to use it.",
 
   "fields": [
@@ -117,7 +118,8 @@ the export.
   "stagger": { "step_ms": 62, "elements": ["card", "text", "accent"] },
   "idle":    { "amplitude": 0.0028, "hz": 0.13 },
   "blur":    { "motion": true, "max": 7 },
-  "shadow":  { "layers": 3, "elevation": 26, "opacity": 0.46, "lift": true }
+  "shadow":  { "layers": 3, "elevation": 26, "opacity": 0.46, "lift": true },
+  "value":   { "ms": 1000, "steps": 10, "ratio": 1.145 }
 }
 ```
 
@@ -136,6 +138,17 @@ the export.
   few extra draws during fast frames only.
 - `shadow` is layered rather than a single offset blur, and `lift` adds a warm
   top edge and a cool bottom one so the sheet has thickness.
+- `value` governs a *quantity* you draw — a counting number, a filling bar —
+  read through `A.value()` rather than `A.motion()`. It never rides the entrance
+  spring: a spring reaches its target in a fraction of its stated window and
+  then wobbles, which turns a count-up into a flash and a jitter. `ms` is how
+  long the climb lasts, `delay_ms` holds it back, and `easing` shapes it.
+- `value.steps` turns that climb into a **counter ladder**: the quantity holds
+  each notch instead of gliding, and `ratio` is how much longer each notch lasts
+  than the one before it, so at `1.145` over ten steps the first lasts 50 ms and
+  the last 170 ms and the number visibly settles onto its figure. `steps: 0`
+  (the default) leaves the climb smooth and `easing` in charge. A pack that
+  steps can put a tick on every notch — see `follow_value` under Sound.
 
 Easings available: `linear`, `inQuad`, `outQuad`, `inOutQuad`, `inCubic`,
 `outCubic`, `inOutCubic`, `outQuart`, `outQuint`, `inExpo`, `outExpo`,
@@ -182,6 +195,12 @@ your own file in the pack folder:
   multi-line `items` field and for a `from` count without a hidden helper field.
 - `spread_ratio` spaces the repeats across that fraction of the block;
   `repeat_spacing` gives a fixed gap instead.
+- `follow_value` names a `motion.stagger` element and fires the sound once per
+  notch of that element's counter ladder — so the ticking decelerates exactly as
+  the digits do, and every tick you hear is a change you see. It needs
+  `motion.value.steps`; a pack that asks for it without one is rejected at scan
+  time, because against a smooth ramp there is nothing to tick on. `stat-pop` is
+  the worked example.
 - Every sound in `_shared/sfx/` is calibrated to one target, so `gain` is
   comparable across packs. 0.3–0.5 sits under speech; above 0.7 competes with it.
 
@@ -262,6 +281,8 @@ draw in absolute canvas coordinates — remember to centre yourself with
 | `A.ease`, `A.spring(seconds, opts)` | The easing library and the spring solver. |
 | `A.categoryColor(id)` | A pack's colour. |
 | `A.fps()` | Timeline frame rate. |
+| `A.sourceFrame()` | The footage itself at this moment, as something drawable, or `null`. Requires `"source_window": true` on the pack. |
+| `A.speakerRegion(instance)` | Where the speaker is in the source frame — the block's own `region` field if it has one, else the project's. |
 
 ### The kit, `/tpl/_shared/kit.js`
 
@@ -286,6 +307,50 @@ draw in absolute canvas coordinates — remember to centre yourself with
   assuming a shape.
 - **RTL.** `drawLines` handles direction automatically; if you place text
   yourself, call `applyDirection(ctx, text)` first.
+- **`A.sourceFrame()` is a frame, not a player.** It is whatever the footage
+  shows at the moment being drawn. Do not read `currentTime` from it, seek it,
+  or assume it is playing: in the preview it is the live element and in the
+  export it is a still the renderer has already parked on the right frame.
+- **Do not worry about how expensive a seek is, but do not add ones you do not
+  need.** During an export every video a template reads — the master behind
+  `A.sourceFrame()` and every clip behind `A.video()` — is quietly served from
+  an all-intra scrub copy built at the export's own resolution, because seeking
+  a long-GOP 4K master once per frame measured at 5.8 seconds a frame. The
+  substitution happens inside `A.video()`, so a pack gets it for free and
+  cannot opt out of it or notice it. What a pack still controls is how many
+  distinct videos it asks for: each one is another proxy to build and another
+  set of decoders to hold open.
+
+### Compositing keys
+
+Two keys change where a pack's blocks sit in the stack rather than what they
+draw. Both are also per-block properties an editor can toggle, so a pack only
+sets them to choose the default it ships with.
+
+| Key | Effect |
+|---|---|
+| `"backdrop": true` | Blocks of this pack start with blur-underneath switched on: the footage and every lower track are frosted while the block is on screen, and the block itself and anything above it stay sharp. The strength is the block's own motion opacity, so it fades with the entrance in `motion` rather than snapping on. `backdrop-blur` is a pack that does nothing else. |
+| `"source_window": true` | This pack draws the footage inside itself, so `A.sourceFrame()` returns something and the headless exporter loads and seeks the master alongside the ordinary clip assets. `pip-speaker` is the one that does. |
+
+The matching per-block property `depth: "behind"` composites a block between the
+background and the speaker, cut against the subject matte. It is not a pack key
+— nothing about a template decides whether it belongs behind a person — and it
+needs the matte the Look builds, without which the block stays in front.
+
+One pack key does override it. `"depth_from": {"field": "framing", "behind":
+["behind"], "default": "behind"}` says that one of the pack's own fields decides
+the side, for templates where the side is the meaning of that field rather than a
+separate decision. `stage` is the case it exists for: choosing "behind" as its
+framing *is* its depth, and a second toggle asking the same question is how a
+block ends up saying one thing on the panel and rendering another. A pack that
+declares it gets no compositing toggle in the inspector.
+
+Two more per-block properties, neither of them a pack key:
+
+| Property | Effect |
+|---|---|
+| `silent: true` | The block contributes no foley to the mix and no markers to the SFX track. Silence is per block rather than per pack because the problem it solves is density — three blocks landing in four seconds — not a template being wrong. |
+| `tilt` | `off`, `left`, `right` or `lean`. A tuned rotation, vertical shear and shadow offset applied in `A.stage()`, so a pack gets it for free without knowing it exists. `lean` tips the card away from the viewer instead of turning it. |
 
 ---
 

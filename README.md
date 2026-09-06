@@ -88,7 +88,15 @@ python mcp_server.py --transport streamable-http --port 8766
 python mcp_server.py --print-config                   # paste-ready client config
 ```
 
-For a stdio client, add this to its MCP config:
+In Claude Code, the bundled `.mcp.json` wires up a clone automatically; to edit
+video from any directory, install it once at user scope instead:
+
+```bash
+claude mcp add -s user editoro -- \
+  E:/Programming/Editoro/.venv/Scripts/python.exe E:/Programming/Editoro/mcp_server.py
+```
+
+For any other stdio client, add this to its MCP config:
 
 ```json
 {
@@ -101,7 +109,12 @@ For a stdio client, add this to its MCP config:
 }
 ```
 
-The editor is started automatically if it is not already running.
+The editor is started automatically if it is not already running, so none of
+this requires `launch.cmd` to be open first.
+
+The repo also ships a Claude skill in `.claude/skills/editoro` that teaches a
+model the workflow above — which template earns which moment, why blocks are
+anchored to quotes, and to look at a rendered frame before calling it done.
 
 A whole edit looks like this from the model's side:
 
@@ -109,6 +122,7 @@ A whole edit looks like this from the model's side:
 get_transcript          → read what is actually said
 list_templates          → see what can go on screen
 place_blocks            → place the entire edit in one call, anchored to quotes
+set_look                → defocus the background and grade the picture
 render_frame            → look at the result and fix what is wrong
 export                  → write the MP4
 ```
@@ -142,6 +156,9 @@ each carries its own look, motion, foley and both orientation layouts.
 | **Camera** | punch-in · zoom-out · ken-burns · punch-cut · whip-pan · frame-stamp |
 | **Structure** | chapter-card · hook-card · end-card · countdown |
 | **Always on** | captions · ambient |
+
+The **Look** panel (defocus and colour) is not a template — it applies to the
+whole project. See [Look](#look).
 
 **Adding a template never requires touching `server.py` or `index.html`.** Drop a
 folder with a `template.json` and a `render.js` into `templates/` and restart.
@@ -188,6 +205,159 @@ foley bound to a template.
 
 Textures are generated too, by `tools/gen_art.py`: seamless procedural paper,
 grain, tape and marker strokes, written as PNGs with no imaging dependency.
+
+### Sound you can switch off
+
+Every block that makes a sound has a **Sound** control in the inspector, and
+silencing one removes its foley from the mix *and* its markers from the SFX
+track — so that track keeps being a truthful picture of what the export will
+contain rather than a list of things that might play. Clicking a marker on the
+SFX track selects the block that owns it and opens its panel, which is how you
+find the one that keeps ticking.
+
+---
+
+## Breathing
+
+No shot sits completely still. A very slow scale oscillation runs under the
+whole project — about 2.4% over thirteen seconds at *Standard* — and every
+overlay on screen is multiplied by the same factor at the same instant, so the
+footage and the graphics move together instead of the graphics wobbling on top
+of a steady frame.
+
+It is in the **Look** panel, as four named strengths rather than a slider: the
+tempo is shared by all of them, so a strength changes how deep the video
+breathes and never how fast. Vertical breathes a little deeper than horizontal
+for the same name, because the same percentage of a smaller frame reads as less
+movement.
+
+A hand-placed camera move switches it off for its own span, ramping over a third
+of a second at each edge, so a punch-in and a pulse never stack. A `breathe`
+block does the opposite: it overrides the strength over a stretch — including
+asking for *off* through a section you want held still, or for *strong* through
+one you want opened up.
+
+The cost is honest and worth knowing: with breathing on, the footage is moving
+everywhere, so there is no longer any span the export can stream-copy. An
+untouched project with breathing off keeps the fast path exactly as it was.
+
+---
+
+## The stage
+
+A full-frame animated backdrop for explainer stretches, in the same desk
+language as everything else — drifting notebook ruling, paper grain, a slow ink
+wash, or sparse torn-paper shapes. Its `framing` field decides what happens to
+you:
+
+- **behind** — the backdrop replaces the room and you stay live and full size,
+  cut against the subject matte. Needs the Look to have been analysed once.
+- **pip** — the backdrop takes the frame and you shrink into a window on it,
+  cropped to the project's speaker region.
+- **solo** — backdrop only, no camera.
+
+It goes on the timeline as one long block, like everything else, and other
+blocks layer on top of it normally.
+
+---
+
+## The thumbnail
+
+**Thumbnail** in the toolbar. Grab a frame off the timeline or drop a picture
+in, pick one of five arrangements, type the words, done. The arrangement is a
+starting point rather than a cage — every element drags, scales, turns and
+deletes, and you can add more.
+
+Elements are a headline, a subhead chip, you cut out of the base frame and
+enlarged, marker graphics, and a picture slot. You design once: each element
+keeps a placement for 16:9 and one for 9:16, the same way timeline blocks do, so
+switching orientation and switching back is lossless.
+
+Saving writes a PNG at 1280×720 or 1080×1920 into `exports/`, ready to upload.
+Separately, **First frame** holds the design on the very front of the exported
+video for one frame — which is what a short opens on. That decision is also
+offered in the export dialog, because it is usually made at the moment you
+render rather than while designing. The cover is concatenated onto the finished
+file after the frame audit has passed, so a deliberately added still can never
+be mistaken for a lost one.
+
+---
+
+## Look
+
+Two effects that apply to the whole project, both measured from the footage
+rather than dialled in. Open **Look**, press *Analyse this footage* once, and
+then there are exactly two sliders.
+
+**Background defocus** is real depth, not a cutout. A depth model
+([Depth Anything V3 Base](https://huggingface.co/onnx-community/depth-anything-v3-base),
+about 400 MB, fetched on first use and cached) runs over the source once and
+writes a depth matte beside it. On a GPU the network is converted to half
+precision the first time it is used, which makes it run at roughly twice the
+speed and half the memory — a depth map that ends up as an 8-bit matte cannot
+tell the difference. The export then composites three depth slices — sharp,
+softened, thrown away — so the wall behind the speaker falls off with distance
+the way a fast lens does, instead of turning into a flat blurred card. The near
+and far planes are fixed once from samples across the whole video, so the blur
+cannot pump when the deepest thing in shot changes.
+
+The blur itself is weighted by the matte before it is taken, not masked after.
+Blurring the frame as it stands drags the subject's own bright edge out into
+the wall behind them and traces a halo around their hair — the single most
+recognisable sign of a fake defocus. Blurring colour-times-weight and weight
+together and dividing one by the other at the end means the background is
+blurred using only background.
+
+Where there is an OpenCL GPU, the whole defocus — the weighting, both Gaussians
+and the composite — runs as a kernel on it, with the grade folded into the same
+pass. On 4K footage that is about three and a half times faster than the CPU
+filter chain it replaces, and the blur is *better*: it is computed on a reduced
+copy sized so the radius lands at a few pixels, which means the Gaussian is
+sampled densely rather than stepped across in jumps. Sparse sampling of a wide
+blur is what produces banding and ghosted edges. The CPU chain is still there
+and is used when no GPU is available.
+
+**Colour** is measured too. White balance comes from the neutrals with skin
+excluded — average a talking-head frame and "grey" comes out skin-coloured, and
+correcting toward that turns the speaker green. Exposure comes from the
+histogram, contrast is added only where the picture is actually flat, and
+saturation is pushed with a skin rolloff built into the table. The result is
+written as a `.cube`, and the strength is baked into it: the preview uploads
+that exact table as a 3D texture and the export hands the same file to
+`lut3d` (or the same table as an image, when the grade rides along in the GPU
+pass), so the two cannot disagree.
+
+The slider is a curve rather than a straight mix, because the first part of a
+colour correction carries nearly all of the visible change; half way along it
+applies about two thirds of the measured correction. White balance rolls off
+over the top of the range so that neutralising a warm room does not tint every
+specular highlight cyan.
+
+Everything the pass produces lives in `projects/<name>/look/`, and both halves
+are invalidated automatically if the source footage is replaced.
+
+## The preview copy
+
+The editor does not play the master. A talking-head master is routinely 4K with
+a two-second GOP and several gigabytes, and a browser asked to scrub that spends
+its whole frame budget decoding — the render loop drops to around twenty hertz
+and everything feels heavy. So the source is transcoded once into a small,
+short-GOP copy that seeks instantly, and, when a look is on, a second copy with
+the look already burned into it. Playing the baked copy costs one video decode
+instead of two plus a shader chain per frame.
+
+Both are built in the background, reported in the corner of the stage while they
+run, and stored in `projects/<name>/preview/`. Neither is ever read by an
+export, which always works from the master. Moving a look slider hands the
+preview straight back to the live WebGL compositor so the picture responds
+immediately, and the baked copy is rebuilt behind it — from the preview copy
+rather than the master, with the blur radius scaled to match, which is the
+difference between waiting under a minute and waiting a quarter of an hour.
+
+The look is applied to the *source*, before any camera move, so a punch-in
+magnifies an already-defocused frame the way a lens would. It also means an
+export with a look on re-encodes every span — there is no untouched footage
+left to copy.
 
 ---
 
@@ -250,6 +420,8 @@ tools/
   test_mcp.py        end-to-end check of the agent surface
   test_ui.py         headless smoke test of the browser UI
 projects/<name>/     source video, assets, transcript, exports, project.json
+  look/              depth matte and the measured .cube, if a look was built
+  preview/           the small proxy the editor plays; never read by an export
 docs/                MCP and template-authoring references
 ```
 

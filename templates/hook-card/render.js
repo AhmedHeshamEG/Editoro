@@ -54,7 +54,7 @@ registerTemplate(ID, {
       highlighterSweep(ctx, A, {
         x: -width / 2, y: centre + bodyHeight / 2 + fitted.size * 0.18,
         w: width, h: fitted.size * 0.30,
-        progress: underline.phase === "in" ? underline.k : 1,
+        progress: A.value(instance, t, "underline"),
         color: A.categoryColor(ID), opacity: 0.7,
       });
     });

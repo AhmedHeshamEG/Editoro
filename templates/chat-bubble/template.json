@@ -2,7 +2,7 @@
   "id": "chat-bubble",
   "version": 1,
   "schema": 2,
-  "display_name": "رسالة · Chat",
+  "display_name": "Chat",
   "category": "screen",
   "category_color": "#60A5FA",
   "directive_verb": "رسالة",

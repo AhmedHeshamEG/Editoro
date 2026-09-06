@@ -2,7 +2,7 @@
   "id": "equation",
   "version": 1,
   "schema": 2,
-  "display_name": "معادلة · Equation",
+  "display_name": "Equation",
   "category": "text",
   "category_color": "#C4B5FD",
   "directive_verb": "معادلة",

@@ -8,7 +8,7 @@ registerTemplate(ID, {
     const u = A.unit(ctx);
     const rect = instance.fields.rect || { x: 0.30, y: 0.60, w: 0.40, h: 0.10 };
     const state = A.motion(instance, t);
-    const progress = state.phase === "in" ? state.k : 1;
+    const progress = A.value(instance, t);
     const width = rect.w * W;
     const centreX = (rect.x + rect.w / 2) * W;
     const baseline = (rect.y + rect.h) * H;

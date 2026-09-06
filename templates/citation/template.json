@@ -2,7 +2,7 @@
   "id": "citation",
   "version": 1,
   "schema": 2,
-  "display_name": "مصدر · Source",
+  "display_name": "Source",
   "category": "text",
   "category_color": "#A8A29E",
   "directive_verb": "مصدر",

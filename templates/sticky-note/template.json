@@ -2,7 +2,7 @@
   "id": "sticky-note",
   "version": 1,
   "schema": 2,
-  "display_name": "ملاحظة · Sticky note",
+  "display_name": "Sticky note",
   "category": "text",
   "category_color": "#FDE047",
   "directive_verb": "ملاحظة",

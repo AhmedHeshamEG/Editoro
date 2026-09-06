@@ -2,7 +2,7 @@
   "id": "split-screen",
   "version": 1,
   "schema": 2,
-  "display_name": "شاشتين · Split screen",
+  "display_name": "Split screen",
   "category": "video",
   "category_color": "#14B8A6",
   "directive_verb": null,

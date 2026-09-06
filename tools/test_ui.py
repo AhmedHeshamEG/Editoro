@@ -59,6 +59,8 @@ def build_project(name: str) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "assets").mkdir(exist_ok=True)
     (folder / "exports").mkdir(exist_ok=True)
+    look = folder / "look"
+    look.mkdir(exist_ok=True)
     source = folder / "source.mp4"
     S.run([S.FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
            "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=20",
@@ -68,6 +70,18 @@ def build_project(name: str) -> Path:
     S.run([S.FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
            "-f", "lavfi", "-i", "color=c=0x4ECDC4:s=640x420", "-frames:v", "1",
            str(folder / "assets" / "photo.png")], check=True)
+    # A stand-in depth matte: near at the bottom of the frame, far at the top.
+    # The real one comes out of the depth model, which is far too slow - and far
+    # too dependent on a GPU - to belong in a smoke test. What is under test here
+    # is the compositor, and it cannot tell where its matte came from.
+    S.run([S.FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+           "-f", "lavfi", "-i", "gradients=s=640x360:c0=black:c1=white:type=linear:"
+           "x0=0:y0=360:x1=0:y1=0:d=20:r=30",
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", "30",
+           "-pix_fmt", "yuv420p", str(look / "matte.mp4")], check=True)
+    S.write_cube(look / "grade.cube", {
+        "gain_r": 0.92, "gain_b": 1.06, "black": 0.02, "white": 0.94,
+        "gamma": 1.05, "contrast": 0.15, "saturation": 1.1}, 1.0, 17)
     srt = ("1\n00:00:00,000 --> 00:00:03,000\nthe whole trick is compression\n\n"
            "2\n00:00:03,000 --> 00:00:06,000\nand that is the entire idea\n")
     state = S.ProjectState(
@@ -190,6 +204,312 @@ async def run_checks(project: str) -> None:
             }""")
             assert selected, "the caption inspector has no follow-global control"
             note("caption inspector exposes the follow-global toggle")
+
+            # A number that counts and a bar that fills are read, not felt, so
+            # they must climb monotonically and still be climbing after the
+            # entrance spring has settled. Riding the spring — which is what
+            # they used to do — makes them snap to their value in two frames
+            # and then wobble around it, which is not a count-up at all.
+            ramp = await page.evaluate("""() => {
+              const { store: S, motionAt, valueAt } = window.editoro;
+              const inst = S.state.instances.find(i => i.template === "stat-pop");
+              if (!inst) return null;
+              const at = t => valueAt(inst, t, "number");
+              const samples = [];
+              for (let n = 0; n <= 40; n++) samples.push(at(n / 40));
+              const monotonic = samples.every((v, n) => n === 0 || v >= samples[n - 1] - 1e-9);
+              const bounded = samples.every(v => v >= 0 && v <= 1);
+              // 200 ms in: the spring has effectively landed, the count has not.
+              const early = 0.2 / inst.duration;
+              return {
+                monotonic, bounded,
+                spring: motionAt(inst, early, "number").k,
+                value: at(early),
+                arrived: at(1),
+              };
+            }""")
+            assert ramp, "no stat-pop instance was placed"
+            assert ramp["monotonic"], "the count-up ramp goes backwards"
+            assert ramp["bounded"], f"the count-up ramp leaves 0..1: {ramp}"
+            assert ramp["arrived"] >= 0.999, f"the count never reaches its value: {ramp}"
+            assert ramp["value"] < 0.9, (
+                f"the count is already finished 200 ms in: {ramp}")
+            note(f"count-up ramp climbs to {ramp['value']:.2f} at 200 ms "
+                 f"where the spring is already at {ramp['spring']:.2f}")
+
+            # The source camera. Every one of these used to be wrong on screen
+            # and right on export, which is the worst way round: ken-burns
+            # snapped to its start framing and sat there, and zoom-out played
+            # backwards, because the preview knew only one move and applied it
+            # to every camera pack regardless of the mode the pack declared.
+            # _test_camera_modes() in server.py asserts the same shapes against
+            # the FFmpeg expressions, so the two halves are pinned together.
+            camera = await page.evaluate("""() => {
+              const { cameraPlan, cameraStateAt } = window.editoro;
+              const tight = { x: .22, y: .16, w: .56, h: .64 };
+              const wide = { x: .10, y: .08, w: .80, h: .84 };
+              const zoom = (template, fields, duration, when) => cameraStateAt(
+                cameraPlan({ id: "c", template, start: 0, duration, fields }), when).scale;
+              const kb = t => zoom("ken-burns", { rect: wide, rect2: tight }, 4, t);
+              return {
+                punchStart: zoom("punch-in", { rect: tight }, 3, 0),
+                punchHold: zoom("punch-in", { rect: tight }, 3, 1.5),
+                outStart: zoom("zoom-out", { rect: tight }, 3, 0),
+                outEnd: zoom("zoom-out", { rect: tight }, 3, 2.9),
+                burns: [kb(0), kb(2), kb(3.99)],
+              };
+            }""")
+            assert camera["punchStart"] < 1.02, (
+                f"a punch-in must start on the full frame: {camera['punchStart']:.3f}")
+            assert camera["punchHold"] > 1.4, (
+                f"a punch-in must hold tight in the middle: {camera['punchHold']:.3f}")
+            assert camera["outStart"] > 1.4, (
+                f"a zoom-out must start tight: {camera['outStart']:.3f}")
+            assert camera["outEnd"] < 1.05, (
+                f"a zoom-out must end on the full frame: {camera['outEnd']:.3f}")
+            begin, middle, end = camera["burns"]
+            assert begin < middle < end, (
+                f"ken-burns must travel, not snap and hold: {camera['burns']}")
+            note(f"camera modes: punch {camera['punchStart']:.2f}->{camera['punchHold']:.2f}, "
+                 f"zoom-out {camera['outStart']:.2f}->{camera['outEnd']:.2f}, "
+                 f"ken-burns {begin:.2f}->{end:.2f}")
+
+            # Breathing: one clock, shared. The overlays have to be at the same
+            # point in the breath as the footage at the same instant, because
+            # the whole effect is that they move together; two clocks would
+            # read as wobbling stickers on a steady video.
+            breathing = await page.evaluate("""async () => {
+              const { store: S, breatheScale, breatheAmplitude } = window.editoro;
+              const before = S.state.breathe, blocks = S.state.instances;
+              // Measured on a bare timeline. The palette check above placed one
+              // of every pack, `breathe` included, and that block overriding
+              // the project strength is the correct behaviour - it is just not
+              // what this measurement is about.
+              S.state.instances = [];
+              const read = level => {
+                S.state.breathe = level;
+                const samples = [];
+                for (let n = 0; n <= 60; n++) samples.push(breatheScale(n / 4));
+                return { min: Math.min(...samples), max: Math.max(...samples),
+                         amplitude: breatheAmplitude(0) };
+              };
+              const off = read("off"), subtle = read("subtle");
+              const standard = read("standard"), strong = read("strong");
+              S.state.breathe = before; S.state.instances = blocks;
+              return { off, subtle, standard, strong };
+            }""")
+            assert breathing["off"]["max"] == 1 and breathing["off"]["min"] == 1, (
+                "breathing off still moved the frame")
+            # Never below 1: scaling the footage down would pull the edges of
+            # the picture into shot.
+            assert breathing["standard"]["min"] >= 1 - 1e-9, breathing["standard"]
+            assert (breathing["subtle"]["amplitude"] < breathing["standard"]["amplitude"]
+                    < breathing["strong"]["amplitude"]), breathing
+            assert breathing["standard"]["max"] < 1.05, (
+                f"breathing is far too deep to be invisible: {breathing['standard']}")
+            note(f"breathing scales 1.000-{breathing['standard']['max']:.4f} at standard, "
+                 f"and is genuinely flat when off")
+
+            # Silence removes a block's foley from the mix AND its markers from
+            # the SFX track, so that track keeps being a truthful picture of
+            # what the export will contain.
+            foley = await page.evaluate("""() => {
+              const { store: S, sfxEventsForInstance } = window.editoro;
+              const inst = S.state.instances.find(
+                i => sfxEventsForInstance(i, S.packs[i.template]).length);
+              if (!inst) return null;
+              const before = sfxEventsForInstance(inst, S.packs[inst.template]).length;
+              inst.silent = true;
+              const after = sfxEventsForInstance(inst, S.packs[inst.template]).length;
+              inst.silent = false;
+              return { before, after, template: inst.template };
+            }""")
+            assert foley and foley["before"] > 0 and foley["after"] == 0, (
+                f"silencing a block did not remove its foley: {foley}")
+            note(f"silencing a {foley['template']} block removes all "
+                 f"{foley['before']} of its sounds from the mix and the track")
+
+            # The thumbnail. It is the one surface that draws at final size
+            # rather than at preview size, and the PNG that gets saved comes out
+            # of the same drawThumbnail() the dialog shows - so a canvas that
+            # comes back empty here is a cover that would be uploaded empty.
+            cover = await page.evaluate("""async () => {
+              const { $, drawThumbnail, thumbState } = window.editoro;
+              $("#thumbBtn").click();
+              // The base frame is fetched; the arrangement does not wait for it.
+              await new Promise(done => setTimeout(done, 1500));
+              const thumb = thumbState();
+              const canvas = document.createElement("canvas");
+              canvas.width = 1280; canvas.height = 720;
+              const ctx = canvas.getContext("2d");
+              drawThumbnail(ctx, 1280, 720, false);
+              const pixels = ctx.getImageData(0, 0, 1280, 720).data;
+              let bright = 0;
+              for (let i = 0; i < pixels.length; i += 4)
+                if (pixels[i] > 200 && pixels[i + 1] > 200) bright++;
+              const layouts = thumb.elements.every(
+                e => e.layouts?.horizontal && e.layouts?.vertical);
+              $("#thumbDlg").close();
+              return { elements: thumb.elements.length, bright, layouts,
+                       kinds: thumb.elements.map(e => e.kind) };
+            }""")
+            assert cover["elements"] >= 2, f"the thumbnail seeded no elements: {cover}"
+            assert cover["layouts"], "a thumbnail element is missing one of its two layouts"
+            # The headline is white and enormous; if none of it landed, either
+            # the font never loaded or the element was drawn off-canvas.
+            assert cover["bright"] > 2000, (
+                f"the thumbnail headline did not draw: {cover}")
+            note(f"thumbnail draws {cover['elements']} elements "
+                 f"({', '.join(cover['kinds'])}) at 1280x720, both layouts kept")
+
+            # The counting ladder. The whole point is that the ticking and the
+            # digits are one schedule, so this reads them from opposite ends:
+            # the tick times out of the foley, and the moments the drawn number
+            # actually changes out of A.value(). They have to be the same list.
+            # _test_value_ladder() in server.py holds the export side to it.
+            counting = await page.evaluate("""() => {
+              const { store: S, valueAt, valueLadder, sfxEventsForInstance } = window.editoro;
+              const item = { id: "stat", template: "stat-pop", start: 0, duration: 3,
+                             fields: { value: "250" }, scale: 1 };
+              const ladder = valueLadder(item, "number");
+              const ticks = sfxEventsForInstance(item, S.packs["stat-pop"])
+                .filter(e => e.url.includes("count-wood")).map(e => e.time);
+              // Walk the block frame by frame and note every moment the number
+              // it would draw changes: that is the picture, not the plan.
+              const changes = [];
+              let previous = 0;
+              for (let frame = 1; frame <= 90; frame++) {
+                const seconds = frame / 30;
+                const value = valueAt(item, seconds / item.duration, "number");
+                if (value !== previous) { changes.push(seconds); previous = value; }
+              }
+              return { ladder, ticks, changes, final: valueAt(item, 1, "number") };
+            }""")
+            ladder, ticks = counting["ladder"], counting["ticks"]
+            assert len(ladder) == 10, f"the stat ladder is not ten notches: {ladder}"
+            assert ticks == ladder, (
+                f"the ticking is not on the ladder: {ticks} vs {ladder}")
+            gaps = [b - a for a, b in zip(ladder, ladder[1:])]
+            assert all(b > a for a, b in zip(gaps, gaps[1:])), (
+                f"the count does not decelerate: {gaps}")
+            assert counting["final"] == 1, (
+                f"the number never reaches its value: {counting['final']}")
+            # Every notch shows up on screen, within the frame it is due on.
+            assert len(counting["changes"]) == len(ladder), (
+                f"drawn changes {counting['changes']} do not match ladder {ladder}")
+            drift = max(abs(a - b) for a, b in zip(counting["changes"], ladder))
+            assert drift <= 1 / 30 + 1e-6, f"a digit changed {drift:.3f}s off its tick"
+            note(f"the count steps {len(ladder)} times, gaps "
+                 f"{gaps[0] * 1000:.0f}ms->{gaps[-1] * 1000:.0f}ms, "
+                 f"every tick on a digit change")
+
+            # The look preview: switch both halves on and read the composited
+            # canvas back. A WebGL chain that fails quietly still paints a
+            # perfectly plausible black rectangle, so the only honest check is
+            # to compare pixels against the same frame with the look off.
+            looked = await page.evaluate("""async () => {
+              const { store: S, lookRefresh, lookSample, LOOK } = window.editoro;
+              // testsrc2 animates, and how much a blur changes depends on how
+              // much detail the frame has. Pinning both videos to one moment
+              // makes the three measurements comparable to each other and to
+              // the same run tomorrow.
+              const vid = document.querySelector("#vid");
+              async function park() {
+                // Paused, not merely seeked. lookSample() reads the composite
+                // out of WebGL and then draws the same <video> onto a 2D canvas
+                // to compare against; a video still running between those two
+                // steps hands it two different frames of testsrc2, and the
+                // difference it then reports is the seek, not the look.
+                S.playing = false;
+                for (const media of [vid, LOOK.matte]) {
+                  if (!media.paused) media.pause();
+                }
+                for (const media of [vid, LOOK.matte]) {
+                  if (!media.src || media.readyState < 1) continue;
+                  // Both have to *arrive*, not just be asked. The matte is a
+                  // gradient that moves through the clip, so a matte still
+                  // sitting at zero while the footage is at five puts the
+                  // near/far split somewhere else entirely and the defocus
+                  // measures whatever that happens to blur.
+                  const deadline = performance.now() + 5000;
+                  while (Math.abs(media.currentTime - 5) > 0.002
+                         && performance.now() < deadline) {
+                    media.currentTime = 5;
+                    await new Promise(done => {
+                      media.addEventListener("seeked", done, { once: true });
+                      setTimeout(done, 1000);
+                    });
+                  }
+                }
+              }
+              async function measure(defocus, grade) {
+                S.state.look = { ...S.state.look, defocus, grade,
+                  matte_revision: S.state.source_revision,
+                  grade_revision: S.state.source_revision };
+                await lookRefresh();
+                // The matte is a second <video>, and until it has decoded a
+                // frame the compositor correctly declines to defocus anything.
+                // Sampling before then measures the wait, not the look.
+                const deadline = performance.now() + 8000;
+                while (performance.now() < deadline) {
+                  const ready = !defocus || LOOK.matte.readyState >= 2;
+                  if (ready && LOOK.lutSize > (grade ? 2 : 0)) break;
+                  await new Promise(done => setTimeout(done, 100));
+                }
+                await park();
+                await new Promise(done => setTimeout(done, 400));
+                return lookSample();
+              }
+              // Each half on its own, then both. Measuring only the two
+              // together lets one of them be silently dead - which is exactly
+              // how a grade that changed nothing survived here for a while.
+              const defocusOnly = await measure(0.8, 0);
+              const gradeOnly = await measure(0, 1);
+              const both = await measure(0.8, 1);
+              const lut = LOOK.lutSize, active = LOOK.active;
+              S.state.look = { ...S.state.look, defocus: 0, grade: 0 };
+              await lookRefresh();
+              return { defocusOnly, gradeOnly, both, lut, active,
+                       handedBack: !LOOK.active,
+                       failed: LOOK.failed, error: LOOK.error };
+            }""")
+            assert not looked["failed"], f"the look preview failed to start: {looked['error']}"
+            assert looked["active"], "the look preview never switched on"
+            assert looked["both"]["ink"] > looked["both"]["width"] * looked["both"]["height"] * 0.5,                 f"the look canvas came back essentially black: {looked['both']}"
+            assert looked["lut"] > 2, f"the grade table never uploaded: {looked['lut']}"
+            assert looked["handedBack"], "switching the look off left the canvas up"
+            # Each half has to be plainly visible on its own, not merely
+            # non-zero. The first version of this asked for one code value out
+            # of 255 of *average brightness* across the frame, and so passed
+            # happily on a grade that was almost pure contrast and moved the
+            # average not at all.
+            # The fixture grade moves this frame about 2/255 per pixel, and it
+            # is meant to: it is a colour grade, not a filter. This assertion
+            # used to ask for 3, and passed only on the runs where the video was
+            # still rolling between the two reads inside lookSample() - it was
+            # measuring a seek. With that fixed the honest number is stable, and
+            # the direction check below is what actually proves the grade ran.
+            grade = looked["gradeOnly"]
+            assert grade["diff"] > 1.2, (
+                f"the grade is too subtle to see: {grade['diff']:.1f}/255 per pixel")
+            # gain_r 0.92 against gain_b 1.06 in the fixture cube: blue has to
+            # come up *relative to* red. Not in absolute terms - the same table
+            # lifts the black point and rolls off the white, which pulls every
+            # channel down a little - so the channel balance is the part that
+            # only a grade that actually ran can produce. An identity table
+            # moves the two together and fails this by construction.
+            tilt = ((grade["blue"] - grade["rawBlue"])
+                    - (grade["red"] - grade["rawRed"]))
+            assert tilt > 1.0, f"the grade did not cool the frame: {tilt:.2f}, {grade}"
+            assert looked["defocusOnly"]["diff"] > 3.0, (
+                f"the defocus is too subtle to see: "
+                f"{looked['defocusOnly']['diff']:.1f}/255 per pixel")
+            shifted = looked["both"]["diff"]
+            note(f"look preview composites defocus + grade "
+                 f"({looked['lut']} cube; defocus {looked['defocusOnly']['diff']:.1f}, "
+                 f"grade {looked['gradeOnly']['diff']:.1f} tilting blue "
+                 f"{tilt:.1f} past red, "
+                 f"both {shifted:.1f} /255 per pixel)")
 
             undone = await page.evaluate("""() => {
               const { store: S, snapshot, afterMutate, undo } = window.editoro;

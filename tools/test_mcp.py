@@ -54,10 +54,27 @@ def build_fixture(project: str) -> Path:
         "-f", "lavfi", "-i", "color=c=0x4ECDC4:s=600x400",
         "-frames:v", "1", str(picture),
     ], check=True)
+    # A stand-in for what the depth pass would write, so the look can be
+    # exercised end to end without running a depth model over the fixture. The
+    # export cannot tell the difference: it reads a matte, not a model.
+    look = folder / "look"
+    look.mkdir(exist_ok=True)
+    S.run([
+        S.FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "gradients=s=320x180:c0=black:c1=white:type=linear:"
+        "x0=0:y0=180:x1=0:y1=0:d=6:r=30",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", "30",
+        "-pix_fmt", "yuv420p", str(look / "matte.mp4"),
+    ], check=True)
+    S.write_cube(look / "grade.cube", {
+        "gain_r": 0.9, "gain_b": 1.08, "black": 0.02, "white": 0.95,
+        "gamma": 1.06, "contrast": 0.18, "saturation": 1.12}, 0.8, 17)
     state = S.ProjectState(
         name=project, source=source.name, source_info=S.probe(source),
+        source_revision="fixture",
         cuts=[S.Cut(src_in=0, src_out=6)],
         captions=S.parse_transcript(SRT, "captions.srt"),
+        look=S.Look(matte_revision="fixture", grade_revision="fixture"),
     )
     S.save_state(state)
     return folder
@@ -169,6 +186,24 @@ async def run_checks(project: str) -> None:
     assert png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) > 3000
     step(f"rendered a real composited frame ({len(png) // 1024} KB PNG)")
 
+    plain = await M.set_look(project=project, defocus=0, grade=0)
+    assert plain["defocus"] == 0 and plain["grade"] == 0
+    before = M.base64.b64decode((await M.render_frame(
+        project=project, at=0.8, width=480)).data)
+    looked = await M.set_look(project=project, defocus=0.7, grade=0.8)
+    assert looked["matte_ready"] and looked["grade_ready"], looked
+    assert looked["defocus"] == 0.7 and looked["grade"] == 0.8
+    after = M.base64.b64decode((await M.render_frame(
+        project=project, at=0.8, width=480)).data)
+    # The still an agent looks at has to be the graded, defocused one, or it is
+    # checking a frame the export will never produce.
+    assert after != before, "the look changed nothing in the rendered frame"
+    step(f"look applied to the rendered frame "
+         f"({len(before) // 1024} KB plain -> {len(after) // 1024} KB with the look)")
+
+    # This export runs with the look on, which is the only way to prove the
+    # whole FFmpeg path: no span can be stream-copied any more, and both the
+    # rendered spans and the untouched ones have to build the same chain.
     exported = await M.export(project=project, mode="lossless")
     assert exported.get("exported", "").endswith(".mp4"), exported
     output = Path(exported["path"])

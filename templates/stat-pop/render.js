@@ -40,10 +40,11 @@ registerTemplate(ID, {
       paperCard(ctx, A, { w: g.width, h: g.height, radius: 16, seed: instance.id });
     });
     A.stage(ctx, number, () => {
-      // The count-up runs on the entrance curve itself, so the number settles on
-      // exactly the frame the card stops moving. Two separate timings would read
-      // as two separate events.
-      const counted = g.target * (number.phase === "in" ? Math.max(0, Math.min(1, number.k)) : 1);
+      // The count-up runs on its own monotonic ramp, not on the entrance spring:
+      // the card is thrown into place fast and the number keeps climbing under
+      // it for a beat afterwards. That is the shape the eye expects, and it is
+      // the only way the digits are on screen long enough to be read at all.
+      const counted = g.target * A.value(instance, t, "number");
       const text = formatNumber(counted, {
         decimals: g.decimals,
         prefix: instance.fields.prefix || "", suffix: instance.fields.suffix || "",

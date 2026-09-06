@@ -38,8 +38,9 @@ registerTemplate(ID, {
       roundRectPath(ctx, -barWidth / 2, barTop, barWidth, g.barHeight, g.barHeight / 2);
       ctx.fillStyle = alpha(PALETTE.inkFaint, 0.22);
       ctx.fill();
-      const filled = barWidth * (g.percent / 100)
-        * (bar.phase === "in" ? Math.max(0, Math.min(1, bar.k)) : 1);
+      // The fill is a quantity, so it rides the value ramp — the card lands on
+      // the spring, the bar keeps filling after it has stopped moving.
+      const filled = barWidth * (g.percent / 100) * A.value(instance, t, "bar");
       if (filled > 1) {
         ctx.save();
         roundRectPath(ctx, -barWidth / 2, barTop, barWidth, g.barHeight, g.barHeight / 2);
@@ -50,8 +51,9 @@ registerTemplate(ID, {
       }
     });
     A.stage(ctx, value, () => {
-      const shown = Math.round(g.percent
-        * (value.phase === "in" ? Math.max(0, Math.min(1, value.k)) : 1));
+      // Deliberately the bar's ramp, not the readout's own: the number has to
+      // agree with the fill on every frame or the two read as separate facts.
+      const shown = Math.round(g.percent * A.value(instance, t, "bar"));
       const label = String(instance.fields.label || "").trim();
       const y = -g.height / 2 + pad + g.labelSize * 0.55;
       if (label) {

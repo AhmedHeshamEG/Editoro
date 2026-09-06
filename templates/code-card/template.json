@@ -2,7 +2,7 @@
   "id": "code-card",
   "version": 1,
   "schema": 2,
-  "display_name": "كود · Code",
+  "display_name": "Code",
   "category": "screen",
   "category_color": "#94A3B8",
   "directive_verb": "كود",

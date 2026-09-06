@@ -2,7 +2,7 @@
   "id": "circle-emphasis",
   "version": 1,
   "schema": 2,
-  "display_name": "تحويط · Circle",
+  "display_name": "Circle",
   "category": "annotation",
   "category_color": "#FCA5A5",
   "directive_verb": "تحويط",
@@ -67,6 +67,9 @@
       "to": {
         "opacity": 0
       }
+    },
+    "value": {
+      "ms": 460
     }
   },
   "sfx": [

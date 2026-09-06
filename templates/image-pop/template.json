@@ -2,7 +2,7 @@
   "id": "image-pop",
   "version": 5,
   "schema": 2,
-  "display_name": "صورة · Image pop",
+  "display_name": "Image pop",
   "category": "image",
   "category_color": "#4ECDC4",
   "directive_verb": "صورة",

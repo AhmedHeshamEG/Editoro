@@ -193,6 +193,16 @@ def _brief_instance(item: dict[str, Any]) -> dict[str, Any]:
         summary["missing_asset"] = True
     if item.get("review"):
         summary["needs_review"] = True
+    # Only mentioned when they are not the default, so the ordinary block stays
+    # as small to read as it was.
+    if item.get("backdrop"):
+        summary["backdrop"] = True
+    if item.get("depth") == "behind":
+        summary["depth"] = "behind"
+    if item.get("silent"):
+        summary["silent"] = True
+    if item.get("tilt") and item["tilt"] != "off":
+        summary["tilt"] = item["tilt"]
     return summary
 
 
@@ -260,6 +270,60 @@ async def _resolve_placement(
     return layouts
 
 
+def _screen_box(item: dict[str, Any], pack: dict[str, Any]) -> Optional[dict[str, float]]:
+    """Roughly where a block lands on screen, in fractions of the frame.
+
+    An estimate, not a measurement: the real extent comes from the template's
+    own `measure()` in the browser and depends on the text it was given. It is
+    deliberately generous, because its only job is to catch two blocks put on
+    top of each other - a near miss reported is cheap, a collision shipped is
+    not. Full-frame blocks are excluded: they are backdrops and plates, and are
+    supposed to have things over them.
+    """
+    if pack.get("full_frame") or pack.get("camera"):
+        return None
+    scale = float(item.get("scale") or 1.0)
+    half_w = min(0.48, 0.20 * scale)
+    half_h = min(0.48, 0.13 * scale)
+    return {
+        "x": float(item.get("x", 0.5)) - half_w, "y": float(item.get("y", 0.3)) - half_h,
+        "w": half_w * 2, "h": half_h * 2,
+    }
+
+
+def _collisions(packs: dict[str, dict[str, Any]],
+                items: list[dict[str, Any]]) -> list[str]:
+    """Blocks that are on screen together AND sitting in the same place.
+
+    `_free_track` only ever asked whether two blocks overlap in *time*, and put
+    them on separate tracks when they did - which stacks them in the render
+    rather than separating them. Two blocks on different tracks at the same
+    second and the same coordinates are drawn one over the other, which is the
+    positioning problem: nothing was wrong with the numbers, nothing was
+    checking them against each other.
+    """
+    out: list[str] = []
+    for first in range(len(items)):
+        a = items[first]
+        box_a = _screen_box(a, packs.get(a["template"], {}))
+        if not box_a:
+            continue
+        for b in items[first + 1:]:
+            if a["start"] >= b["start"] + b["duration"] or b["start"] >= a["start"] + a["duration"]:
+                continue
+            box_b = _screen_box(b, packs.get(b["template"], {}))
+            if not box_b:
+                continue
+            if (box_a["x"] < box_b["x"] + box_b["w"] and box_b["x"] < box_a["x"] + box_a["w"]
+                    and box_a["y"] < box_b["y"] + box_b["h"] and box_b["y"] < box_a["y"] + box_a["h"]):
+                out.append(
+                    f"{a['id']} ({a['template']}) and {b['id']} ({b['template']}) are on "
+                    f"screen together around {max(a['start'], b['start']):.2f}s and land in "
+                    f"the same place; move one with update_blocks x/y, or retime it"
+                )
+    return out
+
+
 def _free_track(state: dict[str, Any], start: float, duration: float,
                 reserved: list[dict[str, Any]]) -> int:
     """Lowest track where this block does not sit on top of another one."""
@@ -297,7 +361,42 @@ mcp = MCPServer(
         "  * Leave placement to the template unless there is a reason to move it. Every\n"
         "    template already has a tuned 16:9 and 9:16 layout.\n"
         "  * Meme blocks are flagged for human review on purpose. Do not clear that flag.\n"
-        "  * Silence is allowed. A block every few seconds is decoration, not editing."
+        "  * Silence is allowed. A block every few seconds is decoration, not editing.\n"
+        "  * `overlapping` in a place_blocks result means two blocks share the frame at\n"
+        "    the same moment. Separate tracks stack them, they do not move them apart.\n\n"
+        "Depth, and the blur:\n"
+        "  * Set `backdrop: true` on a block to frost the footage and every lower track\n"
+        "    while it is on screen; the block and anything above it stay sharp. It is what\n"
+        "    makes an image or a screenshot read as being in front of the room rather than\n"
+        "    pasted onto it, and it fades in and out with the block that owns it. The\n"
+        "    backdrop-blur template is the same effect with nothing drawn over it.\n"
+        "  * Set `depth: \"behind\"` to put a block between the background and the\n"
+        "    speaker, so it passes behind their head. It needs the subject matte, which\n"
+        "    set_look builds on its first analysis - check `speaker_matte` in get_project\n"
+        "    first, because without it the block is stored as behind but composites in\n"
+        "    front.\n"
+        "  * The PiP window shows the project speaker region, not the corner it sits in.\n"
+        "    Call set_speaker_region once, then look at a render_frame to confirm it\n"
+        "    frames the person rather than a shoulder.\n"
+        "  * `tilt` leans a block out of plane: \"left\" or \"right\" turns it, \"lean\" tips\n"
+        "    it away from the viewer. Tuned presets, not an angle. It combines with\n"
+        "    depth, so a tilted card can pass behind the speaker.\n"
+        "\n"
+        "Sound, and the frame that never sits still:\n"
+        "  * `silent: true` places a block without its template's foley. Use it when\n"
+        "    several blocks land within a few seconds and the edit starts to tick; it is\n"
+        "    a better answer than removing a block that is doing visual work.\n"
+        "  * The project breathes: a very slow scale drift runs under the whole video on\n"
+        "    one clock, so the footage and every graphic move together and no shot is\n"
+        "    ever completely still. It is a project setting (off/subtle/standard/strong),\n"
+        "    and a `breathe` block overrides the strength over a stretch. A camera block\n"
+        "    switches it off for its own span, so nothing stacks - which is also why you\n"
+        "    still should not stack camera moves yourself.\n"
+        "  * The `stage` template is a full-frame animated backdrop for an explainer\n"
+        "    stretch. Its `framing` field decides what happens to the speaker: \"behind\"\n"
+        "    replaces the room around them (needs the matte), \"pip\" shrinks them into a\n"
+        "    window on it, \"solo\" drops the camera entirely. Do not also set `depth` on\n"
+        "    it; the framing is the depth."
     ),
 )
 
@@ -319,6 +418,8 @@ async def diagnostics() -> dict[str, Any]:
         "gpu_encoder": health.get("nvenc"),
         "templates_loaded": health.get("templates"),
         "template_errors": health.get("template_errors") or {},
+        "look_depth_runtime": health.get("depth_runtime"),
+        "look_depth_model_downloaded": health.get("depth_model"),
     }
 
 
@@ -367,6 +468,16 @@ async def get_project(
         "blocks_placed": len(state.get("instances", [])),
         "caption_style": state.get("caption_style", {}),
         "notes": state.get("notes", ""),
+        # Where the speaker is in the source frame, for the templates that show
+        # the footage inside themselves - today the PiP window.
+        "speaker_region": state.get("speaker_region"),
+        # Whether a block can actually be put behind the speaker. The matte is
+        # built the first time the Look runs; until then `depth: "behind"` is
+        # accepted and stored but composites in front, so check this rather than
+        # assuming it worked.
+        "speaker_matte": bool(state.get("look", {}).get("matte_revision"))
+                         and state.get("look", {}).get("matte_revision")
+                             == state.get("source_revision"),
     }
     if include_timeline:
         summary["timeline"] = [_brief_instance(item) for item in state.get("instances", [])]
@@ -618,11 +729,19 @@ async def edit_captions(
             block["end"] = float(edit.end)
         if edit.pin_to is not None:
             if len(edit.pin_to) >= 2:
+                # Pin it for the orientation the project is laid out in now.
+                # The other one keeps whatever it had, the same way a template
+                # instance does.
+                active = state.get("orientation", "horizontal")
                 block["follow_global"] = False
                 block["x"], block["y"] = float(edit.pin_to[0]), float(edit.pin_to[1])
+                layouts = block.setdefault("layouts", {})
+                layouts[active] = {"x": block["x"], "y": block["y"],
+                                   "scale": block.get("scale") or 1.0}
             else:
                 block["follow_global"] = True
                 block["x"] = block["y"] = block["scale"] = None
+                block["layouts"] = {}
         changed += 1
     state["captions"] = [block for block in state["captions"] if block["id"] not in removals]
     state = await EDITORO.save(state)
@@ -658,6 +777,29 @@ class Block(BaseModel):
         description="Size multiplier. Omit to use the template's layout.")] = None
     track: Annotated[Optional[int], Field(
         description="Overlay track, 1 and up. Omit to place it on the first free one.")] = None
+    backdrop: Annotated[Optional[bool], Field(
+        description="Blur everything composited underneath this block - the footage and "
+                    "any lower track - while it is on screen. This block and anything "
+                    "above it stay sharp. Use it to put an image, a screenshot or a quote "
+                    "in front of the room instead of pasted onto it. The blur fades in "
+                    "and out with the block. Templates that are nothing but the blur "
+                    "(backdrop-blur) already have it on.")] = None
+    depth: Annotated[Optional[Literal["front", "behind"]], Field(
+        description="Where this block sits relative to the speaker. 'front' is over them. "
+                    "'behind' composites it between the background and the speaker, so it "
+                    "passes behind their head. 'behind' needs the subject matte, which is "
+                    "built the first time the Look is used; without it the block stays in "
+                    "front. Check `speaker_matte` in get_project before relying on it.")] = None
+    silent: Annotated[Optional[bool], Field(
+        description="Place this block without its template's foley. The sound belongs to "
+                    "the block, so silencing it removes the sound from the mix and its "
+                    "markers from the SFX track. Use it when several blocks land close "
+                    "together and the edit starts to tick.")] = None
+    tilt: Annotated[Optional[Literal["off", "left", "right", "lean"]], Field(
+        description="A small out-of-plane lean, so the block reads as an object lying on "
+                    "the scene rather than pasted on the glass. 'left' and 'right' turn "
+                    "it; 'lean' tips it away from the viewer. Tuned presets, not an angle: "
+                    "one value per name across every template. Combines with depth.")] = None
 
 
 @mcp.tool()
@@ -760,6 +902,12 @@ async def place_blocks(
             "layouts": layouts, "fields": fields,
             "missing": needs_asset,
             "review": bool(pack.get("directive_review")),
+            # A pack can ship the blur switched on; that is all backdrop-blur is.
+            "backdrop": bool(pack.get("backdrop")) if block.backdrop is None
+                        else bool(block.backdrop),
+            "depth": block.depth or "front",
+            "silent": bool(block.silent),
+            "tilt": block.tilt or "off",
         })
 
     state.setdefault("instances", []).extend(created)
@@ -771,6 +919,11 @@ async def place_blocks(
     }
     if problems:
         result["problems"] = problems
+    # Separate tracks are not separate places. Say so rather than letting the
+    # agent find out from a render three steps later.
+    overlaps = _collisions(packs, state.get("instances", []))
+    if overlaps:
+        result["overlapping"] = overlaps
     waiting = [item["id"] for item in created if item.get("missing")]
     if waiting:
         result["awaiting_assets"] = waiting
@@ -790,6 +943,14 @@ class BlockUpdate(BaseModel):
     y: Annotated[Optional[float], Field(description="New vertical centre, 0..1.")] = None
     scale: Annotated[Optional[float], Field(description="New size multiplier.")] = None
     track: Annotated[Optional[int], Field(description="New overlay track.")] = None
+    backdrop: Annotated[Optional[bool], Field(
+        description="Turn the blur-underneath on or off for this block.")] = None
+    depth: Annotated[Optional[Literal["front", "behind"]], Field(
+        description="Move this block in front of or behind the speaker.")] = None
+    silent: Annotated[Optional[bool], Field(
+        description="Silence or unsilence this block's foley.")] = None
+    tilt: Annotated[Optional[Literal["off", "left", "right", "lean"]], Field(
+        description="Change this block's lean: off, left, right or lean.")] = None
     delete: Annotated[bool, Field(description="Remove this block.")] = False
 
 
@@ -841,6 +1002,14 @@ async def update_blocks(
                 layouts.setdefault(orientation, {})[key] = float(value)
         if update.track is not None:
             item["track"] = max(1, min(64, int(update.track)))
+        if update.backdrop is not None:
+            item["backdrop"] = bool(update.backdrop)
+        if update.depth is not None:
+            item["depth"] = update.depth
+        if update.silent is not None:
+            item["silent"] = bool(update.silent)
+        if update.tilt is not None:
+            item["tilt"] = update.tilt
         changed += 1
     state["instances"] = [item for item in state["instances"] if item["id"] not in removals]
     state = await EDITORO.save(state)
@@ -1128,6 +1297,10 @@ async def set_orientation(
     for item in state.get("instances", []):
         item.setdefault("layouts", {})[previous] = {
             "x": item["x"], "y": item["y"], "scale": item["scale"]}
+    for block in state.get("captions", []):
+        if not block.get("follow_global", True) and block.get("x") is not None:
+            block.setdefault("layouts", {})[previous] = {
+                "x": block["x"], "y": block["y"], "scale": block.get("scale") or 1.0}
     state["orientation_mode"] = mode
     state = await EDITORO.save(state)
     active = state["orientation"]
@@ -1139,9 +1312,133 @@ async def set_orientation(
             saved = {"x": variant.get("x", 0.5), "y": variant.get("y", 0.3),
                      "scale": variant.get("scale", 1.0)}
         item.update(saved)
+    for block in state.get("captions", []):
+        if block.get("follow_global", True):
+            continue
+        saved = (block.get("layouts") or {}).get(active)
+        # Not pinned in this orientation yet: fall back to the project-wide
+        # caption placement rather than dragging the other orientation's spot
+        # across.
+        block["x"] = (saved or {}).get("x")
+        block["y"] = (saved or {}).get("y")
+        block["scale"] = (saved or {}).get("scale")
+        if block["x"] is None:
+            block["follow_global"] = True
     state = await EDITORO.save(state)
     return {"orientation": active, "orientation_mode": mode,
             "blocks_relaid": len(state.get("instances", []))}
+
+
+@mcp.tool()
+async def set_speaker_region(
+    project: str,
+    x: Annotated[float, Field(
+        description="Left edge of the box, as a fraction of the source frame width.",
+        ge=0, le=1)],
+    y: Annotated[float, Field(
+        description="Top edge, as a fraction of the source frame height.", ge=0, le=1)],
+    w: Annotated[float, Field(
+        description="Width, as a fraction of the frame.", gt=0.02, le=1)],
+    h: Annotated[float, Field(
+        description="Height, as a fraction of the frame.", gt=0.02, le=1)],
+) -> dict[str, Any]:
+    """Say where the speaker is in the source frame. Set once per project.
+
+    Templates that show the footage inside themselves - today the PiP window -
+    crop to this box and scale it into their frame, so the window frames the
+    person rather than whichever corner of the shot it happens to sit over.
+
+    A talking head does not move between shots, so this is a project setting
+    rather than a per-block one, in the same way the caption position is. A
+    single PiP block can still override it through its own `region` field when
+    one shot is framed differently.
+
+    Use render_frame afterwards and look at it. A box that is too tight crops
+    the top of the head off; too loose and the person is small in the window
+    with a lot of room around them. Roughly shoulders-up is what reads well.
+    """
+    state = await EDITORO.state(project)
+    box = {"x": round(float(x), 4), "y": round(float(y), 4),
+           "w": round(float(w), 4), "h": round(float(h), 4)}
+    if box["x"] + box["w"] > 1.0001 or box["y"] + box["h"] > 1.0001:
+        raise EditoroError(
+            f"the box runs off the frame: x+w={box['x'] + box['w']:.3f}, "
+            f"y+h={box['y'] + box['h']:.3f}; both must be at most 1"
+        )
+    state["speaker_region"] = box
+    state = await EDITORO.save(state)
+    following = [item["id"] for item in state.get("instances", [])
+                 if item["template"] == "pip-speaker"
+                 and not (item.get("fields") or {}).get("region")]
+    return {"speaker_region": state.get("speaker_region"),
+            "blocks_following_it": following}
+
+
+@mcp.tool()
+async def set_look(
+    project: str,
+    defocus: Annotated[Optional[float], Field(
+        description="Background defocus, 0 to 1. 0 is off; around 0.6 reads like a fast "
+                    "lens. None leaves it alone.", ge=0, le=1)] = None,
+    grade: Annotated[Optional[float], Field(
+        description="Strength of the automatic colour correction, 0 to 1. 0 is off, "
+                    "0.7 is the default after an analysis. None leaves it alone.",
+        ge=0, le=1)] = None,
+    analyze: Annotated[bool, Field(
+        description="Read the footage first and build what the look needs: a depth matte "
+                    "for the defocus and a measured grade for the colour. Required once "
+                    "per project, and again if the source is replaced.")] = False,
+    wait: Annotated[bool, Field(
+        description="Block until the analysis finishes. It runs a depth model over the "
+                    "whole video locally and takes roughly as long as the footage.")] = True,
+) -> dict[str, Any]:
+    """Project-wide background defocus and automatic colour, both measured from the footage.
+
+    The defocus is real depth, not a cutout: a depth model runs over the source
+    once and writes a matte, and the export composites three depth slices so
+    the wall behind the speaker falls off with distance instead of turning into
+    a flat card. The colour is measured too - white balance from the neutrals
+    with skin excluded, exposure from the histogram, contrast only where the
+    picture is flat - and written as a LUT the preview and the export both read.
+
+    Analyse once, then the two amounts are instant. There is nothing else to
+    set: everything the look does was decided by looking at the footage.
+    """
+    if analyze:
+        await EDITORO.post(f"/api/projects/{project}/look/analyze",
+                           json={"parts": ["depth", "color"]})
+        if not wait:
+            return {"status": "running",
+                    "note": "The look pass is running. Poll with get_project."}
+        deadline = time.monotonic() + 7200
+        while time.monotonic() < deadline:
+            status = await EDITORO.get(f"/api/projects/{project}/look")
+            if not status.get("running"):
+                if status.get("status") == "error":
+                    raise EditoroError(f"The look pass failed: {status.get('error')}")
+                break
+            await asyncio.sleep(2.0)
+        else:
+            raise EditoroError("The look pass did not finish within two hours.")
+    payload: dict[str, Any] = {}
+    if defocus is not None:
+        payload["defocus"] = defocus
+    if grade is not None:
+        payload["grade"] = grade
+    if payload:
+        await EDITORO.post(f"/api/projects/{project}/look", json=payload)
+    status = await EDITORO.get(f"/api/projects/{project}/look")
+    analysis = status.get("analysis") or {}
+    return {
+        "defocus": status.get("defocus"),
+        "grade": status.get("grade"),
+        "matte_ready": status.get("matte_ready"),
+        "grade_ready": status.get("grade_ready"),
+        "measured": {key: analysis[key] for key in (
+            "depth_device", "gain_r", "gain_b", "black", "white", "gamma",
+            "contrast", "saturation") if key in analysis},
+        "next": "render_frame to look at it",
+    }
 
 
 # ----------------------------------------------------------------- watching

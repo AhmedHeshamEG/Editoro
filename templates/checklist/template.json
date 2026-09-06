@@ -2,7 +2,7 @@
   "id": "checklist",
   "version": 1,
   "schema": 2,
-  "display_name": "قائمة · Checklist",
+  "display_name": "Checklist",
   "category": "text",
   "category_color": "#A3E635",
   "directive_verb": "قائمة",
@@ -83,6 +83,9 @@
       "elevation": 28,
       "opacity": 0.46,
       "lift": true
+    },
+    "value": {
+      "ms": 300
     }
   },
   "sfx": [

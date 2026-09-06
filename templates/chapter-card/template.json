@@ -2,7 +2,7 @@
   "id": "chapter-card",
   "version": 1,
   "schema": 2,
-  "display_name": "فصل · Chapter",
+  "display_name": "Chapter",
   "category": "structure",
   "category_color": "#F59E0B",
   "directive_verb": "فصل",

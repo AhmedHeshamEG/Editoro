@@ -2,7 +2,7 @@
   "id": "punch-cut",
   "version": 1,
   "schema": 2,
-  "display_name": "قطع · Punch cut",
+  "display_name": "Punch cut",
   "category": "camera",
   "category_color": "#EF4444",
   "directive_verb": null,

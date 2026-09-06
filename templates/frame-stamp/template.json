@@ -2,7 +2,7 @@
   "id": "frame-stamp",
   "version": 1,
   "schema": 2,
-  "display_name": "لقطة · Snapshot",
+  "display_name": "Snapshot",
   "category": "camera",
   "category_color": "#06B6D4",
   "directive_verb": null,

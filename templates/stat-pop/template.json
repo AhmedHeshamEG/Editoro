@@ -2,7 +2,7 @@
   "id": "stat-pop",
   "version": 1,
   "schema": 2,
-  "display_name": "رقم · Stat",
+  "display_name": "Stat",
   "category": "text",
   "category_color": "#FF9F1C",
   "directive_verb": "رقم",
@@ -106,6 +106,11 @@
         "number",
         "label"
       ]
+    },
+    "value": {
+      "ms": 1000,
+      "steps": 10,
+      "ratio": 1.145
     }
   },
   "sfx": [
@@ -115,10 +120,9 @@
       "gain": 0.5
     },
     {
-      "file": "_shared/sfx/count-tick.wav",
-      "offset": 0.1,
-      "gain": 0.2,
-      "repeat_spacing": 0.075
+      "file": "_shared/sfx/count-wood.wav",
+      "follow_value": "number",
+      "gain": 0.22
     }
   ],
   "assets": [],
