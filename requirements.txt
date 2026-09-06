@@ -9,3 +9,20 @@ faster-whisper==1.2.1
 numpy>=2.0
 mcp>=2.1,<3
 nvidia-cudnn-cu12==9.24.0.43; platform_system == "Windows"
+# Depth estimation for the Look panel. The GPU build on Windows, whose CUDA 12
+# extras reuse the same stack faster-whisper already installs; the plain CPU
+# build everywhere else. Either way the depth network itself is fetched on
+# first use, not shipped here.
+# WARNING: these two wheels install into the SAME `onnxruntime` package folder,
+# so whichever pip touches last wins. Installing plain `onnxruntime` on Windows
+# silently replaces the GPU build - depth still runs, twenty times slower, and
+# nothing reports it. If that happens:
+#   pip uninstall -y onnxruntime onnxruntime-gpu
+#   pip install onnxruntime-gpu[cuda,cudnn]==1.22.0
+# `/api/diagnostics` reports it as `depth_warning`. Never add plain
+# `onnxruntime` to a Windows environment.
+onnxruntime-gpu[cuda,cudnn]==1.22.0; platform_system == "Windows"
+onnxruntime==1.22.0; platform_system != "Windows"
+# Only used to convert the depth network to half precision once, on first run.
+# Without it Editoro still works, it just runs depth at float32.
+onnx==1.19.0

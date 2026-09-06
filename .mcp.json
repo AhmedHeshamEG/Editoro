@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "editoro": {
+      "command": "${EDITORO_PYTHON:-.venv/Scripts/python.exe}",
+      "args": ["mcp_server.py"],
+      "env": {}
+    }
+  }
+}

@@ -1,6 +1,7 @@
 # Local Python environment and caches
 .venv/
 .models/
+.opencl/
 __pycache__/
 *.py[cod]
 .pytest_cache/
