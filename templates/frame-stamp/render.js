@@ -39,7 +39,7 @@ registerTemplate(ID, {
     A.stage(ctx, state, () => {
       const fitted = fitText(ctx, label.toUpperCase(), {
         maxWidth: W * 0.5, maxLines: 1, weight: 800, family: "Inter",
-        size: 30 * u, minSize: 11 * u,
+        size: 30 * u, minSize: 11 * u * scale,
       });
       const padX = 20 * u, padY = 11 * u;
       const boxWidth = fitted.width + padX * 2, boxHeight = fitted.size + padY * 2;

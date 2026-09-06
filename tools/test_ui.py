@@ -165,6 +165,36 @@ async def run_checks(project: str) -> None:
             assert painted > 0, "the overlay canvas is empty with 36 blocks on screen"
             note(f"overlay canvas painted ({painted} sampled pixels have ink)")
 
+            # A block's scale has to change the size of the block. Most packs
+            # sized their outer box from `viewport.width * max_width`, which
+            # does not scale, so past the point where the type filled that box
+            # the size control did nothing at all - and for the packs with a
+            # fixed-width card it did nothing from the start.
+            sized = await page.evaluate("""() => {
+              const { store: S, renderers: REG, runtime: A } = window.editoro;
+              const viewport = { width: 1920, height: 1080 };
+              const stuck = [], grew = [];
+              for (const [id, fns] of Object.entries(REG)) {
+                // Camera moves and the breathing block draw nothing of their
+                // own: their "size" is a framing rectangle, and scale is not
+                // theirs to honour.
+                if (!fns.measure || S.packs[id]?.full_frame) continue;
+                if (S.packs[id]?.camera || id === "breathe") continue;
+                const item = S.state.instances.find(i => i.template === id);
+                if (!item) continue;
+                const at = k => fns.measure({ ...item, scale: k }, A, viewport);
+                const one = at(1), two = at(2);
+                if (!(one?.width > 0) || !(two?.width > 0)) continue;
+                (two.width > one.width * 1.6 ? grew : stuck)
+                  .push(`${id} ${one.width.toFixed(0)}->${two.width.toFixed(0)}`);
+              }
+              return { stuck, grew };
+            }""")
+            assert not sized["stuck"], (
+                "doubling the scale did not resize these blocks: "
+                + ", ".join(sized["stuck"]))
+            note(f"scale resizes every measurable pack ({len(sized['grew'])} checked)")
+
             # Orientation switch: both layouts must exist and differ.
             before = await page.evaluate(
                 "editoro.state().instances.find(i => i.template === 'image-pop').x")
@@ -399,6 +429,19 @@ async def run_checks(project: str) -> None:
                 f"drawn changes {counting['changes']} do not match ladder {ladder}")
             drift = max(abs(a - b) for a, b in zip(counting["changes"], ladder))
             assert drift <= 1 / 30 + 1e-6, f"a digit changed {drift:.3f}s off its tick"
+            # "Increase by" moves the notch count from the pack to the block,
+            # and the browser and the exporter have to agree about it or the
+            # ticking lands on digits that are not there.
+            by = await page.evaluate("""() => {
+              const { store: S, valueSteps, valueLadder, sfxEventsForInstance } = window.editoro;
+              const item = { id: "stat2", template: "stat-pop", start: 0, duration: 3,
+                             fields: { value: "1,000", start: "0", step: "200" }, scale: 1 };
+              return { steps: valueSteps(item), ladder: valueLadder(item, "number").length,
+                       ticks: sfxEventsForInstance(item, S.packs["stat-pop"]).length };
+            }""")
+            assert by == {"steps": 5, "ladder": 5, "ticks": 5}, (
+                f"counting up by 200 is not five notches: {by}")
+
             note(f"the count steps {len(ladder)} times, gaps "
                  f"{gaps[0] * 1000:.0f}ms->{gaps[-1] * 1000:.0f}ms, "
                  f"every tick on a digit change")

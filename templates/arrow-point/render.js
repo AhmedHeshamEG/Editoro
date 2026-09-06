@@ -32,7 +32,7 @@ registerTemplate(ID, {
     A.stage(ctx, state, () => {
       const fitted = fitText(ctx, label, {
         maxWidth: W * 0.3, maxLines: 1, weight: 800,
-        size: 40 * u * instance.scale, minSize: 12 * u,
+        size: 40 * u * instance.scale, minSize: 12 * u * scale,
       });
       drawLines(ctx, fitted.lines, {
         size: fitted.size, weight: 800, color: colour,

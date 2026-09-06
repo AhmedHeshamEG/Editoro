@@ -6,11 +6,11 @@ function layout(instance, A, viewport, ctx) {
   const u = A.viewportUnit(viewport);
   const variant = A.variant(ID);
   const scale = instance.scale * (variant.scale || 1);
-  const maxWidth = viewport.width * (variant.max_width || 0.4);
+  const maxWidth = viewport.width * (variant.max_width || 0.4) * scale;
   const kindSize = 16 * scale * u;
   const fitted = fitText(ctx, instance.fields.text || "…", {
     maxWidth: maxWidth - 44 * u * scale, maxLines: 2, weight: 600, family: "Inter",
-    size: 24 * scale * u, minSize: 10 * u,
+    size: 24 * scale * u, minSize: 10 * u * scale,
   });
   return {
     u, scale, fitted, kindSize,

@@ -19,7 +19,7 @@ registerTemplate(ID, {
     });
 
     const titleFit = fitText(ctx, instance.fields.title || "…", {
-      maxWidth, maxLines: 2, weight: 800, size: 84 * u * instance.scale, minSize: 20 * u,
+      maxWidth, maxLines: 2, weight: 800, size: 84 * u * instance.scale, minSize: 20 * u * scale,
     });
     const titleHeight = titleFit.lines.length * titleFit.size * 1.10;
     const rowHeight = 74 * u;
@@ -39,7 +39,7 @@ registerTemplate(ID, {
       A.stage(ctx, state, () => {
         const fitted = fitText(ctx, item, {
           maxWidth: maxWidth - 96 * u, maxLines: 1, weight: 600,
-          size: 36 * u, minSize: 12 * u,
+          size: 36 * u, minSize: 12 * u * scale,
         });
         const boxWidth = fitted.width + 96 * u;
         roundRectPath(ctx, -boxWidth / 2, y - rowHeight * 0.34, boxWidth, rowHeight * 0.68,

@@ -8,7 +8,7 @@ function metrics(instance, A, viewport, ctx) {
   const placement = instance.fields.layout || {};
   const scale = (placement.scale ?? 1) * (instance.scale ?? 1);
   const size = (style.font_size || 44) * scale * u;
-  const maxWidth = viewport.width * (placement.max_width ?? 0.84);
+  const maxWidth = viewport.width * (placement.max_width ?? 0.84) * scale;
   ctx.font = `700 ${size}px Rubik`;
   const lines = wrapLines(ctx, instance.fields.text || "", maxWidth, 3);
   const widest = Math.max(0, ...lines.map(line => ctx.measureText(line).width));

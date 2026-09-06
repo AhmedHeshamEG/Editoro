@@ -8,7 +8,7 @@ function layout(instance, A, viewport) {
   const u = A.viewportUnit(viewport);
   const variant = A.variant(ID);
   const scale = instance.scale * (variant.scale || 1);
-  const width = viewport.width * (variant.max_width || 0.5);
+  const width = viewport.width * (variant.max_width || 0.5) * scale;
   const labelSize = 30 * scale * u;
   const barHeight = 26 * scale * u;
   return {

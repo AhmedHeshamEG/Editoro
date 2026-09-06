@@ -43,7 +43,7 @@ registerTemplate(ID, {
     ctx.translate(W / 2, H * 0.44 + Math.min(W, H) * 0.26 * instance.scale);
     const fitted = fitText(ctx, label.toUpperCase(), {
       maxWidth: W * 0.6, maxLines: 1, weight: 800, family: "Inter",
-      size: 34 * u, minSize: 12 * u,
+      size: 34 * u, minSize: 12 * u * scale,
     });
     drawLines(ctx, fitted.lines, {
       size: fitted.size, weight: 800, family: "Inter", color: accent,

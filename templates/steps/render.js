@@ -12,13 +12,13 @@ function layout(instance, A, viewport, ctx) {
   const stack = Boolean(variant.stack);
   const items = splitItems(instance.fields.items, MAX_STEPS);
   const count = Math.max(1, items.length);
-  const total = viewport.width * (variant.max_width || 0.8);
+  const total = viewport.width * (variant.max_width || 0.8) * scale;
   const dot = 46 * scale * u;
   const labelSize = 27 * scale * u;
   const slot = stack ? dot * 2.2 : total / count;
   const fitted = items.map(item => fitText(ctx, item, {
     maxWidth: stack ? total - dot * 2.6 : slot - 18 * scale * u,
-    maxLines: 2, weight: 600, size: labelSize, minSize: 10 * u,
+    maxLines: 2, weight: 600, size: labelSize, minSize: 10 * u * scale,
   }));
   return {
     u, scale, stack, items, count, dot, labelSize, slot, fitted,

@@ -7,11 +7,11 @@ function layout(instance, A, viewport, ctx) {
   const u = A.viewportUnit(viewport);
   const variant = A.variant(ID);
   const scale = instance.scale * (variant.scale || 1);
-  const maxWidth = viewport.width * (variant.max_width || 0.6);
+  const maxWidth = viewport.width * (variant.max_width || 0.6) * scale;
   const fitted = fitText(ctx, instance.fields.text || "…", {
     maxWidth: maxWidth - 60 * u * scale,
     maxLines: variant.max_lines || 2,
-    weight: 800, size: (variant.font || 62) * scale * u, minSize: 14 * u,
+    weight: 800, size: (variant.font || 62) * scale * u, minSize: 14 * u * scale,
   });
   const width = Math.min(maxWidth, Math.max(230 * u * scale, fitted.width + 74 * u * scale));
   const height = (fitted.lines.length === 1 ? 116 : 178) * scale * u;

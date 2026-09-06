@@ -43,7 +43,7 @@ registerTemplate(ID, {
       A.stage(ctx, state, () => {
         const fitted = fitText(ctx, title, {
           maxWidth: W - left * 2, maxLines: 2, weight: 800,
-          size: titleSize, minSize: 20 * u,
+          size: titleSize, minSize: 20 * u * scale,
         });
         drawLines(ctx, fitted.lines, {
           size: fitted.size, weight: 800, color: "#f6f4ef", align: "left",
@@ -57,7 +57,7 @@ registerTemplate(ID, {
       A.stage(ctx, state, () => {
         const fitted = fitText(ctx, subtitle, {
           maxWidth: W - left * 2, maxLines: 1, weight: 500,
-          size: titleSize * 0.32, minSize: 12 * u,
+          size: titleSize * 0.32, minSize: 12 * u * scale,
         });
         drawLines(ctx, fitted.lines, {
           size: fitted.size, weight: 500, color: alpha(PALETTE.inkFaint, 0.95),

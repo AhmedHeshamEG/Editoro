@@ -17,6 +17,22 @@
       "description": "The number itself, digits only (grouping is added automatically)."
     },
     {
+      "name": "start",
+      "label": "Start from",
+      "type": "text",
+      "max_length": 16,
+      "default": "0",
+      "description": "The number the count begins at. Usually 0."
+    },
+    {
+      "name": "step",
+      "label": "Increase by",
+      "type": "text",
+      "max_length": 16,
+      "default": "",
+      "description": "How much the number jumps each tick, e.g. 200. Leave empty to divide the climb evenly."
+    },
+    {
       "name": "label",
       "label": "Label",
       "type": "text",
@@ -110,15 +126,15 @@
     "value": {
       "ms": 1000,
       "steps": 10,
-      "ratio": 1.145
+      "ratio": 1.145,
+      "steps_from": {
+        "value": "value",
+        "start": "start",
+        "step": "step"
+      }
     }
   },
   "sfx": [
-    {
-      "file": "_shared/sfx/pop.wav",
-      "offset": 0.02,
-      "gain": 0.5
-    },
     {
       "file": "_shared/sfx/count-wood.wav",
       "follow_value": "number",

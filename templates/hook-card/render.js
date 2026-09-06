@@ -38,7 +38,7 @@ registerTemplate(ID, {
     const state = A.motion(instance, t, "text");
     const fitted = fitText(ctx, instance.fields.text || "…", {
       maxWidth, maxLines: vertical ? 4 : 3, weight: 800,
-      size: (vertical ? 92 : 104) * u * instance.scale, minSize: 22 * u,
+      size: (vertical ? 92 : 104) * u * instance.scale, minSize: 22 * u * scale,
     });
     A.stage(ctx, state, () => {
       drawLines(ctx, fitted.lines, {

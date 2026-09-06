@@ -8,10 +8,10 @@ function layout(instance, A, viewport, ctx) {
   const u = A.viewportUnit(viewport);
   const variant = A.variant(ID);
   const scale = instance.scale * (variant.scale || 1);
-  const size = viewport.width * (variant.max_width || 0.22);
+  const size = viewport.width * (variant.max_width || 0.22) * scale;
   const fitted = fitText(ctx, instance.fields.text || "…", {
     maxWidth: size - 44 * u * scale, maxLines: 4, weight: 600,
-    size: 28 * scale * u, minSize: 10 * u,
+    size: 28 * scale * u, minSize: 10 * u * scale,
   });
   return { u, scale, fitted, width: size, height: size * 0.92 };
 }

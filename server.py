@@ -638,6 +638,17 @@ def _check_motion(motion: dict[str, Any]) -> None:
         ratio = value.get("ratio", 1)
         if not isinstance(ratio, (int, float)) or not 1 <= float(ratio) <= 2:
             raise ValueError("motion.value.ratio must be between 1 and 2")
+        keys = value.get("steps_from")
+        if keys is not None:
+            if not isinstance(keys, dict):
+                raise ValueError("motion.value.steps_from must be an object")
+            unknown = set(keys) - {"value", "start", "step"}
+            if unknown:
+                raise ValueError(
+                    "motion.value.steps_from has unknown keys: " + ", ".join(sorted(unknown))
+                )
+            if not keys.get("step"):
+                raise ValueError("motion.value.steps_from must name a 'step' field")
 
 
 def _check_variants(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -713,6 +724,15 @@ def scan_templates() -> None:
             })
             if "motion" in spec:
                 _check_motion(spec["motion"])
+                # A field name is only a name until something has to read it:
+                # a typo here would silently fall back to the pack's own step
+                # count and the count would quietly stop honouring the block.
+                for role, field_name in (
+                        ((spec["motion"].get("value") or {}).get("steps_from") or {}).items()):
+                    if field_name not in names:
+                        raise ValueError(
+                            f"motion.value.steps_from.{role} names no field: {field_name}"
+                        )
             camera = spec.get("camera")
             if camera is not None and camera.get("mode") not in CAMERA_MODES:
                 raise ValueError(
@@ -818,8 +838,46 @@ def sfx_repeat_count(item: Instance, field_name: str) -> int:
 # final one, because the tail of an ease-out is flat by design.
 DEFAULT_VALUE_MOTION = {
     "easing": "outQuint", "ms": 0, "min_ms": 900, "delay_ms": 0,
-    "steps": 0, "ratio": 1.0,
+    "steps": 0, "ratio": 1.0, "steps_from": None,
 }
+
+
+def value_number(raw: Any) -> float:
+    """The number inside a field the editor typed by hand.
+
+    Mirrors the expression the packs use, so "1,200" and "$1200" and "1200" are
+    all twelve hundred and an empty box is zero rather than an error.
+    """
+    try:
+        return float(re.sub(r"[^0-9.\-]", "", str(raw if raw is not None else "")) or 0)
+    except ValueError:
+        return 0.0
+
+
+def value_steps(spec: dict[str, Any], item: Instance) -> int:
+    """How many notches this block's count-up climbs in.
+
+    Normally the pack decides, because how a count *feels* is the pack's
+    business. A pack that declares `motion.value.steps_from` hands that decision
+    to the block instead: it names the fields holding the figure, the number to
+    start from and how much to increase by, and the ladder is however many
+    increments that is. The difference is what the viewer reads - a count of ten
+    even tenths of 1,240 goes 124, 248, 372, which is arithmetic nobody
+    recognises, while counting up by 200 goes 200, 400, 600 and reads as a
+    counter. The times stay geometric either way, so it still decelerates.
+    """
+    motion = spec.get("motion") or {}
+    value = {**DEFAULT_VALUE_MOTION, **(motion.get("value") or {})}
+    steps = max(0, min(64, int(value.get("steps") or 0)))
+    keys = value.get("steps_from") or {}
+    if not keys:
+        return steps
+    by = abs(value_number(item.fields.get(keys.get("step"))))
+    if by <= 0:
+        return steps
+    span = abs(value_number(item.fields.get(keys.get("value")))
+               - value_number(item.fields.get(keys.get("start"))))
+    return max(1, min(64, round(span / by))) if span > 0 else steps
 
 
 def value_ramp(spec: dict[str, Any], item: Instance,
@@ -847,7 +905,7 @@ def value_ramp(spec: dict[str, Any], item: Instance,
 def value_step_times(spec: dict[str, Any], item: Instance, element: str = "") -> list[float]:
     """Times, relative to the block, at which a stepped count-up advances a notch."""
     delay, window, value = value_ramp(spec, item, element)
-    steps = max(0, min(64, int(value.get("steps") or 0)))
+    steps = value_steps(spec, item)
     if steps < 1:
         return []
     ratio = float(value.get("ratio") or 1.0)
@@ -4398,12 +4456,18 @@ def _ease_expr(kind: str, k: str) -> str:
 # strength up makes the video breathe deeper, never faster. A second control
 # for speed would let the footage and the graphics fall out of step, which is
 # exactly the thing this replaces.
-BREATHE_HZ = 0.075
+BREATHE_HZ = 0.12
+# Amplitude is half the peak-to-peak zoom: `standard` horizontal travels 4.4% of
+# the frame across each breath. The first numbers here were a quarter of these
+# and the effect was, correctly, reported as doing nothing at all - a 1.2% zoom
+# spread over thirteen seconds is below the threshold at which a frame reads as
+# alive rather than as a still. Raise these two tables together with the copy in
+# index.html or the preview and the export stop being the same picture.
 BREATHE_LEVELS: dict[str, dict[str, float]] = {
     "off": {"horizontal": 0.0, "vertical": 0.0},
-    "subtle": {"horizontal": 0.006, "vertical": 0.009},
-    "standard": {"horizontal": 0.012, "vertical": 0.018},
-    "strong": {"horizontal": 0.022, "vertical": 0.030},
+    "subtle": {"horizontal": 0.012, "vertical": 0.018},
+    "standard": {"horizontal": 0.022, "vertical": 0.032},
+    "strong": {"horizontal": 0.038, "vertical": 0.052},
 }
 # How long an override takes to reach its own amplitude. Amplitude is a zoom,
 # so stepping it would be a visible jump in the frame; a third of a second of
@@ -6067,7 +6131,7 @@ def _test_breathe() -> None:
         source_info=MediaInfo(width=1920, height=1080, fps=30, duration=30),
     )
     assert state.orientation == "horizontal"
-    assert breathe_level("standard", "horizontal") == 0.012
+    assert breathe_level("standard", "horizontal") == 0.022
     # Vertical breathes deeper for the same named strength, because the same
     # percentage of a smaller frame reads as less movement.
     assert breathe_level("standard", "vertical") > breathe_level("standard", "horizontal")
@@ -6091,7 +6155,7 @@ def _test_breathe() -> None:
     # look right: FFmpeg will not tell us if it is unbalanced.
     expression = breathe_amplitude_expr(state, "T")
     assert expression.count("(") == expression.count(")")
-    assert "0.012" in expression and "clip(" in expression
+    assert f"{breathe_level('standard', 'horizontal'):.9f}" in expression and "clip(" in expression
 
     graph = breathe_filter_graph(state, {"tl": 0.0}, 30, "[0:v]", "[base]")
     assert "zoompan" in graph and "sin(" in graph
@@ -6196,6 +6260,28 @@ def _test_value_ladder() -> None:
     short = value_step_times(spec, brief, "number")
     assert short[-1] < brief.duration, short[-1]
     assert all(e["time"] <= brief.duration for e in resolve_sfx_events(brief, spec))
+
+    # "Increase by" hands the notch count to the block. 1000 counted up in
+    # 200s is five notches, so the digits land on 200, 400, 600, 800, 1000 -
+    # numbers a viewer recognises - and there are five ticks, not ten.
+    counting = Instance(id="s3", template="stat-pop", start=0.0, duration=3.0,
+                        fields={"value": "1,000", "start": "0", "step": "200"})
+    assert value_steps(spec, counting) == 5
+    assert len(value_step_times(spec, counting, "number")) == 5
+    assert len([e for e in resolve_sfx_events(counting, spec) if "count-wood" in e["file"]]) == 5
+    # Counting down, and counting from something other than zero, are the same
+    # arithmetic: it is the distance that decides how many increments there are.
+    downward = counting.model_copy(update={"fields": {"value": "40", "start": "100", "step": "20"}})
+    assert value_steps(spec, downward) == 3
+    # An empty or nonsensical "increase by" falls back to the pack's own count
+    # rather than to a ladder with no rungs.
+    for junk in ("", "0", "abc"):
+        blank = counting.model_copy(update={"fields": {"value": "1000", "step": junk}})
+        assert value_steps(spec, blank) == 10, junk
+    # More increments than the ladder can hold is clamped, not refused: a
+    # 64-notch count is already faster than the ear can separate.
+    dense = counting.model_copy(update={"fields": {"value": "1000", "step": "1"}})
+    assert value_steps(spec, dense) == 64
 
     # A ratio of 1 is an even ladder, which is what a pack gets if it asks for
     # steps and says nothing about the deceleration.

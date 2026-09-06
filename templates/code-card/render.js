@@ -8,7 +8,7 @@ function layout(instance, A, viewport, ctx) {
   const u = A.viewportUnit(viewport);
   const variant = A.variant(ID);
   const scale = instance.scale * (variant.scale || 1);
-  const width = viewport.width * (variant.max_width || 0.48);
+  const width = viewport.width * (variant.max_width || 0.48) * scale;
   const lines = String(instance.fields.code || "")
     .replace(/\t/g, "  ").split("\n").slice(0, MAX_LINES);
   if (!lines.length) lines.push("");

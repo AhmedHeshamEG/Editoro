@@ -660,12 +660,12 @@ function springValue(seconds, { stiffness = 200, damping = 18, mass = 1 }) {
    together on one clock, so the frame reads as alive rather than as a video
    with wobbling stickers on it. A strength control changes how deep it
    breathes and never how fast, because the tempo is what everything shares. */
-const BREATHE_HZ = .075, BREATHE_RAMP = .4;
+const BREATHE_HZ = .12, BREATHE_RAMP = .4;
 const BREATHE_LEVELS = {
   off: { horizontal: 0, vertical: 0 },
-  subtle: { horizontal: .006, vertical: .009 },
-  standard: { horizontal: .012, vertical: .018 },
-  strong: { horizontal: .022, vertical: .030 },
+  subtle: { horizontal: .012, vertical: .018 },
+  standard: { horizontal: .022, vertical: .032 },
+  strong: { horizontal: .038, vertical: .052 },
 };
 
 function breatheLevel(level, orientation) {
@@ -756,7 +756,7 @@ const DEFAULT_MOTION = {
   // first and the number keeps climbing under it.
   // `steps` turns the ramp into a counter ladder and `ratio` is how much
   // longer each notch is than the last; see valueLadder().
-  value: { easing: "outQuint", ms: 0, min_ms: 900, delay_ms: 0, steps: 0, ratio: 1 },
+  value: { easing: "outQuint", ms: 0, min_ms: 900, delay_ms: 0, steps: 0, ratio: 1, steps_from: null },
 };
 
 function motionSpec(templateId) {
@@ -914,9 +914,36 @@ function valueRamp(inst, element) {
  * server.py, which reads exactly these times to place the ticking foley — one
  * tick per notch means every sound you hear is a digit you see change.
  */
+/* The number inside a field the editor typed by hand: "1,200", "$1200" and
+   "1200" are all twelve hundred, and an empty box is zero. */
+function valueNumber(raw) {
+  return Number(String(raw ?? "").replace(/[^0-9.\-]/g, "")) || 0;
+}
+
+/* How many notches this block's count-up climbs in.
+
+   Normally the pack decides, because how a count *feels* is the pack's
+   business. A pack that declares `motion.value.steps_from` hands that decision
+   to the block: it names the fields holding the figure, the number to start
+   from and how much to increase by, and the ladder is however many increments
+   that is. Ten even tenths of 1,240 read as 124, 248, 372 — arithmetic nobody
+   recognises. Counting up by 200 reads as a counter. Mirrored by value_steps()
+   in server.py, which places the ticking foley on these same notches. */
+function valueSteps(inst) {
+  const spec = motionSpec(inst.template);
+  const steps = Math.max(0, Math.min(64, Math.round(spec.value.steps || 0)));
+  const keys = spec.value.steps_from;
+  if (!keys) return steps;
+  const by = Math.abs(valueNumber(inst.fields?.[keys.step]));
+  if (!(by > 0)) return steps;
+  const span = Math.abs(valueNumber(inst.fields?.[keys.value])
+    - valueNumber(inst.fields?.[keys.start]));
+  return span > 0 ? Math.max(1, Math.min(64, Math.round(span / by))) : steps;
+}
+
 function valueLadder(inst, element) {
   const { spec, delay, window } = valueRamp(inst, element);
-  const steps = Math.max(0, Math.min(64, Math.round(spec.value.steps || 0)));
+  const steps = valueSteps(inst);
   if (steps < 1) return [];
   const ratio = +spec.value.ratio || 1;
   const span = ratio > 1.0001 ? Math.pow(ratio, steps) - 1 : 0;
@@ -929,7 +956,7 @@ function valueAt(inst, t, element) {
   const { spec, duration, delay, window } = valueRamp(inst, element);
   const seconds = Math.max(0, Math.min(duration, t * duration));
   const progress = Math.max(0, Math.min(1, (seconds - delay) / window));
-  const steps = Math.max(0, Math.min(64, Math.round(spec.value.steps || 0)));
+  const steps = valueSteps(inst);
   if (steps >= 1) {
     // Stepped: hold each notch until the next one is due. The inverse of the
     // ladder above, so the number changes on exactly the frames it ticks on.
@@ -4279,6 +4306,7 @@ window.editoro = {
   valueLadder,
   captionsAt, activeInstances, $,
   cameraPlan, cameraStateAt, cameraTransform, breatheScale, breatheAmplitude,
+  valueSteps,
   drawThumbnail, thumbState, sfxEventsForInstance,
   LOOK, lookRefresh, lookDraw, lookSample, lookSettings,
 };

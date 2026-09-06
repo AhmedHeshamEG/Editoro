@@ -119,7 +119,8 @@ the export.
   "idle":    { "amplitude": 0.0028, "hz": 0.13 },
   "blur":    { "motion": true, "max": 7 },
   "shadow":  { "layers": 3, "elevation": 26, "opacity": 0.46, "lift": true },
-  "value":   { "ms": 1000, "steps": 10, "ratio": 1.145 }
+  "value":   { "ms": 1000, "steps": 10, "ratio": 1.145,
+               "steps_from": { "value": "value", "start": "start", "step": "step" } }
 }
 ```
 
@@ -149,6 +150,16 @@ the export.
   the last 170 ms and the number visibly settles onto its figure. `steps: 0`
   (the default) leaves the climb smooth and `easing` in charge. A pack that
   steps can put a tick on every notch — see `follow_value` under Sound.
+- `value.steps_from` hands the notch count to the *block* instead of the pack.
+  It names three of the pack's own fields — the figure, the number to count
+  from, and how much to increase by — and when the editor fills in the last of
+  those, the ladder is however many increments that is. Counting to 1,000 in
+  200s is five notches landing on 200, 400, 600, 800, 1000; ten even tenths
+  would have landed on 124, 248, 372, which is arithmetic no viewer recognises.
+  The times stay geometric either way, so it still decelerates. An empty or
+  unusable "increase by" falls back to `steps`, and more increments than the
+  ladder holds are clamped to 64 rather than refused. The three named fields
+  must exist, or the pack is rejected at scan time.
 
 Easings available: `linear`, `inQuad`, `outQuad`, `inOutQuad`, `inCubic`,
 `outCubic`, `inOutCubic`, `outQuart`, `outQuint`, `inExpo`, `outExpo`,

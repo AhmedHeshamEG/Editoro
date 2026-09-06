@@ -8,13 +8,13 @@ function layout(instance, A, viewport, ctx) {
   const u = A.viewportUnit(viewport);
   const variant = A.variant(ID);
   const scale = instance.scale * (variant.scale || 1);
-  const width = viewport.width * (variant.max_width || 0.44);
+  const width = viewport.width * (variant.max_width || 0.44) * scale;
   const pad = 30 * scale * u;
   const avatar = 62 * scale * u;
   const nameSize = 30 * scale * u;
   const body = fitText(ctx, instance.fields.text || "", {
     maxWidth: width - pad * 2, maxLines: 6, weight: 500,
-    size: 32 * scale * u, minSize: 12 * u,
+    size: 32 * scale * u, minSize: 12 * u * scale,
   });
   const bodyHeight = body.lines.length * body.size * 1.34;
   return {

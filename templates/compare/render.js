@@ -9,7 +9,7 @@ function layout(instance, A, viewport, ctx) {
   const variant = A.variant(ID);
   const scale = instance.scale * (variant.scale || 1);
   const stack = Boolean(variant.stack);
-  const total = viewport.width * (variant.max_width || 0.72);
+  const total = viewport.width * (variant.max_width || 0.72) * scale;
   const gap = 46 * scale * u;
   const cardWidth = stack ? total : (total - gap) / 2;
   const titleSize = (stack ? 42 : 44) * scale * u;
@@ -21,7 +21,7 @@ function layout(instance, A, viewport, ctx) {
     height: stack ? cardHeight * 2 + gap : cardHeight,
     fit: (text, size, maxLines) => fitText(ctx, text || "", {
       maxWidth: cardWidth - 44 * scale * u, maxLines, weight: maxLines === 1 ? 800 : 500,
-      size, minSize: 11 * u,
+      size, minSize: 11 * u * scale,
     }),
   };
 }

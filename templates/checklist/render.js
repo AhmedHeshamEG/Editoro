@@ -9,19 +9,19 @@ function layout(instance, A, viewport, ctx) {
   const u = A.viewportUnit(viewport);
   const variant = A.variant(ID);
   const scale = instance.scale * (variant.scale || 1);
-  const maxWidth = viewport.width * (variant.max_width || 0.42);
+  const maxWidth = viewport.width * (variant.max_width || 0.42) * scale;
   const items = splitItems(instance.fields.items, MAX_ITEMS);
   const title = String(instance.fields.title || "").trim();
   const itemSize = 34 * scale * u;
   const tick = itemSize * 1.05;
   const inner = maxWidth - (tick + 78 * u * scale);
   const fitted = items.map(item => fitText(ctx, item, {
-    maxWidth: inner, maxLines: 1, weight: 600, size: itemSize, minSize: 12 * u,
+    maxWidth: inner, maxLines: 1, weight: 600, size: itemSize, minSize: 12 * u * scale,
   }));
   const titleFit = title
     ? fitText(ctx, title, {
         maxWidth: maxWidth - 68 * u * scale, maxLines: 1, weight: 800,
-        size: itemSize * 1.24, minSize: 12 * u,
+        size: itemSize * 1.24, minSize: 12 * u * scale,
       })
     : null;
   const titleSize = titleFit ? titleFit.size : 0;

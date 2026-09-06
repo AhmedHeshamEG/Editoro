@@ -8,23 +8,27 @@ function layout(instance, A, viewport, ctx) {
   const u = A.viewportUnit(viewport);
   const variant = A.variant(ID);
   const scale = instance.scale * (variant.scale || 1);
-  const maxWidth = viewport.width * (variant.max_width || 0.42);
+  const maxWidth = viewport.width * (variant.max_width || 0.42) * scale;
   const label = String(instance.fields.label || "").trim();
   const numberSize = 132 * scale * u;
-  const target = Number(String(instance.fields.value ?? "").replace(/[^0-9.\-]/g, "")) || 0;
+  const number = raw => Number(String(raw ?? "").replace(/[^0-9.\-]/g, "")) || 0;
+  const target = number(instance.fields.value);
+  const from = number(instance.fields.start);
   const decimals = Math.max(0, Math.min(4, Math.round(instance.fields.decimals ?? 0)));
-  const sample = formatNumber(target, {
+  // Fit to whichever end of the count is the wider figure, so the card does not
+  // resize itself halfway up.
+  const sample = formatNumber(Math.abs(from) > Math.abs(target) ? from : target, {
     decimals, prefix: instance.fields.prefix || "", suffix: instance.fields.suffix || "",
   });
   const fitted = fitText(ctx, sample, {
     maxWidth: maxWidth - 80 * u * scale, maxLines: 1, weight: 800,
-    size: numberSize, minSize: 20 * u,
+    size: numberSize, minSize: 20 * u * scale,
   });
-  const labelSize = Math.max(14 * u, fitted.size * 0.24);
+  const labelSize = Math.max(14 * u * scale, fitted.size * 0.24);
   const width = Math.min(maxWidth, Math.max(300 * u * scale, fitted.width + 96 * u * scale));
   const height = (label ? fitted.size * 1.28 + labelSize * 2.2 : fitted.size * 1.5)
     + 44 * u * scale;
-  return { u, scale, width, height, fitted, label, labelSize, target, decimals };
+  return { u, scale, width, height, fitted, label, labelSize, target, from, decimals };
 }
 
 registerTemplate(ID, {
@@ -44,7 +48,7 @@ registerTemplate(ID, {
       // the card is thrown into place fast and the number keeps climbing under
       // it for a beat afterwards. That is the shape the eye expects, and it is
       // the only way the digits are on screen long enough to be read at all.
-      const counted = g.target * A.value(instance, t, "number");
+      const counted = g.from + (g.target - g.from) * A.value(instance, t, "number");
       const text = formatNumber(counted, {
         decimals: g.decimals,
         prefix: instance.fields.prefix || "", suffix: instance.fields.suffix || "",

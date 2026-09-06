@@ -8,14 +8,14 @@ function layout(instance, A, viewport, ctx) {
   const u = A.viewportUnit(viewport);
   const variant = A.variant(ID);
   const scale = instance.scale * (variant.scale || 1);
-  const maxWidth = viewport.width * (variant.max_width || 0.56);
+  const maxWidth = viewport.width * (variant.max_width || 0.56) * scale;
   const inner = maxWidth - 76 * u * scale;
   const term = fitText(ctx, instance.fields.term || "…", {
-    maxWidth: inner, maxLines: 1, weight: 800, size: 56 * scale * u, minSize: 18 * u,
+    maxWidth: inner, maxLines: 1, weight: 800, size: 56 * scale * u, minSize: 18 * u * scale,
   });
   const meaning = fitText(ctx, instance.fields.meaning || "", {
     maxWidth: inner, maxLines: variant.max_lines || 3, weight: 500,
-    size: 32 * scale * u, minSize: 13 * u,
+    size: 32 * scale * u, minSize: 13 * u * scale,
   });
   const hasMeaning = Boolean(String(instance.fields.meaning || "").trim());
   const meaningHeight = hasMeaning ? meaning.lines.length * meaning.size * 1.30 : 0;
