@@ -20,3 +20,11 @@ projects/*
 Thumbs.db
 .vscode/
 .idea/
+
+# private working notes - kept locally, never published
+.vc/
+docs/superpowers/
+prompt.md
+PROMPT.md
+context.md
+context_template.md
